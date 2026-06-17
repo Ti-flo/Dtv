@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+*.egg-info/
+dist/
+build/
+
+# Secrets — NEVER commit
+.env
+*.env
+secrets.py
+
+# Data output (generated)
+data/raw/*.csv
+data/processed/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# APK binary noise (keep only assets/www)
+*.dex
+*.arsc
+*.prof
+*.profm
+*.bin
+*.proto
+*.properties
+stamp-cert-sha256
+AndroidManifest.xml
