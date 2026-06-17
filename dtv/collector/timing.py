@@ -27,3 +27,14 @@ def jitter(base_s: float, variance: float = 0.3) -> float:
     """
     delta = base_s * variance
     return max(0.1, base_s + random.uniform(-delta, delta))
+
+
+def backoff_delay(attempt: int, base_s: float = 2.0, cap_s: float = 60.0):
+    """
+    Block for exponential backoff with ±30% jitter. Used for reconnection.
+
+    attempt=0 → ~2s, attempt=1 → ~4s, attempt=2 → ~8s, attempt=4+ → ~60s
+    A human relaunching an app never does it instantly — floor at 1s.
+    """
+    raw = min(base_s * (2 ** attempt), cap_s)
+    human_delay(max(1.0, raw * 0.7), raw * 1.3)

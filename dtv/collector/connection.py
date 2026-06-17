@@ -9,6 +9,14 @@ Orchestrates the full login flow:
   5. Select character
   6. Emit game-ready event → HDV collection can start
 
+Reconnection behaviour (4 distinct disconnect cases):
+  CLIENT_CLOSE  → intentional, no reconnect
+  SERVER_CLOSE  → kicked/maintenance, no reconnect (raise error)
+  PING_TIMEOUT  → network glitch, reconnect with exponential backoff
+  TCP_DROP      → ambiguous, reconnect with exponential backoff + caution
+
+Circuit breaker: after 3 unexpected disconnects in 5 minutes, give up.
+
 Architecture confirmed from script.js + PCAPdroid captures:
   Login server:  dt-proxy-production-login.ankama-games.com  (TCP → TLS)
   Game server:   dt-proxy-production-france.ankama-games.com (TCP → TLS)
@@ -16,11 +24,13 @@ Architecture confirmed from script.js + PCAPdroid captures:
 """
 import logging
 import threading
+import time
 from typing import Optional
 
 from curl_cffi import requests
 
-from .primus_client import PrimusClient
+from .primus_client import PrimusClient, DisconnectReason
+from .timing import backoff_delay
 
 log = logging.getLogger(__name__)
 
@@ -44,14 +54,40 @@ def _get_config(server_url: str, lang: str = "fr") -> dict:
     return resp.json()
 
 
+class _CircuitBreaker:
+    """
+    Opens after max_failures unexpected disconnects within window_s seconds.
+    Prevents infinite reconnect loops when the account/IP is being blocked.
+    """
+
+    def __init__(self, max_failures: int = 3, window_s: float = 300.0):
+        self._timestamps: list[float] = []
+        self._max = max_failures
+        self._window = window_s
+
+    def record(self):
+        now = time.time()
+        self._timestamps.append(now)
+        # Prune events outside the window
+        self._timestamps = [t for t in self._timestamps if now - t <= self._window]
+
+    def is_open(self) -> bool:
+        now = time.time()
+        recent = [t for t in self._timestamps if now - t <= self._window]
+        return len(recent) >= self._max
+
+    def failure_count(self) -> int:
+        now = time.time()
+        return len([t for t in self._timestamps if now - t <= self._window])
+
+
 class DofusTouchSession:
     """
-    Manages a full Dofus Touch session from auth to in-game.
+    Manages a full Dofus Touch session from auth to in-game, with reconnection.
 
     Usage:
         session = DofusTouchSession(game_token="...", server_id=401, character_id=123)
         session.connect()
-        # game_ready event fires → use session.game to send messages
         session.wait_for_game(timeout=60)
         # Now in game, can use session.send_message(...)
         session.disconnect()
@@ -83,6 +119,11 @@ class DofusTouchSession:
         self._game_server_url: Optional[str] = None
         self._ticket: Optional[str] = None
 
+        # Reconnection state
+        self._active = False               # False → disconnect() was called, abort reconnects
+        self._circuit_breaker = _CircuitBreaker(max_failures=3, window_s=300.0)
+        self._reconnect_attempt = 0        # reset to 0 on each successful GameContextCreate
+
     # ------------------------------------------------------------------ #
     # Public API                                                           #
     # ------------------------------------------------------------------ #
@@ -104,6 +145,7 @@ class DofusTouchSession:
 
     def connect(self):
         """Start the login flow (non-blocking, runs in background threads)."""
+        self._active = True
         config = _get_config(self.login_server, self.lang)
         log.info("Config loaded. dataUrl=%s", config.get("dataUrl"))
 
@@ -127,7 +169,8 @@ class DofusTouchSession:
         return ready
 
     def disconnect(self):
-        """Close all connections."""
+        """Close all connections and stop any pending reconnect."""
+        self._active = False
         if self._game_client:
             self._game_client.disconnect()
         if self._login_client:
@@ -216,7 +259,7 @@ class DofusTouchSession:
         self._game_client = PrimusClient(self._game_server_url)
         self._setup_game_handlers()
 
-        # Register any user-provided handlers
+        # Register any user-provided handlers (e.g. from HdvCollector)
         for msg_type, handlers in self._message_handlers.items():
             for handler in handlers:
                 self._game_client.on(msg_type)(handler)
@@ -242,7 +285,10 @@ class DofusTouchSession:
 
         @c.on("AuthenticationTicketRefusedMessage")
         def on_ticket_refused(msg):
-            log.error("Auth ticket refused")
+            log.error("Auth ticket refused — token expired or invalid")
+            self._error = "ticket_refused"
+            self._active = False
+            self._game_ready.set()
 
         @c.on("CharactersListMessage")
         def on_char_list(msg):
@@ -252,7 +298,7 @@ class DofusTouchSession:
 
             if not chars:
                 log.error("No characters on this server")
-                self._error = "No characters on server"
+                self._error = "no_characters"
                 self._game_ready.set()
                 return
 
@@ -275,8 +321,97 @@ class DofusTouchSession:
         @c.on("GameContextCreateMessage")
         def on_context_created(msg):
             log.info("Game context created — session is ready!")
+            self._reconnect_attempt = 0  # reset backoff counter on successful connect
             self._game_ready.set()
 
         @c.on("ConnectionFailedMessage")
         def on_conn_failed(msg):
             log.error("Connection failed: %s", msg)
+
+        @c.on("__close__")
+        def on_game_close(msg):
+            reason = msg.get("disconnect_reason")
+            self._handle_game_disconnect(reason)
+
+    # ------------------------------------------------------------------ #
+    # Reconnection logic                                                  #
+    # ------------------------------------------------------------------ #
+
+    def _handle_game_disconnect(self, reason: Optional[DisconnectReason]):
+        """
+        Decide what to do when the game WebSocket closes.
+        Called from the PrimusClient receive thread — must not block.
+        """
+        if reason == DisconnectReason.CLIENT_CLOSE:
+            log.info("Game connection closed by client — no reconnect")
+            return
+
+        if reason == DisconnectReason.SERVER_CLOSE:
+            log.warning("Server closed the connection (kick / maintenance / session expired)")
+            self._error = "server_close"
+            self._game_ready.set()
+            return
+
+        # PING_TIMEOUT or TCP_DROP beyond this point
+        if not self._active:
+            log.info("Session is shutting down — ignoring disconnect [%s]",
+                     reason.value if reason else "unknown")
+            return
+
+        # Disconnect during auth phase (before GameContextCreateMessage) →
+        # likely a bad token; re-auth is the caller's responsibility
+        if not self._game_ready.is_set():
+            log.error("Disconnected during auth phase [%s] — token may be invalid",
+                      reason.value if reason else "unknown")
+            self._error = f"auth_phase_disconnect:{reason.value if reason else 'unknown'}"
+            self._game_ready.set()
+            return
+
+        self._circuit_breaker.record()
+        if self._circuit_breaker.is_open():
+            log.error(
+                "Circuit breaker open (%d disconnects in %.0fs) — stopping reconnect attempts",
+                self._circuit_breaker.failure_count(),
+                self._circuit_breaker._window,
+            )
+            self._error = "circuit_breaker_open"
+            self._game_ready.set()
+            return
+
+        log.info(
+            "Game disconnected [%s] — reconnect attempt %d in ~%.0fs",
+            reason.value if reason else "unknown",
+            self._reconnect_attempt + 1,
+            min(2.0 * (2 ** self._reconnect_attempt), 60.0),
+        )
+        threading.Thread(target=self._reconnect_game, daemon=True).start()
+
+    def _reconnect_game(self):
+        """Run in a background thread: wait backoff, then reconnect."""
+        if not self._active:
+            return
+
+        attempt = self._reconnect_attempt
+        self._reconnect_attempt += 1
+
+        backoff_delay(attempt)
+
+        if not self._active:
+            return
+
+        log.info("Reconnecting to game server (attempt %d)…", attempt + 1)
+        self._game_ready.clear()
+
+        try:
+            self._connect_to_game_server()
+        except Exception as e:
+            log.error("Reconnect attempt %d failed: %s", attempt + 1, e)
+            self._circuit_breaker.record()
+            if self._circuit_breaker.is_open():
+                log.error("Circuit breaker open after failed reconnect — giving up")
+                self._error = "circuit_breaker_open"
+                self._game_ready.set()
+            elif self._active:
+                # _connect_to_game_server raised before creating a client that could
+                # fire __close__, so we reschedule manually
+                threading.Thread(target=self._reconnect_game, daemon=True).start()
