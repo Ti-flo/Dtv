@@ -86,22 +86,67 @@ Doit être répondu dans ~30s sinon le serveur déconnecte.
 
 **Note :** Le login server utilise des calls spéciaux ("connecting", "login") en plus du standard "sendMessage".
 
-### Messages HDV (à valider par capture live)
+### HDV — architecture (confirmé par analyse statique de script.js)
+
+**L'HDV dans Dofus Touch est accessible depuis n'importe où** (bouton dans l'interface),
+pas besoin d'être près d'un PNJ physique. Niveau min estimé : ~10 ou mi-tutoriel.
+
+#### Messages HDV (confirmés script.js)
 
 | Message | Sens | Rôle |
 |---|---|---|
-| `ExchangePlayerRequestMessage` | → | Ouvrir HDV (besoin d'être près du PNJ) |
-| `ExchangeStartedBidBuyerMessage` | ← | HDV ouvert côté acheteur |
-| `ExchangeStartedBidSellerMessage` | ← | HDV ouvert côté vendeur |
-| `ExchangeStartedWithStorageMessage` | ← | HDV avec stockage ouvert |
-| `ExchangeTypeItemsExchangerDescriptionForUserMessage` | → | Demander les prix d'une catégorie |
-| `ExchangeTypesItemsExchangerDescriptionForUserMessage` | ← | Réponse avec prix |
+| `NpcGenericActionRequestMessage` | → | **Ouvrir HDV** (`npcId:0, npcActionId:6, npcMapId:<mapId>`) |
+| `ExchangeStartedBidBuyerMessage` | ← | HDV ouvert (mode achat) — contient `buyerDescriptor` |
+| `ExchangeStartedBidSellerMessage` | ← | HDV ouvert (mode vente) |
+| `ExchangeBidHouseTypeMessage` | → | **Demander les offres d'un type d'item** (`{type: <gid>}`) |
+| `ExchangeTypesItemsExchangerDescriptionForUserMessage` | ← | Réponse avec toutes les offres |
 | `LeaveDialogRequestMessage` | → | Fermer HDV |
 | `ExchangeLeaveMessage` | ← | HDV fermé |
 
-**Champs des prix (TBC — à confirmer par capture live) :**
-Le format exact de `ExchangeTypesItemsExchangerDescriptionForUserMessage` est inconnu.
-Hypothèse basée sur Dofus 2 : chaque item a un champ `prices: [prix_x1, prix_x10, prix_x100]`.
+**Paramètres de `NpcGenericActionRequestMessage` pour l'HDV :**
+```json
+{ "npcId": 0, "npcActionId": 6, "npcMapId": <mapId_actuel_du_joueur> }
+```
+- `npcActionId: 6` = mode achat (lecture des prix)
+- `npcActionId: 5` = mode vente/modification
+- `npcMapId` = `CurrentMapMessage.mapId` — la map actuelle du joueur
+- Référence : `openBidHouse()` dans script.js
+
+**Comparaison : banque ouvre avec `npcMapId: -1`** → à tester si -1 fonctionne pour l'HDV aussi.
+
+#### Format de `ExchangeTypesItemsExchangerDescriptionForUserMessage` (confirmé script.js)
+
+```json
+{
+  "_messageType": "ExchangeTypesItemsExchangerDescriptionForUserMessage",
+  "itemTypeDescriptions": [
+    {
+      "objectUID":    12345,
+      "prices":       [100, 950, 9000],
+      "effects":      [{"_type": "ObjectEffectInteger", "actionId": 110, "value": 100}],
+      "tutorialPrice": false
+    }
+  ]
+}
+```
+
+**Points clés :**
+- `objectUID` = identifiant unique de cette offre (pas du type d'item)
+- `prices[0]` = prix total pour 1 unité, `prices[1]` = pour 10, `prices[2]` = pour 100
+- `prices` indexé sur `buyerDescriptor.quantities` (= `[1, 10, 100]` standard Dofus)
+- `objectGID` n'est **pas** dans la réponse serveur — le client le déduit du type demandé
+- Exemple tutoriel : `prices: [90, 0, 0]` → confirme que 0 = pas d'offre à cette quantité
+- Source : `_addItemListChunk()` + `_separateItemBulks()` dans script.js
+
+#### `buyerDescriptor` dans `ExchangeStartedBidBuyerMessage`
+- `buyerDescriptor.types` = liste des types d'items disponibles dans l'HDV du serveur
+- `buyerDescriptor.quantities` = tiers de quantité (standard `[1, 10, 100]`)
+
+#### `CurrentMapMessage` (reçu quand le joueur change de map)
+```json
+{ "_messageType": "CurrentMapMessage", "mapId": 123456789 }
+```
+Nécessaire pour `npcMapId` dans l'ouverture HDV.
 
 ### Headers Android requis (confirmé capture.har)
 

@@ -109,11 +109,11 @@ def main():
         if not collector.open_hdv(timeout=15):
             log.warning("HDV open timeout — maybe not near an HDV NPC?")
 
-        # 4. Collect each category
+        # 4. Collect each item type
         total_records = 0
-        for cat_id in categories:
-            log.info("Collecting category %d...", cat_id)
-            records = collector.collect_category(cat_id, timeout=30)
+        for type_gid in categories:
+            log.info("Collecting item type GID=%d...", type_gid)
+            records = collector.collect_type(type_gid, timeout=30)
             total_records += len(records)
             log.info("  → %d records", len(records))
             human_delay(2.0, 5.0)

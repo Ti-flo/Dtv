@@ -119,6 +119,9 @@ class DofusTouchSession:
         self._game_server_url: Optional[str] = None
         self._ticket: Optional[str] = None
 
+        # Updated when CurrentMapMessage is received; used for NpcGenericActionRequestMessage
+        self.map_id: int = -1
+
         # Reconnection state
         self._active = False               # False → disconnect() was called, abort reconnects
         self._circuit_breaker = _CircuitBreaker(max_failures=3, window_s=300.0)
@@ -323,6 +326,11 @@ class DofusTouchSession:
             log.info("Game context created — session is ready!")
             self._reconnect_attempt = 0  # reset backoff counter on successful connect
             self._game_ready.set()
+
+        @c.on("CurrentMapMessage")
+        def on_current_map(msg):
+            self.map_id = msg.get("mapId", -1)
+            log.debug("Map updated: mapId=%d", self.map_id)
 
         @c.on("ConnectionFailedMessage")
         def on_conn_failed(msg):

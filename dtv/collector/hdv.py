@@ -1,20 +1,34 @@
 """
 HDV (Hôtel de Vente) price collection.
 
-Sends ExchangePlayerRequestMessage to open an HDV, then collects
-ExchangeTypesItemsExchangerDescriptionForUserMessage responses.
+Confirmed from static analysis of script.js (Dofus Touch 3.11.0).
 
-HDV message flow (confirmed from script.js):
-  Send: ExchangePlayerRequestMessage  → open an HDV NPC
-  Recv: ExchangeStartedWithStorageMessage → HDV opened
-  Recv: ExchangeTypesItemsExchangerDescriptionForUserMessage → item descriptions + prices
-  Send: ExchangeTypeItemsExchangerDescriptionForUserMessage (for each category)
-  Recv: ExchangeTypesItemsExchangerDescriptionForUserMessage (with prices)
-  Send: LeaveDialogRequestMessage → close HDV
+HDV message flow:
+  Send: NpcGenericActionRequestMessage({npcId:0, npcActionId:6, npcMapId:<mapId>})
+  Recv: ExchangeStartedBidBuyerMessage  → HDV open, contains buyerDescriptor.quantities
+  Send: ExchangeBidHouseTypeMessage({type: <item_gid>})   ← one per item type
+  Recv: ExchangeTypesItemsExchangerDescriptionForUserMessage → all current offers
+  Send: LeaveDialogRequestMessage
+  Recv: ExchangeLeaveMessage
 
-CSV output format:
-  timestamp, session, item_id, item_name, hdv_category,
-  prix_x1, prix_x10, prix_x100, prix_x1000, nb_offres, liste_prix, compte_collecteur
+ExchangeTypesItemsExchangerDescriptionForUserMessage format (confirmed script.js):
+  {
+    "itemTypeDescriptions": [
+      {
+        "objectUID":     <int>,           unique offer ID
+        "prices":        [p1, p10, p100], total price for 1 / 10 / 100 units (0 = no offer)
+        "effects":       [...],
+        "tutorialPrice": <bool>
+      }, ...
+    ]
+  }
+
+Note: objectGID is NOT in the server response — it equals the type we requested.
+
+CSV output (one row per item type per session):
+  timestamp, session, item_gid, hdv_type,
+  prix_x1, prix_x10, prix_x100,
+  nb_offres, all_prices_x1, compte_collecteur
 """
 import csv
 import logging
@@ -27,7 +41,6 @@ from .connection import DofusTouchSession
 
 log = logging.getLogger(__name__)
 
-# Sessions are named by time of day (from the project spec)
 SESSION_NAMES = {
     7: "morning",
     12: "noon",
@@ -38,6 +51,10 @@ SESSION_NAMES = {
 
 DATA_DIR = Path(__file__).parent.parent.parent / "data" / "raw"
 
+# Quantity tiers — matches buyerDescriptor.quantities from ExchangeStartedBidBuyerMessage
+# Standard Dofus Touch: [1, 10, 100]
+QUANTITY_TIERS = [1, 10, 100]
+
 
 def _get_session_name() -> str:
     hour = datetime.now().hour
@@ -47,11 +64,13 @@ def _get_session_name() -> str:
 
 class HdvCollector:
     """
-    Collects prices from one HDV category using an active game session.
+    Collects prices from HDV using an active game session.
 
     Usage:
-        collector = HdvCollector(session, account="account1@gmail.com")
-        collector.collect_category(category_id=2)  # 2 = resources
+        collector = HdvCollector(session, account="account@gmail.com")
+        collector.open_hdv()           # sends NpcGenericActionRequestMessage
+        collector.collect_type(12345)  # item type GID
+        collector.close_hdv()
         collector.save_to_csv()
     """
 
@@ -61,48 +80,54 @@ class HdvCollector:
         self._records: list[dict] = []
         self._hdv_ready = threading.Event()
         self._collection_done = threading.Event()
-        self._last_batch_start = 0  # index into _records where last collect_category started
+        self._pending_type_gid: Optional[int] = None
+        self._quantities: list[int] = QUANTITY_TIERS
         self._setup_handlers()
 
     # ------------------------------------------------------------------ #
     # Public API                                                           #
     # ------------------------------------------------------------------ #
 
-    def collect_category(self, category_id: int, timeout: float = 30.0) -> list[dict]:
+    def open_hdv(self, map_id: Optional[int] = None, timeout: float = 15.0) -> bool:
         """
-        Request and collect prices for one HDV category.
+        Open the HDV in buy mode.
 
-        Args:
-            category_id: The item type/category ID in the HDV
-            timeout:     Max seconds to wait for response
-
-        Returns:
-            Only the records collected in THIS call (not previous calls).
-        """
-        self._collection_done.clear()
-        self._last_batch_start = len(self._records)
-        log.info("Requesting HDV category %d", category_id)
-        self._session.send_message(
-            "ExchangeTypeItemsExchangerDescriptionForUserMessage",
-            {"objectType": category_id},
-        )
-        if not self._collection_done.wait(timeout):
-            log.warning("Timeout waiting for category %d", category_id)
-        return list(self._records[self._last_batch_start:])
-
-    def open_hdv(self, npc_id: int = None, timeout: float = 15.0) -> bool:
-        """
-        Send ExchangePlayerRequestMessage to open an HDV.
+        map_id: player's current map ID (from session.map_id).
+                Falls back to session.map_id, then -1 if unknown.
         Returns True if HDV opened within timeout.
-
-        Note: The character must be physically near the HDV NPC on the map.
-        The npc_id must be the actionId of the HDV NPC in the current map.
         """
         self._hdv_ready.clear()
-        # The exact message format needs verification from game traffic
-        payload = {"npcId": npc_id} if npc_id else {}
-        self._session.send_message("ExchangePlayerRequestMessage", payload)
+        npc_map_id = map_id if map_id is not None else self._session.map_id
+        log.info("Opening HDV (npcMapId=%d)...", npc_map_id)
+        self._session.send_message("NpcGenericActionRequestMessage", {
+            "npcId": 0,
+            "npcActionId": 6,       # 6 = buy mode, confirmed openBidHouse() script.js
+            "npcMapId": npc_map_id,
+        })
         return self._hdv_ready.wait(timeout)
+
+    def collect_type(self, type_gid: int, timeout: float = 30.0) -> list[dict]:
+        """
+        Request and collect all current offers for one item type GID.
+
+        Args:
+            type_gid: The generic item type ID in the HDV.
+            timeout:  Max seconds to wait for the server response.
+
+        Returns:
+            Records collected for this type only.
+        """
+        self._collection_done.clear()
+        self._pending_type_gid = type_gid
+        batch_start = len(self._records)
+
+        log.info("Requesting offers for item type GID=%d", type_gid)
+        self._session.send_message("ExchangeBidHouseTypeMessage", {"type": type_gid})
+
+        if not self._collection_done.wait(timeout):
+            log.warning("Timeout waiting for type GID=%d", type_gid)
+
+        return list(self._records[batch_start:])
 
     def close_hdv(self):
         """Send LeaveDialogRequestMessage to close the HDV."""
@@ -118,9 +143,9 @@ class HdvCollector:
         path = out_dir / f"hdv_{session_name}_{timestamp}.csv"
 
         fieldnames = [
-            "timestamp", "session", "item_id", "item_name", "hdv_category",
-            "prix_x1", "prix_x10", "prix_x100", "prix_x1000",
-            "nb_offres", "liste_prix", "compte_collecteur",
+            "timestamp", "session", "item_gid", "hdv_type",
+            "prix_x1", "prix_x10", "prix_x100",
+            "nb_offres", "all_prices_x1", "compte_collecteur",
         ]
         with open(path, "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -137,25 +162,30 @@ class HdvCollector:
     def _setup_handlers(self):
         session = self._session
 
-        @session.on("ExchangeStartedWithStorageMessage")
         @session.on("ExchangeStartedBidBuyerMessage")
-        @session.on("ExchangeStartedBidSellerMessage")
         def on_hdv_opened(msg):
-            log.info("HDV opened: %s", msg.get("_messageType"))
+            descriptor = msg.get("buyerDescriptor") or {}
+            quantities = descriptor.get("quantities")
+            if quantities:
+                self._quantities = quantities
+                log.info("HDV opened. Quantity tiers: %s", quantities)
+            else:
+                log.info("HDV opened (no quantities in descriptor, using default %s)",
+                         self._quantities)
             self._hdv_ready.set()
 
         @session.on("ExchangeTypesItemsExchangerDescriptionForUserMessage")
-        def on_item_descriptions(msg):
-            descriptions = msg.get("itemTypeDescriptions", [])
-            log.info("Received %d item descriptions", len(descriptions))
+        def on_offers(msg):
+            offers = msg.get("itemTypeDescriptions", [])
+            type_gid = self._pending_type_gid
+            log.info("Received %d offers for GID=%s", len(offers), type_gid)
 
-            now = datetime.now().isoformat()
-            session_name = _get_session_name()
-
-            for desc in descriptions:
-                record = _parse_item_description(desc, now, session_name, self._account)
-                if record:
-                    self._records.append(record)
+            if type_gid is not None:
+                record = _aggregate_offers(
+                    offers, type_gid, self._quantities,
+                    datetime.now().isoformat(), _get_session_name(), self._account,
+                )
+                self._records.append(record)
 
             self._collection_done.set()
 
@@ -164,43 +194,45 @@ class HdvCollector:
             log.info("HDV closed")
 
 
-def _parse_item_description(desc: dict, timestamp: str, session: str, account: str) -> Optional[dict]:
+def _aggregate_offers(
+    offers: list[dict],
+    type_gid: int,
+    quantities: list[int],
+    timestamp: str,
+    session: str,
+    account: str,
+) -> dict:
     """
-    Parse one item description from ExchangeTypesItemsExchangerDescriptionForUserMessage
-    into a CSV row.
+    Aggregate all offers for one item type into a single CSV row.
 
-    The exact field names need verification from live traffic capture.
-    Field names are based on script.js analysis + Dofus 2 protocol docs.
+    Each offer: { objectUID, prices: [p_qty0, p_qty1, p_qty2], effects, tutorialPrice }
+    prices[i] = total price for quantities[i] units. 0 means no offer at that tier.
     """
-    item_id = desc.get("objectGID") or desc.get("itemId") or desc.get("id")
-    if not item_id:
-        log.warning("Item description without ID: %s", list(desc.keys()))
-        return None
+    min_prices = [0] * len(quantities)
+    all_x1: list[int] = []
 
-    # Prices by quantity — field names TBC from live capture
-    # Dofus protocol typically has prices as a list [price_x1, price_x10, price_x100]
-    # Copy before padding to avoid mutating the original dict data
-    prices = list(desc.get("prices", []) or desc.get("price", []))
-    while len(prices) < 4:
-        prices.append(0)
+    for offer in offers:
+        prices = offer.get("prices", [])
+        for i, qty in enumerate(quantities):
+            p = prices[i] if i < len(prices) else 0
+            if p > 0:
+                if min_prices[i] == 0 or p < min_prices[i]:
+                    min_prices[i] = p
+                if qty == 1:
+                    all_x1.append(p)
 
-    # Individual prices list (to detect purchases between sessions)
-    all_prices = desc.get("typeDescription", {}).get("prices", []) or prices
-    liste_prix = "|".join(str(p) for p in all_prices if p > 0)
-
-    nb_offres = desc.get("nbItems") or desc.get("quantity") or len(all_prices)
+    while len(min_prices) < 3:
+        min_prices.append(0)
 
     return {
         "timestamp": timestamp,
         "session": session,
-        "item_id": item_id,
-        "item_name": desc.get("objectName") or desc.get("name") or "",
-        "hdv_category": desc.get("objectType") or desc.get("categoryId") or "",
-        "prix_x1": prices[0],
-        "prix_x10": prices[1],
-        "prix_x100": prices[2],
-        "prix_x1000": prices[3],
-        "nb_offres": nb_offres,
-        "liste_prix": liste_prix,
+        "item_gid": type_gid,
+        "hdv_type": type_gid,
+        "prix_x1": min_prices[0],
+        "prix_x10": min_prices[1],
+        "prix_x100": min_prices[2],
+        "nb_offres": len(offers),
+        "all_prices_x1": "|".join(str(p) for p in sorted(all_x1)),
         "compte_collecteur": account,
     }
