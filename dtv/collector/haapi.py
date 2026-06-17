@@ -7,9 +7,10 @@ The game_token is then sent to the game server via AuthenticationTicketMessage.
 Confirmed from mitmproxy capture:
   - Host: haapi.ankama.com
   - GAME_ID = 18 (Dofus Touch)
-  - Cloudflare is active → Android headers required
+  - Cloudflare is active → curl_cffi with chrome_android impersonation required
+    (standard Python requests has a different JA3/JA4 fingerprint and gets blocked)
 """
-import requests
+from curl_cffi import requests
 
 HAAPI_BASE = "https://haapi.ankama.com/json"
 GAME_ID = 18
@@ -48,7 +49,7 @@ def create_api_key(login: str, password: str) -> dict:
         "long_life_token": False,
         "game": GAME_ID,
     }
-    resp = requests.post(url, json=payload, headers=_HEADERS, timeout=30)
+    resp = requests.post(url, json=payload, headers=_HEADERS, impersonate="chrome_android", timeout=30)
     resp.raise_for_status()
     return resp.json()
 
@@ -62,7 +63,7 @@ def create_token(api_key: str) -> str:
     """
     url = f"{HAAPI_BASE}/Ankama/v5/Game/CreateToken"
     headers = {**_HEADERS, "apikey": api_key}
-    resp = requests.get(url, params={"game": GAME_ID}, headers=headers, timeout=30)
+    resp = requests.get(url, params={"game": GAME_ID}, headers=headers, impersonate="chrome_android", timeout=30)
     resp.raise_for_status()
     return resp.json()["token"]
 

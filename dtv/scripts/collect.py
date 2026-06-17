@@ -24,7 +24,6 @@ import argparse
 import logging
 import os
 import sys
-import time
 from pathlib import Path
 
 logging.basicConfig(
@@ -42,6 +41,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from dtv.collector.haapi import get_game_token
 from dtv.collector.connection import DofusTouchSession
 from dtv.collector.hdv import HdvCollector
+from dtv.collector.timing import human_delay
 
 # HDV categories to collect by default
 # These are item type IDs — the full list will be discovered from live data
@@ -51,9 +51,6 @@ DEFAULT_CATEGORIES = [
     6,    # Equipment
     36,   # Consumables
 ]
-
-# Delay between category requests (avoid looking like a bot)
-INTER_CATEGORY_DELAY_S = 2.0
 
 
 def main():
@@ -119,7 +116,7 @@ def main():
             records = collector.collect_category(cat_id, timeout=30)
             total_records += len(records)
             log.info("  → %d records", len(records))
-            time.sleep(INTER_CATEGORY_DELAY_S)
+            human_delay(2.0, 5.0)
 
         # 5. Close HDV
         collector.close_hdv()

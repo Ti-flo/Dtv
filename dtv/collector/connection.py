@@ -18,7 +18,7 @@ import logging
 import threading
 from typing import Optional
 
-import requests
+from curl_cffi import requests
 
 from .primus_client import PrimusClient
 
@@ -39,7 +39,7 @@ def _get_config(server_url: str, lang: str = "fr") -> dict:
     Called before auth — no credentials needed.
     """
     url = f"{server_url}/config.json"
-    resp = requests.get(url, params={"lang": lang}, timeout=15)
+    resp = requests.get(url, params={"lang": lang}, impersonate="chrome_android", timeout=15)
     resp.raise_for_status()
     return resp.json()
 
