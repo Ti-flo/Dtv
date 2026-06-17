@@ -142,13 +142,15 @@ class HdvCollector:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         path = out_dir / f"hdv_{session_name}_{timestamp}.csv"
 
-        fieldnames = [
-            "timestamp", "session", "item_gid", "hdv_type",
-            "prix_x1", "prix_x10", "prix_x100",
-            "nb_offres", "all_prices_x1", "compte_collecteur",
-        ]
+        # Price columns are dynamic: one per quantity tier (e.g. x1/x10/x100 or x1/x10/x100/x1000)
+        price_cols = [f"prix_x{q}" for q in self._quantities]
+        fieldnames = (
+            ["timestamp", "session", "item_gid", "hdv_type"]
+            + price_cols
+            + ["nb_offres", "all_prices_x1", "compte_collecteur"]
+        )
         with open(path, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
             writer.writeheader()
             writer.writerows(self._records)
 
@@ -208,7 +210,7 @@ def _aggregate_offers(
     Each offer: { objectUID, prices: [p_qty0, p_qty1, p_qty2], effects, tutorialPrice }
     prices[i] = total price for quantities[i] units. 0 means no offer at that tier.
     """
-    min_prices = [0] * len(quantities)
+    min_prices: dict[int, int] = {qty: 0 for qty in quantities}
     all_x1: list[int] = []
 
     for offer in offers:
@@ -216,23 +218,20 @@ def _aggregate_offers(
         for i, qty in enumerate(quantities):
             p = prices[i] if i < len(prices) else 0
             if p > 0:
-                if min_prices[i] == 0 or p < min_prices[i]:
-                    min_prices[i] = p
+                if min_prices[qty] == 0 or p < min_prices[qty]:
+                    min_prices[qty] = p
                 if qty == 1:
                     all_x1.append(p)
 
-    while len(min_prices) < 3:
-        min_prices.append(0)
-
-    return {
+    row: dict = {
         "timestamp": timestamp,
         "session": session,
         "item_gid": type_gid,
         "hdv_type": type_gid,
-        "prix_x1": min_prices[0],
-        "prix_x10": min_prices[1],
-        "prix_x100": min_prices[2],
         "nb_offres": len(offers),
         "all_prices_x1": "|".join(str(p) for p in sorted(all_x1)),
         "compte_collecteur": account,
     }
+    for qty, price in min_prices.items():
+        row[f"prix_x{qty}"] = price
+    return row
