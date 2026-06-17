@@ -16,7 +16,6 @@ Architecture confirmed from script.js + PCAPdroid captures:
 """
 import logging
 import threading
-import time
 from typing import Optional
 
 import requests
@@ -75,6 +74,7 @@ class DofusTouchSession:
         self._login_client: Optional[PrimusClient] = None
         self._game_client: Optional[PrimusClient] = None
         self._game_ready = threading.Event()
+        self._error: Optional[str] = None
         self._message_handlers: dict = {}
 
         # State built up during the login flow
@@ -119,8 +119,12 @@ class DofusTouchSession:
         """
         Block until the game is fully loaded and character is in-game.
         Returns True if ready within timeout, False otherwise.
+        Raises RuntimeError immediately if authentication was refused.
         """
-        return self._game_ready.wait(timeout)
+        ready = self._game_ready.wait(timeout)
+        if not ready and self._error:
+            raise RuntimeError(f"Connection failed: {self._error}")
+        return ready
 
     def disconnect(self):
         """Close all connections."""
@@ -192,7 +196,10 @@ class DofusTouchSession:
         @c.on("IdentificationFailedBannedMessage")
         @c.on("IdentificationFailedForBadVersionMessage")
         def on_ident_failed(msg):
-            log.error("Identification failed: %s", msg)
+            reason = msg.get("reason") or msg.get("_messageType", "unknown")
+            log.error("Identification failed: %s", reason)
+            self._error = reason
+            self._game_ready.set()  # unblock wait_for_game() immediately
 
     def _build_identification_data(self) -> dict:
         return {
@@ -245,18 +252,20 @@ class DofusTouchSession:
 
             if not chars:
                 log.error("No characters on this server")
+                self._error = "No characters on server"
+                self._game_ready.set()
                 return
 
             if self.character_id:
-                char = next((c for c in chars if c.get("id") == self.character_id), None)
-                if not char:
+                selected = next((ch for ch in chars if ch.get("id") == self.character_id), None)
+                if not selected:
                     log.warning("Character id=%d not found, using first", self.character_id)
-                    char = chars[0]
+                    selected = chars[0]
             else:
-                char = chars[0]
+                selected = chars[0]
 
-            log.info("Selecting character: %s (id=%s)", char.get("name"), char.get("id"))
-            c.send_message("CharacterSelectionMessage", {"id": char["id"]})
+            log.info("Selecting character: %s (id=%s)", selected.get("name"), selected.get("id"))
+            c.send_message("CharacterSelectionMessage", {"id": selected["id"]})
 
         @c.on("CharacterSelectedSuccessMessage")
         def on_char_selected(msg):

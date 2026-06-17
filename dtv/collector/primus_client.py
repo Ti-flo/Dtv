@@ -15,7 +15,6 @@ Primus heartbeat (must respond or server disconnects after ~30s):
 import json
 import logging
 import threading
-import time
 from typing import Callable, Optional
 
 import websocket
@@ -46,6 +45,7 @@ class PrimusClient:
         self._ws: Optional[websocket.WebSocketApp] = None
         self._thread: Optional[threading.Thread] = None
         self._handlers: dict[str, list[Callable]] = {}
+        self._handlers_lock = threading.Lock()
         self._closed = threading.Event()
         self._connected = threading.Event()
 
@@ -56,13 +56,15 @@ class PrimusClient:
     def on(self, message_type: str):
         """Decorator to register a handler for a specific message type."""
         def decorator(fn: Callable):
-            self._handlers.setdefault(message_type, []).append(fn)
+            with self._handlers_lock:
+                self._handlers.setdefault(message_type, []).append(fn)
             return fn
         return decorator
 
     def on_raw(self, fn: Callable):
         """Register a catch-all handler called for every decoded message."""
-        self._handlers.setdefault("*", []).append(fn)
+        with self._handlers_lock:
+            self._handlers.setdefault("*", []).append(fn)
         return fn
 
     def connect(self, wait: bool = False, timeout: float = 15.0):
@@ -133,9 +135,12 @@ class PrimusClient:
 
     def _write(self, call: str, data=None):
         if not self._ws:
-            raise RuntimeError("Not connected")
+            raise RuntimeError("Not connected — call connect() first")
         payload = json.dumps({"call": call, "data": data})
-        self._ws.send(payload)
+        try:
+            self._ws.send(payload)
+        except websocket.WebSocketConnectionClosedException:
+            raise RuntimeError(f"Cannot send '{call}': WebSocket is already closed")
         log.debug("→ %s", call)
 
     def _on_open(self, ws):
@@ -173,7 +178,9 @@ class PrimusClient:
         self._dispatch(msg_type, msg)
 
     def _dispatch(self, msg_type: str, msg: dict):
-        for handler in self._handlers.get(msg_type, []):
+        with self._handlers_lock:
+            handlers = list(self._handlers.get(msg_type, []))
+        for handler in handlers:
             try:
                 handler(msg)
             except Exception:

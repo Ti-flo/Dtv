@@ -18,9 +18,7 @@ CSV output format:
 """
 import csv
 import logging
-import os
 import threading
-import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -37,12 +35,6 @@ SESSION_NAMES = {
     22: "night",
     2: "late_night",
 }
-
-# Known HDV NPC exchange types (TODO: verify exact IDs from game data)
-# These are the NPC IDs for the different HDV in Astrub / Bonta etc.
-# The player must be physically near the NPC — this is the main constraint
-# for a headless client (needs valid map position near an HDV).
-HDV_EXCHANGE_TYPE = 1  # Generic item HDV
 
 DATA_DIR = Path(__file__).parent.parent.parent / "data" / "raw"
 
@@ -69,7 +61,7 @@ class HdvCollector:
         self._records: list[dict] = []
         self._hdv_ready = threading.Event()
         self._collection_done = threading.Event()
-        self._pending_categories: list[int] = []
+        self._last_batch_start = 0  # index into _records where last collect_category started
         self._setup_handlers()
 
     # ------------------------------------------------------------------ #
@@ -85,9 +77,10 @@ class HdvCollector:
             timeout:     Max seconds to wait for response
 
         Returns:
-            List of price records collected
+            Only the records collected in THIS call (not previous calls).
         """
         self._collection_done.clear()
+        self._last_batch_start = len(self._records)
         log.info("Requesting HDV category %d", category_id)
         self._session.send_message(
             "ExchangeTypeItemsExchangerDescriptionForUserMessage",
@@ -95,7 +88,7 @@ class HdvCollector:
         )
         if not self._collection_done.wait(timeout):
             log.warning("Timeout waiting for category %d", category_id)
-        return list(self._records)
+        return list(self._records[self._last_batch_start:])
 
     def open_hdv(self, npc_id: int = None, timeout: float = 15.0) -> bool:
         """
@@ -186,7 +179,8 @@ def _parse_item_description(desc: dict, timestamp: str, session: str, account: s
 
     # Prices by quantity — field names TBC from live capture
     # Dofus protocol typically has prices as a list [price_x1, price_x10, price_x100]
-    prices = desc.get("prices", []) or desc.get("price", [])
+    # Copy before padding to avoid mutating the original dict data
+    prices = list(desc.get("prices", []) or desc.get("price", []))
     while len(prices) < 4:
         prices.append(0)
 
