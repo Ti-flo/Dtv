@@ -62,6 +62,10 @@ class PrimusClient:
         self._thread: Optional[threading.Thread] = None
         self._handlers: dict[str, list[Callable]] = {}
         self._handlers_lock = threading.Lock()
+        # Serialises socket writes: pongs are sent from the receive thread while
+        # send_message() may be called from the main/collector thread. Concurrent
+        # websocket-client sends can interleave frames and corrupt the stream.
+        self._send_lock = threading.Lock()
         self._closed = threading.Event()
         self._connected = threading.Event()
         # Disconnect reason tracking — reset on each connect()
@@ -168,7 +172,8 @@ class PrimusClient:
             raise RuntimeError("Not connected — call connect() first")
         payload = json.dumps({"call": call, "data": data})
         try:
-            self._ws.send(payload)
+            with self._send_lock:
+                self._ws.send(payload)
         except websocket.WebSocketConnectionClosedException:
             raise RuntimeError(f"Cannot send '{call}': WebSocket is already closed")
         log.debug("→ %s", call)
@@ -213,7 +218,8 @@ class PrimusClient:
         # Primus heartbeat — respond immediately and track time for watchdog
         if isinstance(raw, str) and raw.startswith("primus::ping::"):
             ts = raw.split("::", 2)[2]
-            ws.send(f"primus::pong::{ts}")
+            with self._send_lock:
+                ws.send(f"primus::pong::{ts}")
             self._last_ping_at = time.time()
             log.debug("↔ heartbeat pong %s", ts)
             return

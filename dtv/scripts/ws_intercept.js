@@ -26,9 +26,12 @@
 
     // Save native fetch NOW before Shield can replace it
     var _fetch = (typeof fetch !== 'undefined') ? fetch.bind(window) : null;
+    var _seq = 0;
 
-    function emit(dir, data) {
-        var entry = JSON.stringify({ t: dir, ts: Date.now(), d: data });
+    function emit(dir, data, extra) {
+        var rec = { t: dir, ts: Date.now(), d: data };
+        if (extra) { for (var k in extra) rec[k] = extra[k]; }
+        var entry = JSON.stringify(rec);
         if (MODE === 'fetch' && _fetch) {
             _fetch(FETCH_HOST + '/log', {
                 method: 'POST',
@@ -36,11 +39,24 @@
                 body: entry
             }).catch(function () {});
         } else {
-            // Split to avoid logcat line truncation
-            for (var i = 0; i < entry.length; i += CHUNK) {
-                console.log(TAG + entry.slice(i, i + CHUNK));
+            // logcat truncates long lines, so split into ordered, reassemblable
+            // chunks: "[DTV]<seq>/<part>/<total> <payload>"
+            var id = ++_seq;
+            var total = Math.ceil(entry.length / CHUNK) || 1;
+            for (var i = 0; i < total; i++) {
+                console.log(TAG + id + '/' + (i + 1) + '/' + total + ' ' +
+                            entry.slice(i * CHUNK, (i + 1) * CHUNK));
             }
         }
+    }
+
+    // WebSocket can carry binary frames (ArrayBuffer/Blob). We can't usefully
+    // serialise the bytes here, but we MUST record that they happened — otherwise
+    // we'd wrongly conclude "JSON text only" and miss part of the protocol.
+    function describeBinary(d) {
+        if (d && typeof d.byteLength === 'number') return '<ArrayBuffer ' + d.byteLength + 'B>';
+        if (d && typeof d.size === 'number') return '<Blob ' + d.size + 'B>';
+        return '<binary>';
     }
 
     Object.defineProperty(window, 'WebSocket', {
@@ -55,10 +71,12 @@
                 var _send = ws.send.bind(ws);
                 ws.send = function (d) {
                     if (typeof d === 'string') emit('out', d);
+                    else emit('out', describeBinary(d), { bin: true });
                     return _send(d);
                 };
                 ws.addEventListener('message', function (e) {
                     if (typeof e.data === 'string') emit('in', e.data);
+                    else emit('in', describeBinary(e.data), { bin: true });
                 });
                 return ws;
             }

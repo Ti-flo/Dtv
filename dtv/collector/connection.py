@@ -167,7 +167,10 @@ class DofusTouchSession:
         Raises RuntimeError immediately if authentication was refused.
         """
         ready = self._game_ready.wait(timeout)
-        if not ready and self._error:
+        # _game_ready is set on BOTH success and failure (failures set it to
+        # unblock this wait immediately). So the event being set does NOT mean
+        # success — we must check _error independently of `ready`.
+        if self._error:
             raise RuntimeError(f"Connection failed: {self._error}")
         return ready
 

@@ -7,12 +7,25 @@ WebSocket messages are logged (logcat or local HTTP server).
 The game loads script.js from:
   /data/data/com.ankama.dofustouch/files/files/js/build/script.js
 
-Requires `adb root` access (AVD with Android Studio, or BlueStacks with Magisk root).
+Requires root-level adb. AVD (Android Studio) is the target: `adb root` makes
+adbd run as root so pull/push to app-private storage works directly.
+NOTE: on BlueStacks adbd is NOT root — pull/push to /data/data/... will fail
+with permission denied; you'd need a `su -c "cp ..."` staging dance instead.
+Use AVD for patching.
 
 Usage:
     python -m dtv.scripts.patch_scriptjs            # apply patch
     python -m dtv.scripts.patch_scriptjs --restore  # restore original
-    python -m dtv.scripts.patch_scriptjs --check    # show first 5 lines on device
+    python -m dtv.scripts.patch_scriptjs --check    # show current state on device
+
+BEFORE patching, try the zero-modification path — if the WebView is debuggable,
+you don't need to touch script.js at all (defeats native-hash AND re-download
+risks). Probe it:
+    adb shell cat /proc/net/unix | grep -a devtools
+If you see a "@webview_devtools_remote_<pid>" socket, open chrome://inspect on
+the host, click "inspect", and paste the ws_intercept.js IIFE into the console
+of the page BEFORE login. Release builds usually disable this, so this script
+is the fallback.
 
 Detection notes:
     - The Proxy-based interceptor keeps WebSocket.prototype/.name/.toString() intact.
@@ -66,8 +79,12 @@ def pull_device(device_path: str, local_path: Path):
 def push_to_device(local_path: Path, device_path: str):
     print(f"Pushing {local_path} → {device_path}")
     adb("push", str(local_path), device_path)
-    # Fix permissions (the app needs to read this file)
+    # Permissions: world-readable so the app's uid can read a root-owned file
     adb("shell", "chmod", "644", device_path)
+    # SELinux: an adb-pushed file keeps the shell's context, not app_data_file.
+    # Under enforcing SELinux the app can't read it → silent failure that looks
+    # like a native integrity check. restorecon relabels it to the dir's context.
+    adb("shell", "restorecon", device_path, check=False)
 
 
 def device_first_line() -> str:
@@ -109,13 +126,23 @@ def apply_patch():
     push_to_device(tmp, DEVICE_PATH)
     tmp.unlink()
 
-    print("\nPatch applied.")
+    # Verify the patch actually landed on the device
+    if SENTINEL not in device_first_line():
+        print("\nWARNING: sentinel not found after push — patch may not have taken.")
+        print("Check adb root access and the device path.")
+        return
+
+    print("\nPatch applied and verified on device.")
     print("Now:")
-    print("  1. Stop the game if running: adb shell am force-stop com.ankama.dofustouch")
-    print("  2. Start the game")
-    print("  3a. Logcat mode:  adb logcat | grep '\\[DTV\\]'")
-    print("  3b. Fetch mode:   python -m dtv.scripts.ws_capture_server")
-    print(f"  4. Restore when done: python -m dtv.scripts.patch_scriptjs --restore")
+    print("  1. Start the game.")
+    print("  2a. Logcat mode:  adb logcat | grep '\\[DTV\\]'")
+    print("  2b. Fetch mode:   python -m dtv.scripts.ws_capture_server")
+    print("  3. Restore when done: python -m dtv.scripts.patch_scriptjs --restore")
+    print("\nIMPORTANT: the game may re-download script.js on launch and clobber")
+    print("the patch. If you see no [DTV] lines, the file was overwritten — run")
+    print("--check; if it shows ORIGINAL, the app re-fetched it. Workaround: launch")
+    print("once to let it finish updating, force-stop, patch, then launch offline")
+    print("(airplane mode on, or block dofustouch.cdn.ankama.com).")
 
 
 def restore():
