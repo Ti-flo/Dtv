@@ -285,22 +285,74 @@ Ankama bloque Protonmail à l'inscription
 
 ---
 
+## 🚦 État actuel du projet (pour reprise de session)
+
+### Ce qui est codé et prêt à tester
+
+| Fichier | État | Notes |
+|---|---|---|
+| `dtv/collector/haapi.py` | ✅ Prêt | curl_cffi + chrome_android impersonation |
+| `dtv/collector/primus_client.py` | ✅ Prêt | DisconnectReason, heartbeat watchdog, circuit breaker |
+| `dtv/collector/connection.py` | ✅ Prêt | Login flow complet, reconnexion auto, map_id tracking |
+| `dtv/collector/hdv.py` | ✅ Prêt | Messages corrigés depuis script.js, prix dynamiques |
+| `dtv/collector/timing.py` | ✅ Prêt | human_delay, jitter, backoff_delay |
+| `dtv/scripts/test_auth.py` | ✅ Prêt | Test HAAPI isolé |
+| `dtv/scripts/test_connect.py` | ✅ Prêt | Test WebSocket connectivité |
+| `dtv/scripts/test_login.py` | ✅ Prêt | Test login flow complet |
+| `dtv/scripts/collect.py` | ✅ Prêt | Pipeline collecte production |
+
+### Prochaine étape immédiate : premier test live
+
+```
+# 1. Installer les dépendances
+pip install -r requirements.txt
+
+# 2. Tester l'auth HAAPI (compte jetable, IP résidentielle, PAS de VPN)
+set DTV_LOGIN=compte_jetable@gmail.com
+set DTV_PASSWORD=motdepasse
+python -m dtv.scripts.test_auth
+
+# 3. Si auth OK → tester la connexion WebSocket
+python -m dtv.scripts.test_connect
+
+# 4. Si WebSocket OK → tester le login complet
+set DTV_SERVER_ID=<id_serveur>   # découvert à l'étape 3 via ServersListMessage
+python -m dtv.scripts.test_login
+
+# 5. Si login OK → tester la collecte HDV
+python -m dtv.scripts.collect
+```
+
+### Ce qu'on apprendra au premier test live
+
+- Le vrai chemin Primus (`/primus` est supposé — peut être `/` ou autre)
+- Les IDs de serveurs Dofus Touch (dans `ServersListMessage`)
+- Si `npcMapId: -1` fonctionne pour ouvrir l'HDV ou si le vrai mapId est requis
+- Les vrais tiers de quantités (`buyerDescriptor.quantities` → `[1,10,100]` ou `[1,10,100,1000]`)
+- La structure exacte de `SelectedServerDataMessage`
+
+### Ce qui reste à investiguer (non bloquant pour le premier test)
+
+- Fingerprint TLS du WebSocket : `websocket-client` a un JA3 différent d'Android. Migrer vers `curl_cffi.requests.ws_connect` si des bans surviennent sans autre cause.
+- Logstash/Firebase télémétrie : absence non simulée. Risque faible à court terme.
+- Frida sur AVD : Ankama Shield détecte frida-server. Pistes : renommer le binaire, le mettre hors de `/data/local/tmp/`, ou hooker la WebSocket au niveau JS (plus discret sur Cordova).
+
+---
+
 ## 📋 TODO / Inconnues à résoudre
 
 - [ ] Confirmer le chemin exact du WebSocket Primus (`/primus` ?)
-  → Fetch `https://dt-proxy-production-login.ankama-games.com/build/primus.js`
-- [ ] Confirmer le format exact de `ExchangeTypesItemsExchangerDescriptionForUserMessage`
-  → Capturer une session HDV avec Frida (hook WebSocket après décryptage TLS)
-- [ ] Trouver les IDs exacts des catégories HDV
-  → Observer les messages envoyés lors de navigation HDV dans le client officiel
-- [ ] Confirmer le format de `SelectedServerDataMessage`
-  → Contient-il une URL complète ou juste un host/port ?
-- [ ] Tester si l'absence de Logstash/Firebase est détectée
-  → Observer le comportement sur plusieurs jours avec notre client Python
-- [ ] Déterminer si le fingerprint TLS du WebSocket est vérifié
-  → Tester avec websocket-client standard vs curl_cffi
+  → `test_connect.py` le révélera au premier run
 - [ ] Trouver les IDs de serveurs Dofus Touch
-  → Observer `ServersListMessage` lors d'une connexion
+  → `ServersListMessage` loggé automatiquement dans `test_login.py`
+- [ ] Confirmer `npcMapId` pour l'ouverture HDV (-1 suffit ?)
+  → `test_login.py` + collecte manuelle
+- [ ] Confirmer le format de `SelectedServerDataMessage` (URL complète ou host/port ?)
+  → `test_login.py` logge le message brut
+- [ ] Vérifier les tiers de quantités réels (`[1,10,100]` ou `[1,10,100,1000]`)
+  → `ExchangeStartedBidBuyerMessage.buyerDescriptor.quantities` loggé à l'ouverture HDV
+- [ ] Tester si l'absence de Logstash/Firebase est détectée sur plusieurs jours
+- [ ] Fingerprint TLS WebSocket — tester curl_cffi ws_connect si bans inexpliqués
 
 ---
 
@@ -317,3 +369,16 @@ Ankama bloque Protonmail à l'inscription
 - Confirmation protocole JSON Primus depuis script.js
 - Code de base écrit et pushé sur Ti-flo/Dtv
 - Analyse ban du compte #1 (WireGuard + PCAPdroid + mitmproxy simultanément)
+
+### Session 3 (analyse + corrections protocole)
+- Analyse statique de `script.js` → protocole HDV entièrement corrigé
+  - `NpcGenericActionRequestMessage` (pas `ExchangePlayerRequestMessage`) pour ouvrir l'HDV
+  - `ExchangeBidHouseTypeMessage` (pas `ExchangeTypeItemsExchangerDescriptionForUserMessage`) pour demander les prix
+  - Champs réponse : `objectUID`, `prices:[p1,p10,p100]`, `effects`, `tutorialPrice`
+  - `objectGID` absent de la réponse serveur (déduit par le client)
+  - L'HDV est accessible depuis n'importe où (pas besoin d'être près d'un PNJ)
+  - Quantités dynamiques depuis `buyerDescriptor.quantities` (x1000 possible)
+- curl_cffi + chrome_android pour fingerprint TLS HAAPI
+- Reconnexion avec circuit breaker (4 cas : CLIENT/SERVER/PING_TIMEOUT/TCP_DROP)
+- Timing utilities (human_delay, backoff_delay avec jitter)
+- KNOWLEDGE.md créé et maintenu
