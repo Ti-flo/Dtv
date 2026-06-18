@@ -16,8 +16,8 @@ Usage:
 
 IMPORTANT:
     - Use throwaway accounts only
-    - The character must be near an HDV NPC in the game
-    - Residential IP recommended (no VPN datacenter)
+    - HDV is accessible from anywhere (no need to be near an NPC)
+    - Residential IP mandatory (no VPN datacenter)
     - Max 4 accounts per IP/server
 """
 import argparse
@@ -37,6 +37,12 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
 from dtv.collector.haapi import get_game_token
 from dtv.collector.connection import DofusTouchSession
@@ -101,13 +107,10 @@ def main():
             sys.exit(1)
         log.info("Game ready!")
 
-        # 3. Open HDV
-        # TODO: The character needs to be positioned near an HDV NPC.
-        # For now we try to open without specifying NPC ID.
-        # In a real scenario we'd navigate to the HDV map first.
+        # 3. Open HDV (accessible from anywhere, confirmed from script.js openBidHouse())
         log.info("Opening HDV...")
         if not collector.open_hdv(timeout=15):
-            log.warning("HDV open timeout — maybe not near an HDV NPC?")
+            log.warning("HDV open timeout — check if npcMapId is correct")
 
         # 4. Collect each item type
         total_records = 0

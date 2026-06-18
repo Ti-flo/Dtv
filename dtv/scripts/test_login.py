@@ -24,6 +24,12 @@ log = logging.getLogger(__name__)
 
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent.parent.parent))
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 from dtv.collector.haapi import get_game_token
 from dtv.collector.connection import DofusTouchSession
 

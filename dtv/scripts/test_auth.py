@@ -19,8 +19,13 @@ import sys
 logging.basicConfig(level=logging.DEBUG, format="%(asctime)s %(levelname)s %(name)s — %(message)s")
 log = logging.getLogger(__name__)
 
-# Allow running from repo root without installing
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent.parent.parent))
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
 from dtv.collector.haapi import create_api_key, create_token, GAME_ID
 
