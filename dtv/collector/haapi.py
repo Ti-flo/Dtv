@@ -56,25 +56,41 @@ def create_api_key(login: str, password: str) -> dict:
 
 def create_token(api_key: str) -> str:
     """
-    GET with api_key header → game token string.
+    GET with api_key header → game token (UUID string).
 
-    The token is a short-lived JWT passed to the game server as the
-    "ticket" field in AuthenticationTicketMessage.
+    The token is passed to the LOGIN server in the "login" Primus call (NOT to
+    the game server — the game server gets a separate ticket from
+    SelectedServerDataMessage).
+
+    Endpoint: live capture (HAR, session 4) shows /Account/CreateToken?game=18,
+    not /Game/CreateToken. If one 404s, try the other.
     """
-    url = f"{HAAPI_BASE}/Ankama/v5/Game/CreateToken"
+    url = f"{HAAPI_BASE}/Ankama/v5/Account/CreateToken"
     headers = {**_HEADERS, "apikey": api_key}
     resp = requests.get(url, params={"game": GAME_ID}, headers=headers, impersonate="chrome_android", timeout=30)
     resp.raise_for_status()
     return resp.json()["token"]
 
 
-def get_game_token(login: str, password: str) -> str:
+def authenticate(login: str, password: str) -> tuple[str, str]:
     """
-    Full auth flow: credentials → game token ready for the WebSocket server.
+    Full auth flow → (account_id, game_token).
+
+    account_id is sent as the "username" field in the login Primus call
+    (confirmed live: username == account_id as a string).
+    game_token is the UUID token sent alongside it.
 
     Usage:
-        token = get_game_token("email@gmail.com", "password")
+        account_id, token = authenticate("email@gmail.com", "password")
     """
     api_data = create_api_key(login, password)
     api_key = api_data["key"]
-    return create_token(api_key)
+    account_id = str(api_data["account_id"])
+    token = create_token(api_key)
+    return account_id, token
+
+
+def get_game_token(login: str, password: str) -> str:
+    """Backwards-compatible helper — returns only the token."""
+    _, token = authenticate(login, password)
+    return token

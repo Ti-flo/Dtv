@@ -37,9 +37,26 @@ log = logging.getLogger(__name__)
 # Default login server (from script.js: window.appInfo.server fallback)
 LOGIN_SERVER = "https://dt-proxy-production-login.ankama-games.com"
 
-# Primus endpoint path — TODO: verify by fetching /build/primus.js
-# Standard Primus default is /primus; some servers use root or custom path
+# Primus endpoint path — ✅ confirmed live (session 4 HAR): /primus
 PRIMUS_PATH = "/primus"
+
+# Client identity sent in the "connecting" call — confirmed live
+APP_VERSION = "3.11.0"
+BUILD_VERSION = "1.72.11"
+CLIENT = "android"
+
+
+def _primus_query() -> str:
+    """
+    Primus appends a sticky-session id (STICKER) and a callback id (_primuscb)
+    to the WS URL. Confirmed live but origin is client-side. We generate
+    plausible values; if the server rejects them, try connecting without.
+    """
+    import random
+    import string
+    sticker = "".join(random.choices(string.ascii_letters + string.digits, k=15))
+    cb = "".join(random.choices(string.ascii_letters + string.digits, k=7))
+    return f"?STICKER={sticker}&_primuscb={cb}"
 
 
 def _get_config(server_url: str, lang: str = "fr") -> dict:
@@ -86,7 +103,8 @@ class DofusTouchSession:
     Manages a full Dofus Touch session from auth to in-game, with reconnection.
 
     Usage:
-        session = DofusTouchSession(game_token="...", server_id=401, character_id=123)
+        account_id, token = authenticate("mail@gmail.com", "pw")
+        session = DofusTouchSession(game_token=token, server_id=533, account_id=account_id)
         session.connect()
         session.wait_for_game(timeout=60)
         # Now in game, can use session.send_message(...)
@@ -97,12 +115,14 @@ class DofusTouchSession:
         self,
         game_token: str,
         server_id: int,
+        account_id: str,                     # = HAAPI account_id, sent as login "username"
         character_id: Optional[int] = None,  # None = pick first character
         lang: str = "fr",
         login_server: str = LOGIN_SERVER,
     ):
         self.game_token = game_token
         self.server_id = server_id
+        self.account_id = account_id
         self.character_id = character_id
         self.lang = lang
         self.login_server = login_server
@@ -117,7 +137,8 @@ class DofusTouchSession:
         self._servers: list = []
         self._characters: list = []
         self._game_server_url: Optional[str] = None
-        self._ticket: Optional[str] = None
+        self._game_server_info: dict = {}   # {address, port, id} for the game "connecting" call
+        self._ticket: Optional[str] = None  # game-server ticket from SelectedServerDataMessage
 
         # Updated when CurrentMapMessage is received; used for NpcGenericActionRequestMessage
         self.map_id: int = -1
@@ -153,7 +174,7 @@ class DofusTouchSession:
         log.info("Config loaded. dataUrl=%s", config.get("dataUrl"))
 
         login_ws_url = self.login_server.replace("https://", "wss://").replace("http://", "ws://")
-        login_ws_url += PRIMUS_PATH
+        login_ws_url += PRIMUS_PATH + _primus_query()
 
         log.info("Connecting to login server: %s", login_ws_url)
         self._login_client = PrimusClient(login_ws_url)
@@ -191,25 +212,38 @@ class DofusTouchSession:
 
         @c.on("__open__")
         def on_open(msg):
-            # Primus "connecting" call sent on socket open (from script.js)
+            # "connecting" call on socket open — confirmed live: NO token here,
+            # just client identity. The token is sent later in the "login" call.
             log.info("Login socket open → sending 'connecting'")
-            c.send_call("connecting", self._build_identification_data())
+            c.send_call("connecting", {
+                "language": self.lang,
+                "server": "login",
+                "client": CLIENT,
+                "appVersion": APP_VERSION,
+                "buildVersion": BUILD_VERSION,
+            })
 
         @c.on("HelloConnectMessage")
         def on_hello(msg):
-            # Server sends salt+key for the login call
-            log.info("HelloConnectMessage received")
-            ident = self._build_identification_data()
-            ident["salt"] = msg.get("salt", "")
-            ident["key"] = msg.get("key", "")
-            c.send_call("login", ident)
+            # Server sends salt + key; the login call echoes them back, plus
+            # username (= account_id) and the game token. Confirmed live.
+            log.info("HelloConnectMessage received → sending 'login'")
+            c.send_call("login", {
+                "username": self.account_id,
+                "token": self.game_token,
+                "salt": msg.get("salt", ""),
+                "key": msg.get("key", []),
+            })
+
+        @c.on("CredentialsAcknowledgementMessage")
+        def on_creds_ack(msg):
+            log.debug("Credentials acknowledged")
 
         @c.on("IdentificationSuccessMessage")
         @c.on("IdentificationSuccessWithLoginTokenMessage")
         def on_ident_success(msg):
-            log.info("Identification success. nick=%s", msg.get("uniqueNickname"))
-            # The login token for the game server is in this message
-            self._ticket = msg.get("login_token") or msg.get("loginToken")
+            log.info("Identification success. nick=%s accountId=%s",
+                     msg.get("nickname"), msg.get("accountId"))
 
         @c.on("ServersListMessage")
         def on_servers(msg):
@@ -220,24 +254,32 @@ class DofusTouchSession:
 
         @c.on("SelectedServerDataMessage")
         def on_server_selected(msg):
-            log.info("Server selected: %s", msg)
-            # msg contains the game server address
-            host = msg.get("address") or msg.get("ip") or msg.get("host")
-            port = msg.get("port", 443)
-            ticket = msg.get("ticket") or self._ticket or self.game_token
+            # Confirmed live: the game server HOST is in "_access" (a https:// URL).
+            # "address" is an internal AWS IP (172.x) that is NOT routable for us.
+            log.info("Server selected: serverId=%s _access=%s address=%s:%s",
+                     msg.get("serverId"), msg.get("_access"),
+                     msg.get("address"), msg.get("port"))
 
-            self._ticket = ticket
-            # Build game server WebSocket URL
-            if host:
-                self._game_server_url = f"wss://{host}:{port}{PRIMUS_PATH}"
+            self._ticket = msg.get("ticket")
+            # The game "connecting" call needs the internal address/port/id verbatim
+            self._game_server_info = {
+                "address": msg.get("address"),
+                "port": msg.get("port"),
+                "id": msg.get("serverId"),
+            }
+
+            access = msg.get("_access")  # e.g. https://dt-proxy-production-canada.ankama-games.com
+            if access:
+                host = access.replace("https://", "").replace("http://", "").rstrip("/")
+                self._game_server_url = f"wss://{host}{PRIMUS_PATH}{_primus_query()}"
             else:
-                # Fallback: try default France game server
-                log.warning("No host in SelectedServerDataMessage, using default game server")
-                self._game_server_url = (
-                    f"wss://dt-proxy-production-france.ankama-games.com{PRIMUS_PATH}"
-                )
+                log.error("No _access in SelectedServerDataMessage — cannot locate game server")
+                self._error = "no_game_server_access"
+                self._game_ready.set()
+                return
 
             log.info("Connecting to game server: %s", self._game_server_url)
+            self._login_client.send_call("disconnecting", "SWITCHING_TO_GAME")
             self._login_client.disconnect()
             self._connect_to_game_server()
 
@@ -249,13 +291,6 @@ class DofusTouchSession:
             log.error("Identification failed: %s", reason)
             self._error = reason
             self._game_ready.set()  # unblock wait_for_game() immediately
-
-    def _build_identification_data(self) -> dict:
-        return {
-            "token": self.game_token,
-            "lang": self.lang,
-            "autoSelectServer": False,
-        }
 
     # ------------------------------------------------------------------ #
     # Game server handlers                                                #
@@ -275,6 +310,19 @@ class DofusTouchSession:
     def _setup_game_handlers(self):
         c = self._game_client
         ticket = self._ticket or self.game_token
+
+        @c.on("__open__")
+        def on_game_open(msg):
+            # Game "connecting" call carries the server's internal address/port/id
+            # (from SelectedServerDataMessage). Confirmed live.
+            log.info("Game socket open → sending 'connecting'")
+            c.send_call("connecting", {
+                "language": self.lang,
+                "server": self._game_server_info,
+                "client": CLIENT,
+                "appVersion": APP_VERSION,
+                "buildVersion": BUILD_VERSION,
+            })
 
         @c.on("HelloGameMessage")
         def on_hello_game(msg):

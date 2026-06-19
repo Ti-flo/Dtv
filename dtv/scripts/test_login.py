@@ -30,7 +30,7 @@ try:
 except ImportError:
     pass
 
-from dtv.collector.haapi import get_game_token
+from dtv.collector.haapi import authenticate
 from dtv.collector.connection import DofusTouchSession
 
 
@@ -47,8 +47,8 @@ def main():
 
     print("1. Authenticating with HAAPI...")
     try:
-        token = get_game_token(login, password)
-        print(f"   ✓ Token obtained ({len(token)} chars)")
+        account_id, token = authenticate(login, password)
+        print(f"   ✓ Token obtained ({len(token)} chars), account_id={account_id}")
     except Exception as e:
         print(f"   ✗ Auth failed: {e}")
         sys.exit(1)
@@ -57,6 +57,7 @@ def main():
     session = DofusTouchSession(
         game_token=token,
         server_id=server_id,
+        account_id=account_id,
         character_id=None,  # auto-select first character
     )
 

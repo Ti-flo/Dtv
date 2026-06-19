@@ -25,37 +25,60 @@
 - L'IP du game server peut changer (AWS load balancer) — utiliser le hostname, pas l'IP.
 - `config.json` chargé depuis le login server avant toute auth : `GET https://dt-proxy-production-login.ankama-games.com/config.json?lang=fr`
 
-### Flux d'authentification complet
+### Flux d'authentification complet — ✅ CONFIRMÉ PAR CAPTURE LIVE (session 4, HAR DevTools)
 
 ```
 1. POST haapi.ankama.com/json/Ankama/v5/Api/CreateApiKey
    Body: {login, password, long_life_token: false, game: 18}
    → Retourne: {key: "...", account_id: ...}
 
-2. GET haapi.ankama.com/json/Ankama/v5/Game/CreateToken?game=18
+2. GET haapi.ankama.com/json/Ankama/v5/Account/CreateToken?game=18   ← "Account" PAS "Game"
    Header: apikey: <key>
-   → Retourne: {token: "..."}  ← c'est le game_token
+   → Retourne: {token: "..."}  ← game_token au format UUID (ex: 75692171-4b20-4b07-91e1-d773ec66a4cf)
+   ⚠️ La capture live montre "Account/CreateToken", pas "Game/CreateToken". À tester.
 
-3. WebSocket wss://dt-proxy-production-login.ankama-games.com/???
-   Primus protocol, JSON messages
-   → send "connecting" → reçoit HelloConnectMessage
-   → send "login" avec token + salt + key
-   → reçoit ServersListMessage
-   → send ServerSelectionMessage {serverId: N}
-   → reçoit SelectedServerDataMessage (avec URL du game server)
+3. WebSocket wss://dt-proxy-production-login.ankama-games.com/primus?STICKER=<id>&_primuscb=<cb>
+   ✅ Chemin = /primus CONFIRMÉ
+   STICKER = id de session généré côté client par Primus (même valeur pour les 2 WS).
+            Sticky-session du load balancer. À tester si omettable.
 
-4. WebSocket wss://<game-server>/???
-   → reçoit HelloGameMessage
-   → send AuthenticationTicketMessage {ticket, lang}
+   → send "connecting": {language:"en", server:"login", client:"android",
+                         appVersion:"3.11.0", buildVersion:"1.72.11"}   ← PAS de token ici !
+   → reçoit ProtocolRequired {requiredVersion:1595, currentVersion:1595}
+   → reçoit HelloConnectMessage {salt:"...", key:[bytes signés]}
+   → send "login": {username:"<account_id>", token:"<game_token>",
+                    salt:"<echo du Hello>", key:[<echo du Hello>]}   ← username = account_id !
+   → reçoit CredentialsAcknowledgementMessage
+   → reçoit IdentificationSuccessMessage {login, nickname, accountId, ...}  ← PAS de login_token
+   → reçoit ServersListMessage {servers:[{id, status, completion, isSelectable, charactersCount, _name}]}
+   → send ServerSelectionMessage {serverId:N}   (via wrapper "sendMessage")
+   → reçoit SelectedServerDataMessage {serverId, address:"<IP interne AWS>", port:5555,
+                ticket:"<ticket game>", _access:"https://dt-proxy-production-canada.ankama-games.com"}
+      ⚠️ Le host du game server = champ "_access" (hostname), PAS "address" (IP interne 172.x.x.x inutilisable)
+   → send "disconnecting": "SWITCHING_TO_GAME"
+   → reçoit "primus::server::close"
+
+4. WebSocket wss://<_access host>/primus?STICKER=...&_primuscb=...
+   → send "connecting": {language:"en", server:{address, port, id}, client:"android",
+                         appVersion:"3.11.0", buildVersion:"1.72.11"}
+   → reçoit ProtocolRequired puis HelloGameMessage
+   → send AuthenticationTicketMessage {ticket:"<ticket de SelectedServerData>", lang:"en"}  (via sendMessage)
    → reçoit AuthenticationTicketAcceptedMessage
+   → send "pingSession": <number>
    → send CharactersListRequestMessage
    → reçoit CharactersListMessage
    → send CharacterSelectionMessage {id}
-   → reçoit GameContextCreateMessage ← SESSION PRÊTE
+   → reçoit CharacterSelectedSuccessMessage
+   → send ClientKeyMessage {key}, puis GameContextCreateRequestMessage
+   → reçoit CurrentMapMessage {mapId} ← stocker pour npcMapId HDV
 ```
 
-**TODO :** Confirmer le chemin exact du WebSocket Primus (probablement `/primus`).
-Pour le trouver : `GET https://dt-proxy-production-login.ankama-games.com/build/primus.js`
+**Région du game server :** dépend du compte. Ce compte (anglais) → **canada** (serverId 533).
+Il existe `dt-proxy-production-{france,canada,early,...}`. Toujours utiliser `_access`, jamais coder en dur.
+
+**Calls spéciaux Primus (hors wrapper sendMessage) :** `connecting`, `login`, `disconnecting`,
+`pingSession`, `moneyGoultinesAmountRequest`, `arenaPlayerRank`, etc. Le reste passe par
+`{"call":"sendMessage","data":{"type":..., "data":...}}`.
 
 ---
 
@@ -86,61 +109,77 @@ Doit être répondu dans ~30s sinon le serveur déconnecte.
 
 **Note :** Le login server utilise des calls spéciaux ("connecting", "login") en plus du standard "sendMessage".
 
-### HDV — architecture (confirmé par analyse statique de script.js)
+### HDV — architecture — ✅ CONFIRMÉ PAR CAPTURE LIVE (session 4)
 
 **L'HDV dans Dofus Touch est accessible depuis n'importe où** (bouton dans l'interface),
 pas besoin d'être près d'un PNJ physique. Niveau min confirmé : **10** (confirmé en jeu session 4).
 
-#### Messages HDV (confirmés script.js)
+#### ⚠️ Le flow HDV est en DEUX étapes (correction majeure session 4)
+
+```
+1. → NpcGenericActionRequestMessage {npcId:0, npcActionId:6, npcMapId:<mapId réel>}
+2. ← ExchangeStartedBidBuyerMessage {buyerDescriptor:{quantities, types, taxPercentage, maxItemLevel}}
+
+   Pour CHAQUE type T de buyerDescriptor.types :
+3. → ExchangeBidHouseTypeMessage {type:T}
+4. ← ExchangeTypesExchangerDescriptionForUserMessage {typeDescription:[GID1, GID2, ...]}
+        ← liste des objectGID qui ONT des offres dans ce type (peut être vide)
+
+   Pour CHAQUE objectGID G de typeDescription :
+5. → ExchangeBidHouseListMessage {id:G}
+6. ← ExchangeTypesItemsExchangerDescriptionForUserMessage {itemTypeDescriptions:[{objectUID, effects, prices}]}
+        ← les offres réelles (prix) pour cet objet
+
+7. → LeaveDialogRequestMessage {} (data:null)
+8. ← ExchangeLeaveMessage {dialogType:11}
+```
+
+**Distinction critique entre les deux messages de réponse :**
+- `ExchangeTypesExchangerDescriptionForUserMessage` (SANS "Items") = liste de GIDs d'un type → réponse à `ExchangeBidHouseTypeMessage`
+- `ExchangeTypesItemsExchangerDescriptionForUserMessage` (AVEC "Items") = prix d'un objet → réponse à `ExchangeBidHouseListMessage`
 
 | Message | Sens | Rôle |
 |---|---|---|
-| `NpcGenericActionRequestMessage` | → | **Ouvrir HDV** (`npcId:0, npcActionId:6, npcMapId:<mapId>`) |
-| `ExchangeStartedBidBuyerMessage` | ← | HDV ouvert (mode achat) — contient `buyerDescriptor` |
-| `ExchangeStartedBidSellerMessage` | ← | HDV ouvert (mode vente) |
-| `ExchangeBidHouseTypeMessage` | → | **Demander les offres d'un type d'item** (`{type: <gid>}`) |
-| `ExchangeTypesItemsExchangerDescriptionForUserMessage` | ← | Réponse avec toutes les offres |
+| `NpcGenericActionRequestMessage` | → | Ouvrir HDV (`npcId:0, npcActionId:6, npcMapId:<mapId réel>`) |
+| `ExchangeStartedBidBuyerMessage` | ← | HDV ouvert — `buyerDescriptor` (quantities, types) |
+| `ExchangeBidHouseTypeMessage` | → | Demander les GIDs d'un type (`{type:T}`) |
+| `ExchangeTypesExchangerDescriptionForUserMessage` | ← | Liste des GIDs (`typeDescription:[...]`) |
+| `ExchangeBidHouseListMessage` | → | Demander les prix d'un objet (`{id:GID}`) |
+| `ExchangeTypesItemsExchangerDescriptionForUserMessage` | ← | Offres/prix (`itemTypeDescriptions:[...]`) |
+| `ExchangeBidHouseBuyMessage` | → | Acheter (`{uid, qty, price}`) — pas utile pour la collecte |
 | `LeaveDialogRequestMessage` | → | Fermer HDV |
 | `ExchangeLeaveMessage` | ← | HDV fermé |
 
-**Paramètres de `NpcGenericActionRequestMessage` pour l'HDV :**
-```json
-{ "npcId": 0, "npcActionId": 6, "npcMapId": <mapId_actuel_du_joueur> }
-```
-- `npcActionId: 6` = mode achat (lecture des prix)
-- `npcActionId: 5` = mode vente/modification
-- `npcMapId` = `CurrentMapMessage.mapId` — la map actuelle du joueur
-- Référence : `openBidHouse()` dans script.js
+**`npcMapId` = le vrai mapId** (ex: `146540544`), pris de `CurrentMapMessage.mapId`. PAS -1.
+`npcActionId: 6` = mode achat. Référence : `openBidHouse()` dans script.js.
 
-**Comparaison : banque ouvre avec `npcMapId: -1`** → à tester si -1 fonctionne pour l'HDV aussi.
-
-#### Format de `ExchangeTypesItemsExchangerDescriptionForUserMessage` (confirmé script.js)
+#### Format réel de `ExchangeTypesItemsExchangerDescriptionForUserMessage` (capture live)
 
 ```json
 {
   "_messageType": "ExchangeTypesItemsExchangerDescriptionForUserMessage",
   "itemTypeDescriptions": [
     {
-      "objectUID":    12345,
-      "prices":       [100, 950, 9000],
-      "effects":      [{"_type": "ObjectEffectInteger", "actionId": 110, "value": 100}],
-      "tutorialPrice": false
+      "_type":     "BidExchangerObjectInfo",
+      "objectUID": 1221817,
+      "effects":   [{"_type": "ObjectEffectInteger", "actionId": 110, "value": 10}],
+      "prices":    [14, 280, 2978, 0]
     }
   ]
 }
 ```
 
 **Points clés :**
-- `objectUID` = identifiant unique de cette offre (pas du type d'item)
-- `prices[0]` = prix total pour 1 unité, `prices[1]` = pour 10, `prices[2]` = pour 100
-- `prices` indexé sur `buyerDescriptor.quantities` (= `[1, 10, 100]` standard Dofus)
-- `objectGID` n'est **pas** dans la réponse serveur — le client le déduit du type demandé
-- Exemple tutoriel : `prices: [90, 0, 0]` → confirme que 0 = pas d'offre à cette quantité
-- Source : `_addItemListChunk()` + `_separateItemBulks()` dans script.js
+- `objectUID` = id unique de l'offre (pas du type d'item)
+- `prices` a **4 éléments** : `[x1, x10, x100, x1000]` — indexé sur `buyerDescriptor.quantities`
+- `0` = pas d'offre à cette quantité (ici x1000 = 0)
+- PAS de champ `tutorialPrice` dans la capture réelle (était une supposition)
+- `objectGID` = l'`id` envoyé dans `ExchangeBidHouseListMessage` (le client le connaît déjà)
 
-#### `buyerDescriptor` dans `ExchangeStartedBidBuyerMessage`
-- `buyerDescriptor.types` = liste des types d'items disponibles dans l'HDV du serveur
-- `buyerDescriptor.quantities` = tiers de quantité (standard `[1, 10, 100]`)
+#### `buyerDescriptor` dans `ExchangeStartedBidBuyerMessage` (capture live)
+- `quantities` = **`[1, 10, 100, 1000]`** ← 4 tiers CONFIRMÉ (x1000 existe)
+- `types` = liste des GIDs de types (~126 types : `[1,2,3,4,5,6,7,8,9,...226]`)
+- `taxPercentage` = 3, `maxItemLevel` = 1000
 
 #### `CurrentMapMessage` (reçu quand le joueur change de map)
 ```json
@@ -291,10 +330,10 @@ Ankama bloque Protonmail à l'inscription
 
 | Fichier | État | Notes |
 |---|---|---|
-| `dtv/collector/haapi.py` | ✅ Prêt | curl_cffi + chrome_android impersonation |
-| `dtv/collector/primus_client.py` | ✅ Prêt | DisconnectReason, heartbeat watchdog, circuit breaker |
-| `dtv/collector/connection.py` | ✅ Prêt | Login flow complet, reconnexion auto, map_id tracking |
-| `dtv/collector/hdv.py` | ✅ Prêt | Messages corrigés depuis script.js, prix dynamiques |
+| `dtv/collector/haapi.py` | ✅ Réécrit S4 | `authenticate()` → (account_id, token), endpoint Account/CreateToken |
+| `dtv/collector/primus_client.py` | ✅ Prêt | DisconnectReason, heartbeat watchdog, send lock |
+| `dtv/collector/connection.py` | ✅ Réécrit S4 | Login flow confirmé live (connecting/login, _access, account_id) |
+| `dtv/collector/hdv.py` | ✅ Réécrit S4 | **Flow HDV 2 étapes confirmé live**, quantités [1,10,100,1000] |
 | `dtv/collector/timing.py` | ✅ Prêt | human_delay, jitter, backoff_delay |
 | `dtv/scripts/test_auth.py` | ✅ Prêt | Test HAAPI isolé |
 | `dtv/scripts/test_connect.py` | ✅ Prêt | Test WebSocket connectivité |
@@ -323,36 +362,34 @@ python -m dtv.scripts.test_login
 python -m dtv.scripts.collect
 ```
 
-### Ce qu'on apprendra au premier test live
+### ✅ Inconnues résolues par la capture live (session 4)
 
-- Le vrai chemin Primus (`/primus` est supposé — peut être `/` ou autre)
-- Les IDs de serveurs Dofus Touch (dans `ServersListMessage`)
-- Si `npcMapId: -1` fonctionne pour ouvrir l'HDV ou si le vrai mapId est requis
-- Les vrais tiers de quantités (`buyerDescriptor.quantities` → `[1,10,100]` ou `[1,10,100,1000]`)
-- La structure exacte de `SelectedServerDataMessage`
+- ✅ Chemin Primus = `/primus`
+- ✅ IDs serveurs : capturés (Kelerog=531, ..., serveur du compte test = 533 canada)
+- ✅ `npcMapId` = le vrai mapId (de `CurrentMapMessage`), PAS -1
+- ✅ Quantités = `[1, 10, 100, 1000]` (4 tiers)
+- ✅ `SelectedServerDataMessage` : host dans `_access`, ticket dans `ticket`, address = IP interne inutile
+- ✅ Flow HDV en DEUX étapes (type→GIDs, puis GID→prix)
+- ✅ Login : `username`=account_id, token dans "login" pas "connecting"
 
-### Ce qui reste à investiguer (non bloquant pour le premier test)
+### Ce qui reste à investiguer
 
-- Fingerprint TLS du WebSocket : `websocket-client` a un JA3 différent d'Android. Migrer vers `curl_cffi.requests.ws_connect` si des bans surviennent sans autre cause.
-- Logstash/Firebase télémétrie : absence non simulée. Risque faible à court terme.
-- Frida sur AVD : Ankama Shield détecte frida-server. Pistes : renommer le binaire, le mettre hors de `/data/local/tmp/`, ou hooker la WebSocket au niveau JS (plus discret sur Cordova).
+- Le paramètre `STICKER` est-il requis ? (généré côté client — tester sans)
+- Endpoint token : `Account/CreateToken` (live) vs `Game/CreateToken` (ancienne doc) — tester
+- Fingerprint TLS du WebSocket : `websocket-client` a un JA3 différent d'Android. Migrer vers `curl_cffi.requests.ws_connect` si bans inexpliqués.
+- Logstash télémétrie : confirmée active (config.json `mediatorUrl`). Absence non simulée par notre client. Risque faible à court terme.
 
 ---
 
 ## 📋 TODO / Inconnues à résoudre
 
-- [ ] Confirmer le chemin exact du WebSocket Primus (`/primus` ?)
-  → `test_connect.py` le révélera au premier run
-- [ ] Trouver les IDs de serveurs Dofus Touch
-  → `ServersListMessage` loggé automatiquement dans `test_login.py`
-- [ ] Confirmer `npcMapId` pour l'ouverture HDV (-1 suffit ?)
-  → `test_login.py` + collecte manuelle
-- [ ] Confirmer le format de `SelectedServerDataMessage` (URL complète ou host/port ?)
-  → `test_login.py` logge le message brut
-- [ ] Vérifier les tiers de quantités réels (`[1,10,100]` ou `[1,10,100,1000]`)
-  → `ExchangeStartedBidBuyerMessage.buyerDescriptor.quantities` loggé à l'ouverture HDV
-- [ ] Tester si l'absence de Logstash/Firebase est détectée sur plusieurs jours
+- [ ] Tester le code réécrit (session 4) contre le serveur réel — login flow complet
+- [ ] Tester si `STICKER` est omettable dans l'URL Primus
+- [ ] Confirmer `Account/CreateToken` vs `Game/CreateToken`
+- [ ] Tester si l'absence de Logstash est détectée sur plusieurs jours
 - [ ] Fingerprint TLS WebSocket — tester curl_cffi ws_connect si bans inexpliqués
+- [ ] Volume : ~126 types × N objets chacun = beaucoup de requêtes. Mesurer la durée
+      d'une collecte complète et ajuster (watchlist / pruning)
 
 ---
 
@@ -370,13 +407,21 @@ python -m dtv.scripts.collect
 - Code de base écrit et pushé sur Ti-flo/Dtv
 - Analyse ban du compte #1 (WireGuard + PCAPdroid + mitmproxy simultanément)
 
-### Session 4 (premier test live + outils capture)
+### Session 4 (premier test live + capture protocole complète)
 - Niveau HDV confirmé : **10** (accessible dès niveau 10, peu importe la map)
 - AVD relancé, DNS fixé (`setprop net.dns1 8.8.8.8`)
-- Throwaway account créé, tuto complété, HDV accessible
-- Outils de capture créés : `ws_intercept.js`, `patch_scriptjs.py`, `ws_capture_server.py`
+- Throwaway account créé (Ramundoh#8708, accountId 188926644), tuto complété
+- **WebView debuggable !** Capture via `chrome://inspect` + port forwarding
+  (`adb forward tcp:9222 localabstract:webview_devtools_remote_<pid>`)
+  → AUCUNE modif de script.js nécessaire (patch_scriptjs.py reste en réserve)
+- HAR capturé : login flow complet + HDV (ouverture, consultation, achat, fermeture)
+- **Protocole entièrement confirmé et code réécrit en conséquence :**
+  - Login : `connecting` (sans token) → `login` (username=accountId + token + salt + key echo)
+  - `SelectedServerDataMessage._access` = host game server (pas `address`)
+  - HDV en 2 étapes (ExchangeBidHouseTypeMessage → ExchangeBidHouseListMessage)
+  - quantities = [1,10,100,1000]
 - Bugs corrigés : `wait_for_game()` faux succès, send lock WebSocket, SELinux restorecon
-- Prochaine étape : sonder WebView debuggable, puis patch script.js si nécessaire
+- Prochaine étape : tester le code réécrit contre le serveur réel
 
 ### Session 3 (analyse + corrections protocole)
 - Analyse statique de `script.js` → protocole HDV entièrement corrigé

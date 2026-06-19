@@ -44,24 +44,16 @@ try:
 except ImportError:
     pass
 
-from dtv.collector.haapi import get_game_token
+from dtv.collector.haapi import authenticate
 from dtv.collector.connection import DofusTouchSession
 from dtv.collector.hdv import HdvCollector
 from dtv.collector.timing import human_delay
 
-# HDV categories to collect by default
-# These are item type IDs — the full list will be discovered from live data
-# TODO: populate from ExchangeTypesItemsExchangerDescriptionForUserMessage
-DEFAULT_CATEGORIES = [
-    2,    # Resources
-    6,    # Equipment
-    36,   # Consumables
-]
-
-
 def main():
     parser = argparse.ArgumentParser(description="Collect HDV prices from Dofus Touch")
-    parser.add_argument("--categories", help="Comma-separated category IDs", default=None)
+    parser.add_argument("--categories",
+                        help="Comma-separated type GIDs (default: all types from buyerDescriptor)",
+                        default=None)
     parser.add_argument("--server-id", type=int, default=None)
     parser.add_argument("--character-id", type=int, default=None)
     args = parser.parse_args()
@@ -71,7 +63,8 @@ def main():
     server_id = args.server_id or int(os.environ.get("DTV_SERVER_ID", "401"))
     character_id = args.character_id or (int(os.environ.get("DTV_CHARACTER_ID")) if os.environ.get("DTV_CHARACTER_ID") else None)
 
-    categories = DEFAULT_CATEGORIES
+    # None = collect every type advertised by the server (buyerDescriptor.types)
+    categories = None
     if args.categories:
         categories = [int(c.strip()) for c in args.categories.split(",")]
 
@@ -84,8 +77,8 @@ def main():
     # 1. Auth
     log.info("Authenticating...")
     try:
-        token = get_game_token(login, password)
-        log.info("Token obtained (%d chars)", len(token))
+        account_id, token = authenticate(login, password)
+        log.info("Token obtained (%d chars), account_id=%s", len(token), account_id)
     except Exception as e:
         log.error("Auth failed: %s", e)
         sys.exit(1)
@@ -94,6 +87,7 @@ def main():
     session = DofusTouchSession(
         game_token=token,
         server_id=server_id,
+        account_id=account_id,
         character_id=character_id,
     )
 
@@ -112,14 +106,18 @@ def main():
         if not collector.open_hdv(timeout=15):
             log.warning("HDV open timeout — check if npcMapId is correct")
 
-        # 4. Collect each item type
-        total_records = 0
-        for type_gid in categories:
-            log.info("Collecting item type GID=%d...", type_gid)
-            records = collector.collect_type(type_gid, timeout=30)
-            total_records += len(records)
-            log.info("  → %d records", len(records))
-            human_delay(2.0, 5.0)
+        # 4. Collect item types (all advertised, or the explicit subset)
+        if categories is None:
+            log.info("Collecting all %d advertised types...", len(collector.available_types))
+            total_records = collector.collect_all(timeout=30)
+        else:
+            total_records = 0
+            for type_gid in categories:
+                log.info("Collecting item type GID=%d...", type_gid)
+                records = collector.collect_type(type_gid, timeout=30)
+                total_records += len(records)
+                log.info("  → %d records", len(records))
+                human_delay(2.0, 5.0)
 
         # 5. Close HDV
         collector.close_hdv()
