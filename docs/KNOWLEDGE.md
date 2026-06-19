@@ -89,7 +89,7 @@ Doit être répondu dans ~30s sinon le serveur déconnecte.
 ### HDV — architecture (confirmé par analyse statique de script.js)
 
 **L'HDV dans Dofus Touch est accessible depuis n'importe où** (bouton dans l'interface),
-pas besoin d'être près d'un PNJ physique. Niveau min estimé : ~10 ou mi-tutoriel.
+pas besoin d'être près d'un PNJ physique. Niveau min confirmé : **10** (confirmé en jeu session 4).
 
 #### Messages HDV (confirmés script.js)
 
@@ -369,6 +369,14 @@ python -m dtv.scripts.collect
 - Confirmation protocole JSON Primus depuis script.js
 - Code de base écrit et pushé sur Ti-flo/Dtv
 - Analyse ban du compte #1 (WireGuard + PCAPdroid + mitmproxy simultanément)
+
+### Session 4 (premier test live + outils capture)
+- Niveau HDV confirmé : **10** (accessible dès niveau 10, peu importe la map)
+- AVD relancé, DNS fixé (`setprop net.dns1 8.8.8.8`)
+- Throwaway account créé, tuto complété, HDV accessible
+- Outils de capture créés : `ws_intercept.js`, `patch_scriptjs.py`, `ws_capture_server.py`
+- Bugs corrigés : `wait_for_game()` faux succès, send lock WebSocket, SELinux restorecon
+- Prochaine étape : sonder WebView debuggable, puis patch script.js si nécessaire
 
 ### Session 3 (analyse + corrections protocole)
 - Analyse statique de `script.js` → protocole HDV entièrement corrigé
