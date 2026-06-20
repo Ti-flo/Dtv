@@ -7,7 +7,7 @@ saves to CSV. Designed to run 5x/day (cron or Task Scheduler).
 Usage:
     set DTV_LOGIN=throwaway@gmail.com
     set DTV_PASSWORD=xxx
-    set DTV_SERVER_ID=401
+    set DTV_SERVER_ID=533
     set DTV_CHARACTER_ID=12345678   (optional, auto-selects first char if omitted)
     python -m dtv.scripts.collect
 
@@ -47,6 +47,7 @@ except ImportError:
 from dtv.collector.haapi import authenticate
 from dtv.collector.connection import DofusTouchSession
 from dtv.collector.hdv import HdvCollector
+from dtv.collector.avg_prices import AveragePricesCollector
 from dtv.collector.timing import human_delay
 from dtv.collector.item_types import CORE_RESOURCE_TYPE_IDS, RESOURCE_TYPE_IDS
 
@@ -58,11 +59,16 @@ def main():
                         default=None)
     parser.add_argument("--server-id", type=int, default=None)
     parser.add_argument("--character-id", type=int, default=None)
+    parser.add_argument("--avg-prices-only", action="store_true",
+                        help="Only grab the average-price snapshot (one message, "
+                             "~4900 items), skip the HDV walk entirely")
+    parser.add_argument("--no-avg-prices", action="store_true",
+                        help="Skip the average-price snapshot")
     args = parser.parse_args()
 
     login = os.environ.get("DTV_LOGIN")
     password = os.environ.get("DTV_PASSWORD")
-    server_id = args.server_id or int(os.environ.get("DTV_SERVER_ID", "401"))
+    server_id = args.server_id or int(os.environ.get("DTV_SERVER_ID", "533"))
     character_id = args.character_id or (int(os.environ.get("DTV_CHARACTER_ID")) if os.environ.get("DTV_CHARACTER_ID") else None)
 
     if args.categories == "all":
@@ -98,6 +104,7 @@ def main():
     )
 
     collector = HdvCollector(session, account=login)
+    avg_collector = AveragePricesCollector(session, account=login)
 
     try:
         session.connect()
@@ -107,12 +114,27 @@ def main():
             sys.exit(1)
         log.info("Game ready!")
 
-        # 3. Open HDV (accessible from anywhere, confirmed from script.js openBidHouse())
+        # 3. Average-price snapshot (one message ≈ 4900 items, fully legit traffic)
+        if not args.no_avg_prices:
+            log.info("Grabbing average-price snapshot...")
+            prices = avg_collector.collect(timeout=20)
+            if prices:
+                path = avg_collector.save_to_csv()
+                log.info("Saved %d average prices to %s", len(prices), path)
+            human_delay(2.0, 5.0)
+
+        if args.avg_prices_only:
+            log.info("--avg-prices-only set — skipping HDV walk")
+            return
+
+        # 4. Open HDV (accessible from anywhere, confirmed from script.js openBidHouse())
         log.info("Opening HDV...")
         if not collector.open_hdv(timeout=15):
             log.warning("HDV open timeout — check if npcMapId is correct")
+        elif collector.economics:
+            log.info("HDV economics: %s", collector.economics)
 
-        # 4. Collect item types (all advertised, or the explicit subset)
+        # 5. Collect item types (all advertised, or the explicit subset)
         if categories is None:
             log.info("Collecting all %d advertised types from server...", len(collector.available_types))
             total_records = collector.collect_all(timeout=30)
@@ -125,10 +147,10 @@ def main():
                 log.info("  → %d records", len(records))
                 human_delay(2.0, 5.0)
 
-        # 5. Close HDV
+        # 6. Close HDV
         collector.close_hdv()
 
-        # 6. Save
+        # 7. Save
         if total_records > 0:
             path = collector.save_to_csv()
             log.info("Saved %d total records to %s", total_records, path)

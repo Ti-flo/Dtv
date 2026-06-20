@@ -2,6 +2,10 @@
 
 > Fichier de référence à compléter au fil des sessions.
 > Toutes les découvertes confirmées par captures réseau, analyse de code ou tests.
+>
+> 📖 **Référence wire-level complète du protocole : [`PROTOCOL.md`](PROTOCOL.md)**
+> (séquences exactes confirmées sur 3 captures HAR, catalogue des messages, formats).
+> Ce fichier-ci reste la vue d'ensemble (architecture, sécurité, état du projet).
 
 ---
 
@@ -64,14 +68,24 @@
    → reçoit ProtocolRequired puis HelloGameMessage
    → send AuthenticationTicketMessage {ticket:"<ticket de SelectedServerData>", lang:"en"}  (via sendMessage)
    → reçoit AuthenticationTicketAcceptedMessage
-   → send "pingSession": <number>
+   → send "pingSession": <nonce>          ← parité client (anti-fingerprint)
    → send CharactersListRequestMessage
-   → reçoit CharactersListMessage
+   → reçoit CharactersListMessage {characters:[{id, level, name, breed, sex}]}
    → send CharacterSelectionMessage {id}
    → reçoit CharacterSelectedSuccessMessage
-   → send ClientKeyMessage {key}, puis GameContextCreateRequestMessage
-   → reçoit CurrentMapMessage {mapId} ← stocker pour npcMapId HDV
+   → send ClientKeyMessage {key:<21 chars aléatoires>}   ← parité client
+   → send GameContextCreateRequestMessage
+   → reçoit SequenceNumberRequestMessage   ← ⚠️ ANTI-CHEAT
+   → send SequenceNumberMessage {number:N}  ← N incrémental par connexion (1,2,3…)
+   → reçoit GameContextCreateMessage + CurrentMapMessage {mapId} ← stocker pour npcMapId HDV
 ```
+
+**⚠️ SequenceNumber (anti-cheat) — confirmé S6, désormais géré :**
+Le serveur envoie `SequenceNumberRequestMessage` (vide) quand il veut ; le client
+répond `SequenceNumberMessage{number:N}` avec N **incrémental par connexion** (repart
+à 0 à chaque reconnexion). Ne PAS répondre = session anormale. `ClientKeyMessage` et
+`pingSession` sont des trames de parité client (non bloquantes mais émises par le vrai
+client) — ajoutées pour réduire l'empreinte. Détail complet : `PROTOCOL.md` §3.
 
 **Région du game server :** dépend du compte. Ce compte (anglais) → **canada** (serverId 533).
 Il existe `dt-proxy-production-{france,canada,early,...}`. Toujours utiliser `_access`, jamais coder en dur.
@@ -176,10 +190,35 @@ pas besoin d'être près d'un PNJ physique. Niveau min confirmé : **10** (confi
 - PAS de champ `tutorialPrice` dans la capture réelle (était une supposition)
 - `objectGID` = l'`id` envoyé dans `ExchangeBidHouseListMessage` (le client le connaît déjà)
 
-#### `buyerDescriptor` dans `ExchangeStartedBidBuyerMessage` (capture live)
+#### `buyerDescriptor` dans `ExchangeStartedBidBuyerMessage` (capture live S6)
 - `quantities` = **`[1, 10, 100, 1000]`** ← 4 tiers CONFIRMÉ (x1000 existe)
-- `types` = liste des GIDs de types (~126 types : `[1,2,3,4,5,6,7,8,9,...226]`)
-- `taxPercentage` = 3, `maxItemLevel` = 1000
+- `types` = liste des GIDs de types (**128 types**, pas 126 : `[1,2,3,…226]`)
+- `taxPercentage` = **3** (taxe de vente HDV % — utile pour calcul de rentabilité)
+- `maxItemLevel` = 1000
+- `maxItemPerAccount` = **75** (nb max d'objets en vente par compte)
+- `unsoldDelay` = **672** (heures avant retour des invendus = 28 jours)
+
+Capturé dans `HdvCollector.economics` à l'ouverture de l'HDV.
+
+#### ⭐ Prix moyens — `ObjectAveragePrices` (snapshot marché complet)
+
+**Un seul message = ~4906 prix d'items.** Le client le demande pendant l'init ;
+trafic 100 % légitime.
+```
+→ ObjectAveragePricesGetMessage {}                       (aucun paramètre)
+← ObjectAveragePricesMessage {ids:[…], avgPrices:[…]}    (2 tableaux parallèles)
+```
+- Prix **unitaire x1**, **par serveur**, moyenne des ventes récentes (volume + récence).
+- **PAS figé 24 h** : 115 GID ont bougé entre 2 captures à 51 min d'écart → collecte
+  multi-fois/jour pertinente.
+- Complémentaire de l'HDV : avg = tendance/baseline, HDV = floor temps réel (x1…x1000).
+- Module : `dtv/collector/avg_prices.py` (`AveragePricesCollector`). Voir `PROTOCOL.md` §4.
+
+#### Ressources (superTypeId=9) — whitelist de collecte
+`dtv/collector/item_types.py` : **64 types ressources** extraits de
+`window.gui.databases.ItemTypes`. `collect_resources()` n'interroge que ceux présents
+dans le `buyerDescriptor` (61/64 ; absents : Souvenir 125, Awakening 211, Vouchers 241).
+Le projet se concentre sur les ressources (équipements hors scope — rolls variables).
 
 #### `CurrentMapMessage` (reçu quand le joueur change de map)
 ```json
@@ -331,14 +370,16 @@ Ankama bloque Protonmail à l'inscription
 | Fichier | État | Notes |
 |---|---|---|
 | `dtv/collector/haapi.py` | ✅ Réécrit S4 | `authenticate()` → (account_id, token), endpoint Account/CreateToken |
-| `dtv/collector/primus_client.py` | ✅ Prêt | DisconnectReason, heartbeat watchdog, send lock |
-| `dtv/collector/connection.py` | ✅ Réécrit S4 | Login flow confirmé live (connecting/login, _access, account_id) |
-| `dtv/collector/hdv.py` | ✅ Réécrit S4 | **Flow HDV 2 étapes confirmé live**, quantités [1,10,100,1000] |
+| `dtv/collector/primus_client.py` | ✅ Prêt | DisconnectReason, heartbeat watchdog (30s ping), send lock |
+| `dtv/collector/connection.py` | ✅ MAJ S6 | Login flow live + **SequenceNumber, ClientKey, pingSession** |
+| `dtv/collector/hdv.py` | ✅ MAJ S6 | Flow HDV 2 étapes + `collect_resources()` + `economics` |
+| `dtv/collector/avg_prices.py` | ✅ Nouveau S6 | **Snapshot prix moyens (~4900 items / message)** |
+| `dtv/collector/item_types.py` | ✅ Nouveau S5 | 64 types ressources (superTypeId=9) + 41 core |
 | `dtv/collector/timing.py` | ✅ Prêt | human_delay, jitter, backoff_delay |
 | `dtv/scripts/test_auth.py` | ✅ Prêt | Test HAAPI isolé |
 | `dtv/scripts/test_connect.py` | ✅ Prêt | Test WebSocket connectivité |
 | `dtv/scripts/test_login.py` | ✅ Prêt | Test login flow complet |
-| `dtv/scripts/collect.py` | ✅ Prêt | Pipeline collecte production |
+| `dtv/scripts/collect.py` | ✅ MAJ S6 | Pipeline : avg-prices + HDV ressources (défaut: core) |
 
 ### Prochaine étape immédiate : premier test live
 
@@ -362,38 +403,70 @@ python -m dtv.scripts.test_login
 python -m dtv.scripts.collect
 ```
 
-### ✅ Inconnues résolues par la capture live (session 4)
+### ✅ Inconnues résolues par les captures live (sessions 4–6)
 
 - ✅ Chemin Primus = `/primus`
-- ✅ IDs serveurs : capturés (Kelerog=531, ..., serveur du compte test = 533 canada)
-- ✅ `npcMapId` = le vrai mapId (de `CurrentMapMessage`), PAS -1
+- ✅ IDs serveurs : Tiliwan=530, Kelerog=531, Blair=532, **Talok=533** (compte test), Tournament=411
+- ✅ `npcMapId` = le vrai mapId (de `CurrentMapMessage` = `MapComplementaryInfo`), PAS -1
 - ✅ Quantités = `[1, 10, 100, 1000]` (4 tiers)
 - ✅ `SelectedServerDataMessage` : host dans `_access`, ticket dans `ticket`, address = IP interne inutile
 - ✅ Flow HDV en DEUX étapes (type→GIDs, puis GID→prix)
 - ✅ Login : `username`=account_id, token dans "login" pas "connecting"
+- ✅ **Version protocole = 1595** (login + game)
+- ✅ **SequenceNumber anti-cheat** : serveur demande → client répond N incrémental (géré S6)
+- ✅ **ClientKeyMessage** : clé 21 chars aléatoires avant GameContextCreate (géré S6)
+- ✅ **buyerDescriptor** : 128 types, tax 3%, maxItemPerAccount 75, unsoldDelay 672h
+- ✅ **ObjectAveragePrices** : ~4906 items/message, x1, par serveur, dynamique (115 chgts/51min)
+- ✅ **64 types ressources** (superTypeId=9) extraits ; 61 présents en HDV
 
 ### Ce qui reste à investiguer
 
 - Le paramètre `STICKER` est-il requis ? (généré côté client — tester sans)
-- Endpoint token : `Account/CreateToken` (live) vs `Game/CreateToken` (ancienne doc) — tester
+- Endpoint token : `Account/CreateToken` **confirmé live** (3 captures) ; `Game/CreateToken` abandonné
 - Fingerprint TLS du WebSocket : `websocket-client` a un JA3 différent d'Android. Migrer vers `curl_cffi.requests.ws_connect` si bans inexpliqués.
 - Logstash télémétrie : confirmée active (config.json `mediatorUrl`). Absence non simulée par notre client. Risque faible à court terme.
+- Fréquence exacte de rafraîchissement du prix moyen (semble continu/au fil des ventes, pas 24h)
 
 ---
 
 ## 📋 TODO / Inconnues à résoudre
 
-- [ ] Tester le code réécrit (session 4) contre le serveur réel — login flow complet
+- [ ] **Tester le code MAJ (S6) contre le serveur réel** — login flow + SequenceNumber + avg-prices
+- [ ] Mesurer la durée d'un run `--avg-prices-only` (1 message) vs collecte HDP ressources complète
 - [ ] Tester si `STICKER` est omettable dans l'URL Primus
-- [ ] Confirmer `Account/CreateToken` vs `Game/CreateToken`
 - [ ] Tester si l'absence de Logstash est détectée sur plusieurs jours
 - [ ] Fingerprint TLS WebSocket — tester curl_cffi ws_connect si bans inexpliqués
-- [ ] Volume : ~126 types × N objets chacun = beaucoup de requêtes. Mesurer la durée
-      d'une collecte complète et ajuster (watchlist / pruning)
+- [ ] Watchlist / pruning : retirer les items dont le prix ne bouge jamais (après quelques jours de données)
+- [ ] Scheduler multi-comptes : rotation horaires + rotation des types consultés (anti-pattern)
+- [ ] Calcul de rentabilité « brisage » : croiser prix ressources (avg) avec recettes de craft
 
 ---
 
 ## 📝 Historique des sessions
+
+### Session 6 (analyse approfondie 2 nouvelles captures + MAJ protocole)
+- Analyse méticuleuse de **2 HAR** (har_1 07:50, har_2 08:41) : login + HDV + achat + gameplay/tuto
+- Handshake game-server entièrement cartographié (44 trames d'init détaillées)
+- **Découvertes protocole majeures :**
+  - `SequenceNumberRequestMessage` → `SequenceNumberMessage{number:N++}` (anti-cheat, **on l'avait raté**)
+  - `ClientKeyMessage{key:21 chars}` + `pingSession{nonce}` (parité client)
+  - Version protocole **1595**, ping Primus **exactement 30s**
+  - `buyerDescriptor` : 128 types + tax 3% + maxItemPerAccount 75 + unsoldDelay 672h
+- **Comparaison des 2 snapshots `ObjectAveragePrices`** : 4906 items identiques, **115 prix changés
+  en 51 min** → confirme que le prix moyen est dynamique (volume + récence), pas figé 24h
+- **Code mis à jour :** SequenceNumber/ClientKey/pingSession dans `connection.py`,
+  `economics` + `collect_resources()` dans `hdv.py`, nouveau `avg_prices.py`,
+  `collect.py` (snapshot avg + flags `--avg-prices-only`/`--no-avg-prices`)
+- **Nouveau doc `PROTOCOL.md`** : référence wire-level complète (3 captures)
+- Recherche web : fonctionnement du prix moyen (devblog Ankama : achats marché + marchands,
+  ~24h officiel mais en pratique plus dynamique, par serveur, formule non publiée)
+
+### Session 5 (dictionnaire + types ressources)
+- `/data/dictionary` non fetchable hors jeu (404) ; dico chargé en mémoire seulement
+- `script.js` pull depuis l'AVD (5,2 Mo) → supertypes trouvés (`RESOURCE:9`, etc.)
+- **`window.gui.databases.ItemTypes`** (console DevTools) → 64 types ressources extraits
+- Découverte `ObjectAveragePricesGetMessage`/`ObjectAveragePricesMessage` dans script.js
+- `item_types.py` créé (RESOURCE_TYPE_IDS + CORE), `collect.py` par défaut sur les ressources
 
 ### Session 1 (exploration)
 - Analyse de LaBot, pydofus2, otomat

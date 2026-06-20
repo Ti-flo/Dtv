@@ -93,6 +93,9 @@ class HdvCollector:
         self._records: list[dict] = []
         self._quantities: list[int] = QUANTITY_TIERS
         self._available_types: list[int] = []
+        # HDV economics from buyerDescriptor (set when the HDV opens). Live values:
+        # tax 3%, maxItemPerAccount 75, unsoldDelay 672 (hours), maxItemLevel 1000.
+        self._economics: dict = {}
 
         self._hdv_ready = threading.Event()
         # Step 1 result: list of GIDs for the type currently being requested
@@ -112,6 +115,34 @@ class HdvCollector:
     def available_types(self) -> list[int]:
         """Item type GIDs advertised by the server (from buyerDescriptor.types)."""
         return list(self._available_types)
+
+    @property
+    def economics(self) -> dict:
+        """HDV economics from buyerDescriptor: taxPercentage, maxItemLevel,
+        maxItemPerAccount, unsoldDelay. Empty until the HDV has been opened."""
+        return dict(self._economics)
+
+    def collect_resources(self, timeout: float = 30.0) -> int:
+        """
+        Collect only resource types (superTypeId=9) that the HDV actually offers.
+
+        Intersects RESOURCE_TYPE_IDS with the server's advertised types so we
+        never waste a round-trip on a type this HDV doesn't sell (live: 3 of our
+        64 resource types are absent — Souvenir, Awakening Material, Vouchers).
+        Returns total records collected.
+        """
+        from .item_types import RESOURCE_TYPE_IDS
+        from .timing import human_delay
+
+        available = set(self._available_types)
+        targets = [t for t in RESOURCE_TYPE_IDS if t in available]
+        log.info("Collecting %d resource types present in this HDV (of %d known)",
+                 len(targets), len(RESOURCE_TYPE_IDS))
+        total = 0
+        for t in targets:
+            total += len(self.collect_type(t, timeout))
+            human_delay(2.0, 5.0)
+        return total
 
     def open_hdv(self, map_id: Optional[int] = None, timeout: float = 15.0) -> bool:
         """
@@ -217,8 +248,13 @@ class HdvCollector:
             if quantities:
                 self._quantities = quantities
             self._available_types = descriptor.get("types", []) or []
-            log.info("HDV opened. quantities=%s, %d types available",
-                     self._quantities, len(self._available_types))
+            self._economics = {
+                k: descriptor.get(k)
+                for k in ("taxPercentage", "maxItemLevel", "maxItemPerAccount", "unsoldDelay")
+                if descriptor.get(k) is not None
+            }
+            log.info("HDV opened. quantities=%s, %d types available, economics=%s",
+                     self._quantities, len(self._available_types), self._economics)
             self._hdv_ready.set()
 
         # Step 1 response: list of object GIDs for the requested type (NO "Items")

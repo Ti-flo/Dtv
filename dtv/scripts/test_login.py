@@ -7,12 +7,13 @@ Does NOT enter the game or open HDV.
 Usage:
     set DTV_LOGIN=yourmail@gmail.com
     set DTV_PASSWORD=yourpassword
-    set DTV_SERVER_ID=401
+    set DTV_SERVER_ID=533
     python -m dtv.scripts.test_login
 
-Server IDs (Dofus Touch — verify with actual ServersListMessage):
-    401 = Grandapan
-    (use test_connect.py first to see the real server list)
+Server IDs (région canada, confirmés live ServersListMessage S6):
+    530=Tiliwan  531=Kelerog  532=Blair  533=Talok  411=Tournament
+    The throwaway test account's character is on 533 (Talok).
+    (server id is account-specific — check ServersListMessage for yours)
 """
 import logging
 import os
@@ -37,10 +38,10 @@ from dtv.collector.connection import DofusTouchSession
 def main():
     login = os.environ.get("DTV_LOGIN")
     password = os.environ.get("DTV_PASSWORD")
-    server_id = int(os.environ.get("DTV_SERVER_ID", "401"))
+    server_id = int(os.environ.get("DTV_SERVER_ID", "533"))
 
     if not login or not password:
-        print("Usage: DTV_LOGIN=x DTV_PASSWORD=y DTV_SERVER_ID=401 python -m dtv.scripts.test_login")
+        print("Usage: DTV_LOGIN=x DTV_PASSWORD=y DTV_SERVER_ID=533 python -m dtv.scripts.test_login")
         sys.exit(1)
 
     print(f"\n=== Test login: {login} → server {server_id} ===\n")
