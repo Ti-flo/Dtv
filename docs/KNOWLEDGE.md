@@ -314,6 +314,28 @@ Source : documentation AnkaBot (communauté de bots Dofus) — retours d'expéri
 - Hooks sur les fonctions SSL BoringSSL laissent des traces mémoire
 - Potentiellement reporté via Logstash
 
+### Niveau protocole (empreinte wire-level) — analysé S6
+
+Une réimplémentation se trahit par des **différences de sérialisation** invisibles
+fonctionnellement mais détectables par inspection serveur. Vérifié sur 3 captures :
+
+- **Omission de `data`** : le vrai client omet le champ `data` interne pour les messages
+  sans argument (`{"type":"CharactersListRequestMessage"}`, pas `…,"data":{}`).
+  ✅ Corrigé S6 (`primus_client.send_message` : `data` falsy → omis). Voir `PROTOCOL.md` §1.
+- **Formats anti-cheat** à respecter exactement : `ClientKey` = 21 chars alphanum,
+  `pingSession` = 9 chiffres, `SequenceNumber` démarre à 1 puis +1 par connexion.
+- **Réponse au `SequenceNumberRequest`** obligatoire (anti-cheat). Déclenché par les
+  **actions de jeu** ; le HDV en lecture ne le déclenche pas → empreinte bot minimale.
+
+**Signaux de suspicion à monitorer** (santé compte) : `TrustStatus.trusted=false`,
+`AuthenticationTicketRefusedMessage`, ou `SequenceNumberRequest` inattendu pendant la
+collecte HDV. Tant que `trusted=true` (cas des 3 sessions), le compte est OK côté serveur.
+
+**Invariants auth/anti-cheat (constant vs variable entre sessions)** : table complète
+dans `PROTOCOL.md` §9. Résumé : ne changent à chaque run que `token` (HAAPI), `salt`/`key`
+(challenge serveur), `STICKER` (client) et `ticket` (game server). Compte, serveur,
+versions et IP interne (`172.29.2.186:5555`) sont stables.
+
 ---
 
 ## ⚠️ Règles de sécurité opérationnelles
@@ -460,6 +482,14 @@ python -m dtv.scripts.collect
 - **Nouveau doc `PROTOCOL.md`** : référence wire-level complète (3 captures)
 - Recherche web : fonctionnement du prix moyen (devblog Ankama : achats marché + marchands,
   ~24h officiel mais en pratique plus dynamique, par serveur, formule non publiée)
+- **Passe de validation (croisée sur 3 sessions) :**
+  - ClientKey (21 chars), pingSession (9 chiffres), SequenceNumber (start 1, +1/conn) **validés**
+  - **Bug d'empreinte trouvé + corrigé** : on envoyait `data:{}` partout ; le vrai client
+    OMET `data` sur les messages sans argument → `send_message` corrigé (11/12 msgs match
+    exact, LeaveDialog `null` vs omis = négligeable)
+  - Invariants auth/anti-cheat cartographiés (`PROTOCOL.md` §9) : token/salt/key/STICKER/ticket
+    = variables ; compte/serveur/versions/IP interne = constants ; `TrustStatus=true` partout
+  - `SequenceNumberRequest` déclenché par actions de jeu, pas par le HDV en lecture
 
 ### Session 5 (dictionnaire + types ressources)
 - `/data/dictionary` non fetchable hors jeu (404) ; dico chargé en mémoire seulement

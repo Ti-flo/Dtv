@@ -26,6 +26,17 @@
 | Client → serveur (calls spéciaux) | `{"call":"<name>","data":<payload>}` |
 | Serveur → client | `{"_messageType":"<Name>", …champs}` |
 
+> ⚠️ **Omission de `data` (empreinte wire-level).** Pour un message **sans
+> argument**, le vrai client **omet entièrement** le champ `data` interne :
+> il envoie `{"type":"CharactersListRequestMessage"}`, **pas** `…,"data":{}`.
+> Confirmé sur 3 captures pour *tous* les messages sans argument
+> (`CharactersListRequestMessage`, `GameContextCreateRequestMessage`,
+> `ObjectAveragePricesGetMessage`, `QuestListRequestMessage`, …). Envoyer
+> `data:{}` systématiquement serait un signal distinctif. Notre `send_message`
+> applique la règle « `data` falsy → omettre » (`primus_client.py`).
+> Seule exception observée : `LeaveDialogRequestMessage` envoie `data:null`
+> (on l'omet — sémantiquement identique côté serveur, écart négligeable).
+
 **Calls spéciaux** (hors `sendMessage`) observés :
 `connecting`, `login`, `disconnecting`, `pingSession`, `moneyGoultinesAmountRequest`,
 `arenaPlayerRank`, `bakSoftToHardCurrentRateRequest`, `bakHardToSoftCurrentRateRequest`,
@@ -343,7 +354,66 @@ est ancien (Chrome 91). En production on imite plutôt un vrai device. `curl_cff
 
 ---
 
-## 9. Endpoints HTTP utiles (hors WebSocket)
+## 9. Invariants — ce qui change vs reste constant entre sessions
+
+Analyse croisée sur **3 sessions du même compte** (S4, S6a, S6b ; accountId 188926644).
+Crucial pour distinguer ce qu'on peut coder en dur de ce qui doit être dérivé à chaque run.
+
+### Authentification
+
+| Champ | Constant / Variable | Valeur(s) observée(s) |
+|---|---|---|
+| `appVersion` / `buildVersion` | 🟢 **constant** | `3.11.0` / `1.72.11` |
+| Version protocole | 🟢 **constant** | `1595` |
+| `connecting.language` | 🟢 constant (locale device) | `en` |
+| `login.username` (= accountId) | 🟢 **constant** (propre au compte) | `188926644` |
+| `IdentificationSuccess.accountId` | 🟢 constant | `188926644` |
+| `IdentificationSuccess.nickname` | 🟢 constant | `Ramundoh#8708` |
+| `IdentificationSuccess.accountCreation` | 🟢 constant | `1781902716000` |
+| `ServerSelection.serverId` | 🟢 constant (choix joueur) | `533` (Talok) |
+| `SelectedServer.address:port` | 🟢 **constant** (IP interne stable) | `172.29.2.186:5555` |
+| `SelectedServer._access` | 🟢 constant (région) | `…canada…` |
+| `HelloConnect.key` longueur | 🟢 constant | **305** octets (contenu variable) |
+| **`login.token`** (UUID) | 🔴 **variable** | régénéré par HAAPI à **chaque auth** |
+| **`STICKER`** (URL Primus) | 🔴 variable | généré client ; **identique login+game** d'une même session |
+| **`HelloConnect.salt`** | 🔴 variable | challenge serveur, ~31 chars, **par connexion** |
+| **`HelloConnect.key`** (contenu) | 🔴 variable | challenge serveur, 305 octets, par connexion |
+| **`SelectedServer.ticket`** | 🔴 variable | jeton **usage unique** game server, par session |
+| `AuthenticationTicket.ticket` | 🔴 variable | = `SelectedServer.ticket` (toujours recopié) |
+| `IdentificationSuccess.login` | 🔴 variable | id de session **croissant** (535623357 < 536342810 < 536418256) |
+
+**À retenir :** seuls `token`, `salt`/`key`, `STICKER` et `ticket` changent et doivent
+être obtenus/échangés à chaque run. Tout le reste (compte, serveur, versions, IP interne)
+est stable. `salt`/`key` du `HelloConnectMessage` sont **réémis tels quels** dans `login`
+(challenge-response : on ne calcule rien, on recopie).
+
+### Contrôles serveur / anti-cheat
+
+| Contrôle | Constant / Variable | Détail |
+|---|---|---|
+| `ClientKeyMessage.key` | format 🟢 / valeur 🔴 | **toujours 21 chars alphanum**, valeur aléatoire/session |
+| `pingSession` nonce | format 🟢 / valeur 🔴 | **toujours 9 chiffres**, valeur aléatoire/session |
+| `SequenceNumberMessage.number` | 🟢 **règle constante** | démarre à **1**, **+1 par requête**, **par connexion** |
+| `SequenceNumberRequestMessage` (déclencheur) | — | poussé par le serveur sur **actions de jeu** |
+| `BasicAckMessage.seq` | 🟢 règle | démarre à **0**, +1, serveur→client (informatif) |
+| `TrustStatusMessage.trusted` | 🟢 constant | **`true`** sur les 3 sessions (compte « de confiance ») |
+| `AccountCapabilities` | 🟢 constant | `status:0`, `tutorialAvailable:true`, `maxCharacterCount:5` |
+
+**Déclencheur de `SequenceNumberRequest` :** confirmé sur **action de jeu**, pas sur
+lecture. S4 et S6a (focus HDV : ouverture + 11 listes + 1 achat) → **1 seule** demande
+(celle de l'init). S6b (déplacement + usage interactif/Zaap) → **2** demandes (init +
+juste après `InteractiveUseRequestMessage`). **Le HDV en lecture ne déclenche aucune
+nouvelle demande de séquence.** L'empreinte d'un bot de collecte read-only est donc minimale :
+répondre à l'unique demande d'init suffit en pratique, mais le handler doit rester actif
+en permanence (une demande peut survenir à tout moment).
+
+**Signaux à surveiller (santé du compte) :** si un jour `TrustStatus.trusted=false`,
+ou `AuthenticationTicketRefusedMessage`, ou un `SequenceNumberRequest` inattendu pendant
+la collecte HDV → indice de suspicion côté serveur, lever une alerte.
+
+---
+
+## 10. Endpoints HTTP utiles (hors WebSocket)
 
 | URL | Contenu |
 |---|---|

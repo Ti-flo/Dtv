@@ -147,9 +147,19 @@ class PrimusClient:
     def send_message(self, msg_type: str, data: dict = None):
         """
         Send a game message.
-        Wraps in {"call": "sendMessage", "data": {"type": ..., "data": ...}}.
+        Wraps in {"call":"sendMessage","data":{"type":...[,"data":...]}}.
+
+        The inner "data" field is OMITTED for no-arg messages, matching the real
+        client byte-for-byte: it sends {"type":"CharactersListRequestMessage"}
+        with no "data" key, NOT data:{}. Always sending data:{} would be a
+        wire-level fingerprint distinguishing us from the official client.
+        (Confirmed across 3 live captures: every no-arg request omits "data";
+        only messages with real fields carry it.)
         """
-        self._write("sendMessage", {"type": msg_type, "data": data or {}})
+        inner = {"type": msg_type}
+        if data:  # falsy for None and {} → omit, matching the real client
+            inner["data"] = data
+        self._write("sendMessage", inner)
 
     def send_call(self, call: str, data=None):
         """
