@@ -45,7 +45,9 @@ except ImportError:
     pass
 
 from dtv.collector.haapi import authenticate
-from dtv.collector.connection import DofusTouchSession
+from dtv.collector.connection import (
+    DofusTouchSession, classify_error, RETRY_LATER, STOP_HUMAN,
+)
 from dtv.collector.hdv import HdvCollector
 from dtv.collector.avg_prices import AveragePricesCollector
 from dtv.collector.timing import human_delay
@@ -106,12 +108,13 @@ def main():
     collector = HdvCollector(session, account=login)
     avg_collector = AveragePricesCollector(session, account=login)
 
+    failed = False
     try:
         session.connect()
         log.info("Waiting for game to be ready...")
         if not session.wait_for_game(timeout=90):
             log.error("Game not ready after 90s — aborting")
-            sys.exit(1)
+            raise RuntimeError("game_not_ready_timeout")
         log.info("Game ready!")
 
         # 3. Average-price snapshot (one message ≈ 4900 items, fully legit traffic)
@@ -159,11 +162,28 @@ def main():
 
     except KeyboardInterrupt:
         log.info("Interrupted by user")
+        return
     except Exception as e:
         log.exception("Collection failed: %s", e)
+        failed = True
     finally:
         session.disconnect()
         log.info("=== Collection session ended ===")
+
+    # Map the outcome to an exit code a scheduler can act on:
+    #   0 = OK | 2 = retry later (maintenance/network) | 3 = stop, human needed
+    #   (ban / outdated client) | 1 = unknown failure
+    if not failed and session.error is None:
+        return  # clean success → exit 0
+    category = classify_error(session.error)
+    if category == STOP_HUMAN:
+        log.error("STOP — human intervention required (%s). Not retrying.", session.error)
+        sys.exit(3)
+    if category == RETRY_LATER:
+        log.warning("Transient failure (%s) — scheduler should retry next slot.", session.error)
+        sys.exit(2)
+    log.error("Run failed (%s) — exit 1.", session.error or "unknown")
+    sys.exit(1)
 
 
 if __name__ == "__main__":

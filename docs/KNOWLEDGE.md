@@ -5,6 +5,7 @@
 >
 > 📖 **Référence wire-level complète du protocole : [`PROTOCOL.md`](PROTOCOL.md)**
 > (séquences exactes confirmées sur 3 captures HAR, catalogue des messages, formats).
+> 🛠️ **Exploitation (maintenance, MAJ, bans, codes de sortie) : [`OPERATIONS.md`](OPERATIONS.md)**
 > Ce fichier-ci reste la vue d'ensemble (architecture, sécurité, état du projet).
 
 ---
@@ -393,7 +394,7 @@ Ankama bloque Protonmail à l'inscription
 |---|---|---|
 | `dtv/collector/haapi.py` | ✅ Réécrit S4 | `authenticate()` → (account_id, token), endpoint Account/CreateToken |
 | `dtv/collector/primus_client.py` | ✅ Prêt | DisconnectReason, heartbeat watchdog (30s ping), send lock |
-| `dtv/collector/connection.py` | ✅ MAJ S6 | Login flow live + **SequenceNumber, ClientKey, pingSession** |
+| `dtv/collector/connection.py` | ✅ MAJ S6 | Login + anti-cheat + **maintenance/MAJ/ban détectés, classify_error** |
 | `dtv/collector/hdv.py` | ✅ MAJ S6 | Flow HDV 2 étapes + `collect_resources()` + `economics` |
 | `dtv/collector/avg_prices.py` | ✅ Nouveau S6 | **Snapshot prix moyens (~4900 items / message)** |
 | `dtv/collector/item_types.py` | ✅ Nouveau S5 | 64 types ressources (superTypeId=9) + 41 core |
@@ -460,7 +461,9 @@ python -m dtv.scripts.collect
 - [ ] Fingerprint TLS WebSocket — tester curl_cffi ws_connect si bans inexpliqués
 - [ ] Watchlist / pruning : retirer les items dont le prix ne bouge jamais (après quelques jours de données)
 - [ ] Scheduler multi-comptes : rotation horaires + rotation des types consultés (anti-pattern)
+- [ ] **Scheduler : éviter la fenêtre de maintenance (mardi 7h30-11h Paris)** + gérer codes 2/3
 - [ ] Calcul de rentabilité « brisage » : croiser prix ressources (avg) avec recettes de craft
+- [ ] Token HAAPI : single-use ou réutilisable ? (impacte la reconnexion `auto_reconnect`)
 
 ---
 
@@ -490,6 +493,14 @@ python -m dtv.scripts.collect
   - Invariants auth/anti-cheat cartographiés (`PROTOCOL.md` §9) : token/salt/key/STICKER/ticket
     = variables ; compte/serveur/versions/IP interne = constants ; `TrustStatus=true` partout
   - `SequenceNumberRequest` déclenché par actions de jeu, pas par le HDV en lecture
+- **Passe robustesse (maintenance / MAJ / ban) :**
+  - Détection maintenance : `ServersListMessage.status != 3` / `isSelectable` avant sélection
+  - Détection MAJ : `ProtocolRequired.requiredVersion != 1595` + `IdentificationFailedForBadVersion`
+  - Détection ban : `IdentificationFailedBanned` ; gestion file d'attente `QueueStatusMessage`
+  - **Bug reconnexion corrigé** : le ticket est à usage unique → reconnexion = re-login complet ;
+    défaut `auto_reconnect=False` (abandon propre, le scheduler relance)
+  - `classify_error()` → codes de sortie collect.py (0 OK / 2 retry / 3 stop-humain / 1 inconnu)
+  - **Nouveau doc `OPERATIONS.md`** (calendrier maintenance mardi ~8h-10h30 Paris, procédures)
 
 ### Session 5 (dictionnaire + types ressources)
 - `/data/dictionary` non fetchable hors jeu (404) ; dico chargé en mémoire seulement

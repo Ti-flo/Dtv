@@ -9,18 +9,31 @@ Orchestrates the full login flow:
   5. Select character
   6. Emit game-ready event → HDV collection can start
 
-Reconnection behaviour (4 distinct disconnect cases):
+Disconnect handling (see DisconnectReason):
   CLIENT_CLOSE  → intentional, no reconnect
-  SERVER_CLOSE  → kicked/maintenance, no reconnect (raise error)
-  PING_TIMEOUT  → network glitch, reconnect with exponential backoff
-  TCP_DROP      → ambiguous, reconnect with exponential backoff + caution
+  SERVER_CLOSE  → kicked/maintenance/session expired, no reconnect (error set)
+  PING_TIMEOUT  → network glitch
+  TCP_DROP      → ambiguous network drop
 
-Circuit breaker: after 3 unexpected disconnects in 5 minutes, give up.
+Default (auto_reconnect=False, for short collection runs): any unexpected
+mid-session drop ABORTS the run cleanly (a dropped game socket can't resume an
+open HDV dialog) and the scheduler re-runs the whole pipeline. With
+auto_reconnect=True (long-lived sessions): a full RE-LOGIN is performed (the
+game ticket from SelectedServerDataMessage is single-use, so the game socket
+cannot simply be reopened), guarded by a circuit breaker (3 drops / 5 min).
 
-Architecture confirmed from script.js + PCAPdroid captures:
-  Login server:  dt-proxy-production-login.ankama-games.com  (TCP → TLS)
-  Game server:   dt-proxy-production-france.ankama-games.com (TCP → TLS)
-  Protocol:      Primus WebSocket, JSON messages
+Maintenance & game updates:
+  - Server not joinable (ServersListMessage.status != 3 / isSelectable false)
+    → treated as maintenance, abort with a retry-later error.
+  - ProtocolRequired.requiredVersion != PROTOCOL_VERSION, or
+    IdentificationFailedForBadVersionMessage → game updated, abort with a
+    stop-and-alert error (APP/BUILD versions and protocol must be re-captured).
+  classify_error() maps every error to retry-later vs stop-human for schedulers.
+
+Architecture confirmed from live captures:
+  Login server:  dt-proxy-production-login.ankama-games.com
+  Game server:   host from SelectedServerDataMessage._access (region-dependent)
+  Protocol:      Primus WebSocket, JSON messages, version 1595
 """
 import logging
 import random
@@ -57,6 +70,48 @@ PRIMUS_PATH = "/primus"
 APP_VERSION = "3.11.0"
 BUILD_VERSION = "1.72.11"
 CLIENT = "android"
+
+# Wire protocol version advertised by the server (ProtocolRequired.requiredVersion).
+# Confirmed 1595 on 3 captures (login + game). If the server ever requires a
+# DIFFERENT version, the game has been updated: message formats may have changed
+# and APP_VERSION/BUILD_VERSION above are likely stale → re-capture before trusting.
+PROTOCOL_VERSION = 1595
+
+# GameServerInformations.status — 3 = ONLINE/joinable (confirmed live).
+# Anything else (offline/starting/saving) means the server is not joinable,
+# which during the weekly window means maintenance.
+SERVER_STATUS_ONLINE = 3
+
+
+# Error categories — lets a scheduler decide retry-later vs stop-and-alert.
+RETRY_LATER = "retry_later"   # transient: maintenance, network, queue
+STOP_HUMAN = "stop_human"     # needs intervention: ban, outdated client
+UNKNOWN = "unknown"
+
+
+def classify_error(error: Optional[str]) -> str:
+    """
+    Map a session error string to an action category.
+
+    RETRY_LATER → maintenance / network blip / server unavailable: the scheduler
+                  should simply try again at the next slot.
+    STOP_HUMAN  → account banned or client outdated (game updated): stop the bot,
+                  a human must intervene (new account / re-capture protocol).
+    """
+    if not error:
+        return UNKNOWN
+    e = error.lower()
+    # Needs a human: ban, outdated client (game updated), or a config problem
+    # that retrying can't fix (no character on the configured server).
+    if "banned" in e or "outdated" in e or "bad_version" in e or "no_characters" in e:
+        return STOP_HUMAN
+    # Transient: maintenance, network blips, expired ticket (fresh token next run).
+    if ("server_unavailable" in e or "server_close" in e or "server_not_found" in e
+            or "ping_timeout" in e or "tcp_drop" in e or "circuit_breaker" in e
+            or "auth_phase_disconnect" in e or "no_game_server_access" in e
+            or "ticket_refused" in e or "game_dropped" in e):
+        return RETRY_LATER
+    return UNKNOWN
 
 
 def _primus_query() -> str:
@@ -113,14 +168,21 @@ class _CircuitBreaker:
 
 class DofusTouchSession:
     """
-    Manages a full Dofus Touch session from auth to in-game, with reconnection.
+    Manages a full Dofus Touch session from auth to in-game.
+
+    Detects maintenance (server not joinable) and game updates (protocol/version
+    mismatch), and surfaces a categorisable error (see classify_error). By default
+    a mid-session drop aborts cleanly; pass auto_reconnect=True for full-re-login
+    resilience on long-lived sessions.
 
     Usage:
         account_id, token = authenticate("mail@gmail.com", "pw")
         session = DofusTouchSession(game_token=token, server_id=533, account_id=account_id)
         session.connect()
-        session.wait_for_game(timeout=60)
-        # Now in game, can use session.send_message(...)
+        if session.wait_for_game(timeout=60):
+            ...  # in game, session.send_message(...)
+        else:
+            print(classify_error(session.error))  # retry_later / stop_human
         session.disconnect()
     """
 
@@ -132,6 +194,7 @@ class DofusTouchSession:
         character_id: Optional[int] = None,  # None = pick first character
         lang: str = "fr",
         login_server: str = LOGIN_SERVER,
+        auto_reconnect: bool = False,
     ):
         self.game_token = game_token
         self.server_id = server_id
@@ -139,6 +202,11 @@ class DofusTouchSession:
         self.character_id = character_id
         self.lang = lang
         self.login_server = login_server
+        # For a short collection run, a mid-session drop can't cleanly resume the
+        # HDV dialog, so the default is to abort and let the scheduler re-run the
+        # whole pipeline. Set True only for long-lived/persistent sessions, where
+        # reconnect does a FULL re-login (the game ticket is single-use).
+        self.auto_reconnect = auto_reconnect
 
         self._login_client: Optional[PrimusClient] = None
         self._game_client: Optional[PrimusClient] = None
@@ -160,6 +228,10 @@ class DofusTouchSession:
         # and we must reply with an incrementing number (1, 2, 3…). Resets to 0 on
         # each new game connection (the count is per-connection, confirmed live).
         self._sequence_number = 0
+
+        # Set True if ProtocolRequired advertises a version != PROTOCOL_VERSION
+        # (game updated). Surfaced so the operator knows to re-capture.
+        self._protocol_outdated = False
 
         # Reconnection state
         self._active = False               # False → disconnect() was called, abort reconnects
@@ -199,6 +271,11 @@ class DofusTouchSession:
         self._setup_login_handlers()
         self._login_client.connect(wait=True, timeout=15)
 
+    @property
+    def error(self) -> Optional[str]:
+        """The reason the session failed, or None. See classify_error()."""
+        return self._error
+
     def wait_for_game(self, timeout: float = 90.0) -> bool:
         """
         Block until the game is fully loaded and character is in-game.
@@ -222,6 +299,39 @@ class DofusTouchSession:
             self._login_client.disconnect()
 
     # ------------------------------------------------------------------ #
+    # Shared handlers (login + game)                                      #
+    # ------------------------------------------------------------------ #
+
+    def _on_protocol_required(self, msg):
+        """
+        ProtocolRequired arrives on both servers right after 'connecting'.
+        If the required version differs from what we built against, the game
+        has been updated: message formats may have changed and our hardcoded
+        APP_VERSION/BUILD_VERSION are likely stale. Surface it loudly — the
+        login will probably be rejected (IdentificationFailedForBadVersion)
+        but this is the earliest, clearest signal that a re-capture is needed.
+        """
+        required = msg.get("requiredVersion")
+        current = msg.get("currentVersion")
+        if required is not None and required != PROTOCOL_VERSION:
+            log.error("⚠️ PROTOCOL VERSION CHANGED: server requires %s, code built for %s "
+                      "(current=%s). Game likely updated — re-capture protocol & bump "
+                      "APP_VERSION/BUILD_VERSION before trusting any data.",
+                      required, PROTOCOL_VERSION, current)
+            self._protocol_outdated = True
+
+    def _on_queue_status(self, msg):
+        """
+        QueueStatusMessage: a login/connection queue (common right after the
+        weekly maintenance when everyone reconnects). position 0/total 0 = no
+        queue. We just wait it out (the server advances us); log when queued.
+        """
+        position = msg.get("position", 0)
+        total = msg.get("total", 0)
+        if position or total:
+            log.info("In login queue: position %s / %s — waiting", position, total)
+
+    # ------------------------------------------------------------------ #
     # Login server handlers                                               #
     # ------------------------------------------------------------------ #
 
@@ -240,6 +350,9 @@ class DofusTouchSession:
                 "appVersion": APP_VERSION,
                 "buildVersion": BUILD_VERSION,
             })
+
+        c.on("ProtocolRequired")(self._on_protocol_required)
+        c.on("QueueStatusMessage")(self._on_queue_status)
 
         @c.on("HelloConnectMessage")
         def on_hello(msg):
@@ -267,7 +380,27 @@ class DofusTouchSession:
         def on_servers(msg):
             self._servers = msg.get("servers", [])
             log.info("Servers list received (%d servers)", len(self._servers))
-            log.info("Selecting server id=%d", self.server_id)
+
+            target = next((s for s in self._servers if s.get("id") == self.server_id), None)
+            if target is None:
+                log.error("Target server %d not in the list — wrong DTV_SERVER_ID?", self.server_id)
+                self._error = "server_not_found"
+                self._game_ready.set()
+                return
+
+            status = target.get("status")
+            selectable = target.get("isSelectable", False)
+            if status != SERVER_STATUS_ONLINE or not selectable:
+                # status != 3 / not selectable during the weekly window = maintenance.
+                # Abort cleanly: the scheduler should simply retry the next slot.
+                log.warning("Server %d (%s) not joinable: status=%s isSelectable=%s "
+                            "— likely maintenance, aborting (retry later)",
+                            self.server_id, target.get("_name"), status, selectable)
+                self._error = f"server_unavailable:status={status}"
+                self._game_ready.set()
+                return
+
+            log.info("Selecting server id=%d (%s)", self.server_id, target.get("_name"))
             c.send_message("ServerSelectionMessage", {"serverId": self.server_id})
 
         @c.on("SelectedServerDataMessage")
@@ -301,9 +434,28 @@ class DofusTouchSession:
             self._login_client.disconnect()
             self._connect_to_game_server()
 
-        @c.on("IdentificationFailedMessage")
-        @c.on("IdentificationFailedBannedMessage")
         @c.on("IdentificationFailedForBadVersionMessage")
+        def on_bad_version(msg):
+            # Definitive "your client is outdated" signal — the game was updated.
+            # Don't reconnect; the operator must bump APP/BUILD version + re-capture.
+            required = msg.get("requiredVersion") or msg.get("version")
+            log.error("⚠️ CLIENT OUTDATED (IdentificationFailedForBadVersion): "
+                      "server wants version %s, we send app=%s build=%s. "
+                      "Game updated — STOP and re-capture the protocol.",
+                      required, APP_VERSION, BUILD_VERSION)
+            self._error = "outdated_client_needs_update"
+            self._active = False
+            self._game_ready.set()
+
+        @c.on("IdentificationFailedBannedMessage")
+        def on_banned(msg):
+            # Account banned — never reconnect, raise loudly.
+            log.error("⛔ ACCOUNT BANNED (IdentificationFailedBannedMessage): %s", msg)
+            self._error = "account_banned"
+            self._active = False
+            self._game_ready.set()
+
+        @c.on("IdentificationFailedMessage")
         def on_ident_failed(msg):
             reason = msg.get("reason") or msg.get("_messageType", "unknown")
             log.error("Identification failed: %s", reason)
@@ -329,6 +481,9 @@ class DofusTouchSession:
     def _setup_game_handlers(self):
         c = self._game_client
         ticket = self._ticket or self.game_token
+
+        c.on("ProtocolRequired")(self._on_protocol_required)
+        c.on("QueueStatusMessage")(self._on_queue_status)
 
         @c.on("__open__")
         def on_game_open(msg):
@@ -460,6 +615,16 @@ class DofusTouchSession:
             self._game_ready.set()
             return
 
+        # Mid-session drop after we were in-game. For a collection run we don't
+        # try to resume (the HDV dialog state is gone) — abort cleanly and let the
+        # scheduler re-run. Only attempt reconnect if explicitly enabled.
+        if not self.auto_reconnect:
+            log.warning("Game dropped [%s] — aborting run (auto_reconnect off); "
+                        "scheduler should retry.", reason.value if reason else "unknown")
+            self._error = f"game_dropped:{reason.value if reason else 'unknown'}"
+            self._game_ready.set()
+            return
+
         self._circuit_breaker.record()
         if self._circuit_breaker.is_open():
             log.error(
@@ -492,11 +657,16 @@ class DofusTouchSession:
         if not self._active:
             return
 
-        log.info("Reconnecting to game server (attempt %d)…", attempt + 1)
+        log.info("Reconnecting (full re-login, attempt %d)…", attempt + 1)
         self._game_ready.clear()
 
         try:
-            self._connect_to_game_server()
+            # A game-server ticket is SINGLE-USE; reopening the game socket with the
+            # old ticket would be refused. Redo the FULL login flow (login server →
+            # fresh ServerSelection → fresh ticket → game), reusing the HAAPI
+            # game_token. If that token is itself expired, the login handlers set
+            # _error (IdentificationFailed) and we abort cleanly rather than loop.
+            self.connect()
         except Exception as e:
             log.error("Reconnect attempt %d failed: %s", attempt + 1, e)
             self._circuit_breaker.record()
@@ -505,6 +675,6 @@ class DofusTouchSession:
                 self._error = "circuit_breaker_open"
                 self._game_ready.set()
             elif self._active:
-                # _connect_to_game_server raised before creating a client that could
-                # fire __close__, so we reschedule manually
+                # connect() raised before any client could fire __close__, so we
+                # reschedule manually
                 threading.Thread(target=self._reconnect_game, daemon=True).start()
