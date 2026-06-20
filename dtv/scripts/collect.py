@@ -48,11 +48,13 @@ from dtv.collector.haapi import authenticate
 from dtv.collector.connection import DofusTouchSession
 from dtv.collector.hdv import HdvCollector
 from dtv.collector.timing import human_delay
+from dtv.collector.item_types import CORE_RESOURCE_TYPE_IDS, RESOURCE_TYPE_IDS
 
 def main():
     parser = argparse.ArgumentParser(description="Collect HDV prices from Dofus Touch")
     parser.add_argument("--categories",
-                        help="Comma-separated type GIDs (default: all types from buyerDescriptor)",
+                        help="Comma-separated type GIDs. Use 'all' for all HDV types, "
+                             "'resources' for all resource types (default: core resources)",
                         default=None)
     parser.add_argument("--server-id", type=int, default=None)
     parser.add_argument("--character-id", type=int, default=None)
@@ -63,10 +65,14 @@ def main():
     server_id = args.server_id or int(os.environ.get("DTV_SERVER_ID", "401"))
     character_id = args.character_id or (int(os.environ.get("DTV_CHARACTER_ID")) if os.environ.get("DTV_CHARACTER_ID") else None)
 
-    # None = collect every type advertised by the server (buyerDescriptor.types)
-    categories = None
-    if args.categories:
+    if args.categories == "all":
+        categories = None  # use buyerDescriptor.types from server
+    elif args.categories == "resources":
+        categories = RESOURCE_TYPE_IDS
+    elif args.categories:
         categories = [int(c.strip()) for c in args.categories.split(",")]
+    else:
+        categories = CORE_RESOURCE_TYPE_IDS  # default: 40 core crafting resources
 
     if not login or not password:
         log.error("DTV_LOGIN and DTV_PASSWORD must be set")
@@ -108,7 +114,7 @@ def main():
 
         # 4. Collect item types (all advertised, or the explicit subset)
         if categories is None:
-            log.info("Collecting all %d advertised types...", len(collector.available_types))
+            log.info("Collecting all %d advertised types from server...", len(collector.available_types))
             total_records = collector.collect_all(timeout=30)
         else:
             total_records = 0
