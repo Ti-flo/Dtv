@@ -38,15 +38,19 @@ def create_api_key(login: str, password: str) -> dict:
     """
     POST credentials → api_key dict.
 
+    /Api/CreateApiKey is for guest accounts only.
+    Regular Ankama accounts use /Account/Login which returns the same shape.
+
     Returns dict with at minimum: {"key": "...", "account_id": ...}
     The "key" field is what's passed to create_token().
     """
-    url = f"{HAAPI_BASE}/Ankama/v5/Api/CreateApiKey"
+    url = f"{HAAPI_BASE}/Ankama/v5/Account/Login"
     payload = {
         "login": login,
         "password": password,
-        "long_life_token": False,
+        "long_life_token": "false",
         "game": GAME_ID,
+        "lang": "fr",
     }
     resp = requests.post(url, data=payload, headers=_HEADERS, impersonate="chrome_android", timeout=30)
     if not resp.ok:
