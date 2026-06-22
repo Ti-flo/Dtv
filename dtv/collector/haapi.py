@@ -26,7 +26,6 @@ _HEADERS = {
     "sec-ch-ua-mobile": "?0",
     "sec-ch-ua-platform": '"Android"',
     "x-requested-with": "com.ankama.dofustouch",
-    "Content-Type": "application/json",
     "Accept": "application/json",
     "sec-fetch-site": "cross-site",
     "sec-fetch-mode": "cors",
@@ -49,7 +48,7 @@ def create_api_key(login: str, password: str) -> dict:
         "long_life_token": False,
         "game": GAME_ID,
     }
-    resp = requests.post(url, json=payload, headers=_HEADERS, impersonate="chrome_android", timeout=30)
+    resp = requests.post(url, data=payload, headers=_HEADERS, impersonate="chrome_android", timeout=30)
     if not resp.ok:
         raise RuntimeError(f"HTTP {resp.status_code}: {resp.text}")
     return resp.json()
