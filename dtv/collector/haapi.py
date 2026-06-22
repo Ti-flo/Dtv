@@ -50,7 +50,8 @@ def create_api_key(login: str, password: str) -> dict:
         "game": GAME_ID,
     }
     resp = requests.post(url, json=payload, headers=_HEADERS, impersonate="chrome_android", timeout=30)
-    resp.raise_for_status()
+    if not resp.ok:
+        raise RuntimeError(f"HTTP {resp.status_code}: {resp.text}")
     return resp.json()
 
 
@@ -68,7 +69,8 @@ def create_token(api_key: str) -> str:
     url = f"{HAAPI_BASE}/Ankama/v5/Account/CreateToken"
     headers = {**_HEADERS, "apikey": api_key}
     resp = requests.get(url, params={"game": GAME_ID}, headers=headers, impersonate="chrome_android", timeout=30)
-    resp.raise_for_status()
+    if not resp.ok:
+        raise RuntimeError(f"HTTP {resp.status_code}: {resp.text}")
     return resp.json()["token"]
 
 
