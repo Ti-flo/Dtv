@@ -111,11 +111,12 @@ class PrimusClient:
 
         headers = {
             "User-Agent": (
-                "Mozilla/5.0 (Linux; Android 9; SM-S908E Build/TP1A.220624.014; wv) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/129.0.6668.70 "
-                "Safari/537.36 DofusTouch Client 3.11.0"
+                "Mozilla/5.0 (Linux; Android 12; sdk_gphone64_x86_64 Build/SE1A.220826.008; wv) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/91.0.4472.114 "
+                "Mobile Safari/537.36 DofusTouch Client 3.11.0"
             ),
             "Origin": "file://",
+            "Accept-Language": "en-US,en;q=0.9",
         }
         self._ws = websocket.WebSocketApp(
             self._url,

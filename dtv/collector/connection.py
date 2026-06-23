@@ -66,9 +66,9 @@ LOGIN_SERVER = "https://dt-proxy-production-login.ankama-games.com"
 # Primus endpoint path — ✅ confirmed live (session 4 HAR): /primus
 PRIMUS_PATH = "/primus"
 
-# Client identity sent in the "connecting" call — confirmed live
+# Client identity sent in the "connecting" call — confirmed live (HAR session, 1.72.12)
 APP_VERSION = "3.11.0"
-BUILD_VERSION = "1.72.11"
+BUILD_VERSION = "1.72.12"
 CLIENT = "android"
 
 # Wire protocol version advertised by the server (ProtocolRequired.requiredVersion).
