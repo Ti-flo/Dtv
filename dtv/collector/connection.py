@@ -114,16 +114,25 @@ def classify_error(error: Optional[str]) -> str:
     return UNKNOWN
 
 
-def _primus_query() -> str:
+def _new_sticker() -> str:
     """
-    Primus appends a sticky-session id (STICKER) and a callback id (_primuscb)
-    to the WS URL. Confirmed live but origin is client-side. We generate
-    plausible values; if the server rejects them, try connecting without.
+    Primus sticky-session id. Confirmed live: 15 chars from the base64 alphabet
+    (the real value 'OUJ/6p9sxiOLdT/' contains '/'), and the SAME value is reused
+    across the login and game connections of one session. Generate once per
+    session and pass it to _primus_query() for both connects.
     """
-    import random
-    import string
-    sticker = "".join(random.choices(string.ascii_letters + string.digits, k=15))
-    cb = "".join(random.choices(string.ascii_letters + string.digits, k=7))
+    alphabet = string.ascii_letters + string.digits + "+/"
+    return "".join(random.choices(alphabet, k=15))
+
+
+def _primus_query(sticker: str) -> str:
+    """
+    Build the Primus query string: a session-stable STICKER plus a per-connection
+    callback id (_primuscb). Confirmed live: _primuscb is 7 chars from the
+    base64url alphabet (real values 'Pxpdi_6', 'PxpdlVn' contain '_').
+    Origin is client-side; if the server rejects them, try connecting without.
+    """
+    cb = "".join(random.choices(string.ascii_letters + string.digits + "-_", k=7))
     return f"?STICKER={sticker}&_primuscb={cb}"
 
 
@@ -208,6 +217,10 @@ class DofusTouchSession:
         # reconnect does a FULL re-login (the game ticket is single-use).
         self.auto_reconnect = auto_reconnect
 
+        # Session-stable Primus sticky-session id, reused for both the login and
+        # game connections (confirmed live: same STICKER on both sockets).
+        self._sticker = _new_sticker()
+
         self._login_client: Optional[PrimusClient] = None
         self._game_client: Optional[PrimusClient] = None
         self._game_ready = threading.Event()
@@ -264,7 +277,7 @@ class DofusTouchSession:
         log.info("Config loaded. dataUrl=%s", config.get("dataUrl"))
 
         login_ws_url = self.login_server.replace("https://", "wss://").replace("http://", "ws://")
-        login_ws_url += PRIMUS_PATH + _primus_query()
+        login_ws_url += PRIMUS_PATH + _primus_query(self._sticker)
 
         log.info("Connecting to login server: %s", login_ws_url)
         self._login_client = PrimusClient(login_ws_url)
@@ -422,7 +435,7 @@ class DofusTouchSession:
             access = msg.get("_access")  # e.g. https://dt-proxy-production-canada.ankama-games.com
             if access:
                 host = access.replace("https://", "").replace("http://", "").rstrip("/")
-                self._game_server_url = f"wss://{host}{PRIMUS_PATH}{_primus_query()}"
+                self._game_server_url = f"wss://{host}{PRIMUS_PATH}{_primus_query(self._sticker)}"
             else:
                 log.error("No _access in SelectedServerDataMessage — cannot locate game server")
                 self._error = "no_game_server_access"

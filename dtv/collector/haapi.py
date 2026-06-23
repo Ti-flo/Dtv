@@ -69,22 +69,40 @@ def create_token(api_key: str) -> str:
     return resp.json()["token"]
 
 
+def _field(d: dict, *names: str):
+    """Return the first present key among names, or None — HAAPI field naming
+    (key/apikey, account_id/accountId) varies; the live response body wasn't
+    captured, so accept the known aliases instead of crashing on KeyError."""
+    for n in names:
+        if n in d:
+            return d[n]
+    return None
+
+
 def authenticate(apikey: str, refresh_token: str) -> tuple[str, str, str, str]:
     """
     Full refresh flow → (account_id, game_token, new_apikey, new_refresh_token).
 
-    The old apikey and refresh_token are invalidated — save the new values to
-    .env after each call (use dotenv.set_key or update manually).
+    NOTE on token rotation: RefreshApiKey may rotate the refresh_token (the app
+    sends long_life_token=1, which usually means a reusable long-life token, but
+    that's unconfirmed). The new values are returned so the caller can persist
+    them. Do NOT use the Ankama app on this account while the bot runs — both
+    sharing one token chain can invalidate each other.
 
     Usage:
         account_id, token, new_key, new_rt = authenticate(apikey, refresh_token)
     """
     refreshed = refresh_api_key(apikey, refresh_token)
-    new_apikey = refreshed["key"]
-    new_refresh_token = refreshed.get("refresh_token", refresh_token)
-    account_id = str(refreshed["account_id"])
+    new_apikey = _field(refreshed, "key", "apikey", "api_key")
+    account_id = _field(refreshed, "account_id", "accountId", "id")
+    if not new_apikey or account_id is None:
+        raise RuntimeError(
+            f"RefreshApiKey response missing key/account_id. Got fields: "
+            f"{list(refreshed.keys())}"
+        )
+    new_refresh_token = _field(refreshed, "refresh_token", "refreshToken") or refresh_token
     token = create_token(new_apikey)
-    return account_id, token, new_apikey, new_refresh_token
+    return str(account_id), token, new_apikey, new_refresh_token
 
 
 def get_game_token(apikey: str, refresh_token: str) -> str:
