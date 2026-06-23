@@ -176,7 +176,7 @@ class DofusTouchSession:
     resilience on long-lived sessions.
 
     Usage:
-        account_id, token = authenticate("mail@gmail.com", "pw")
+        account_id, token, _, _ = authenticate(apikey, refresh_token)
         session = DofusTouchSession(game_token=token, server_id=533, account_id=account_id)
         session.connect()
         if session.wait_for_game(timeout=60):

@@ -1,58 +1,54 @@
 """
 HAAPI authentication for Dofus Touch.
 
-Flow: login + password → api_key → game_token
-The game_token is then sent to the game server via AuthenticationTicketMessage.
+Flow (returning sessions): apikey + refresh_token → new apikey → game_token
+The initial apikey/refresh_token must be bootstrapped once from a logged-in
+app session (extract from Chrome DevTools connected to the emulator).
 
-Confirmed from mitmproxy capture:
+Confirmed from live DevTools capture (sdk_gphone64_x86_64 emulator, Android 12):
   - Host: haapi.ankama.com
   - GAME_ID = 18 (Dofus Touch)
-  - Cloudflare is active → curl_cffi with chrome_android impersonation required
-    (standard Python requests has a different JA3/JA4 fingerprint and gets blocked)
+  - Cloudflare active → curl_cffi with chrome_android impersonation required
+  - RefreshApiKey body: game_id=18&refresh_token=UUID&long_life_token=1
+    with Content-Type: text/plain;charset=UTF-8 (as sent by the real app)
 """
 from curl_cffi import requests
 
 HAAPI_BASE = "https://haapi.ankama.com/json"
 GAME_ID = 18
 
-# Exact headers from mitmproxy capture (capture.har)
+# Matched to live emulator capture (sdk_gphone64_x86_64, Android 12, Chrome/91)
 _HEADERS = {
     "User-Agent": (
-        "Mozilla/5.0 (Linux; Android 9; SM-S908E Build/TP1A.220624.014; wv) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/129.0.6668.70 "
-        "Safari/537.36 DofusTouch Client 3.11.0"
+        "Mozilla/5.0 (Linux; Android 12; sdk_gphone64_x86_64 Build/SE1A.220826.008; wv) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/91.0.4472.114 "
+        "Mobile Safari/537.36 DofusTouch Client 3.11.0"
     ),
-    "sec-ch-ua": '"Android WebView";v="129", "Not=A?Brand";v="8", "Chromium";v="129"',
-    "sec-ch-ua-mobile": "?0",
-    "sec-ch-ua-platform": '"Android"',
     "x-requested-with": "com.ankama.dofustouch",
     "Accept": "application/json",
     "sec-fetch-site": "cross-site",
     "sec-fetch-mode": "cors",
     "sec-fetch-dest": "empty",
-    "accept-language": "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7",
+    "accept-language": "en-US,en;q=0.9",
 }
 
 
-def create_api_key(login: str, password: str) -> dict:
+def refresh_api_key(apikey: str, refresh_token: str) -> dict:
     """
-    POST credentials → api_key dict.
+    POST with current apikey + refresh_token → refreshed credentials dict.
 
-    /Api/CreateApiKey is for guest accounts only.
-    Regular Ankama accounts use /Account/Login which returns the same shape.
-
-    Returns dict with at minimum: {"key": "...", "account_id": ...}
-    The "key" field is what's passed to create_token().
+    Body is sent as text/plain (not form-encoded) — as observed in live capture.
+    Returns dict with at minimum: {"key": "...", "refresh_token": "...", "account_id": ...}
+    The old apikey and refresh_token are invalidated after this call.
     """
-    url = f"{HAAPI_BASE}/Ankama/v5/Account/Login"
-    payload = {
-        "login": login,
-        "password": password,
-        "long_life_token": "false",
-        "game": GAME_ID,
-        "lang": "fr",
+    url = f"{HAAPI_BASE}/Ankama/v5/Api/RefreshApiKey"
+    headers = {
+        **_HEADERS,
+        "apikey": apikey,
+        "Content-Type": "text/plain;charset=UTF-8",
     }
-    resp = requests.post(url, data=payload, headers=_HEADERS, impersonate="chrome_android", timeout=30)
+    body = f"game_id={GAME_ID}&refresh_token={refresh_token}&long_life_token=1"
+    resp = requests.post(url, data=body, headers=headers, impersonate="chrome_android", timeout=30)
     if not resp.ok:
         raise RuntimeError(f"HTTP {resp.status_code}: {resp.text}")
     return resp.json()
@@ -62,12 +58,8 @@ def create_token(api_key: str) -> str:
     """
     GET with api_key header → game token (UUID string).
 
-    The token is passed to the LOGIN server in the "login" Primus call (NOT to
-    the game server — the game server gets a separate ticket from
-    SelectedServerDataMessage).
-
-    Endpoint: live capture (HAR, session 4) shows /Account/CreateToken?game=18,
-    not /Game/CreateToken. If one 404s, try the other.
+    The token is sent to the login server in the Primus "login" call alongside
+    account_id as username.
     """
     url = f"{HAAPI_BASE}/Ankama/v5/Account/CreateToken"
     headers = {**_HEADERS, "apikey": api_key}
@@ -77,25 +69,25 @@ def create_token(api_key: str) -> str:
     return resp.json()["token"]
 
 
-def authenticate(login: str, password: str) -> tuple[str, str]:
+def authenticate(apikey: str, refresh_token: str) -> tuple[str, str, str, str]:
     """
-    Full auth flow → (account_id, game_token).
+    Full refresh flow → (account_id, game_token, new_apikey, new_refresh_token).
 
-    account_id is sent as the "username" field in the login Primus call
-    (confirmed live: username == account_id as a string).
-    game_token is the UUID token sent alongside it.
+    The old apikey and refresh_token are invalidated — save the new values to
+    .env after each call (use dotenv.set_key or update manually).
 
     Usage:
-        account_id, token = authenticate("email@gmail.com", "password")
+        account_id, token, new_key, new_rt = authenticate(apikey, refresh_token)
     """
-    api_data = create_api_key(login, password)
-    api_key = api_data["key"]
-    account_id = str(api_data["account_id"])
-    token = create_token(api_key)
-    return account_id, token
+    refreshed = refresh_api_key(apikey, refresh_token)
+    new_apikey = refreshed["key"]
+    new_refresh_token = refreshed.get("refresh_token", refresh_token)
+    account_id = str(refreshed["account_id"])
+    token = create_token(new_apikey)
+    return account_id, token, new_apikey, new_refresh_token
 
 
-def get_game_token(login: str, password: str) -> str:
-    """Backwards-compatible helper — returns only the token."""
-    _, token = authenticate(login, password)
+def get_game_token(apikey: str, refresh_token: str) -> str:
+    """Backwards-compatible helper — returns only the game token."""
+    _, token, _, _ = authenticate(apikey, refresh_token)
     return token

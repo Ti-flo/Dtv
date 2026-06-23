@@ -5,8 +5,8 @@ Connects to Dofus Touch, opens an HDV, collects prices for all categories,
 saves to CSV. Designed to run 5x/day (cron or Task Scheduler).
 
 Usage:
-    set DTV_LOGIN=throwaway@gmail.com
-    set DTV_PASSWORD=xxx
+    set DTV_APIKEY=78ab2339-...
+    set DTV_REFRESH_TOKEN=0af20b4e-...
     set DTV_SERVER_ID=533
     set DTV_CHARACTER_ID=12345678   (optional, auto-selects first char if omitted)
     python -m dtv.scripts.collect
@@ -26,6 +26,8 @@ import os
 import sys
 from pathlib import Path
 
+_DOTENV_PATH = Path(__file__).parent.parent.parent / ".env"
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s — %(message)s",
@@ -39,10 +41,11 @@ log = logging.getLogger(__name__)
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 try:
-    from dotenv import load_dotenv
+    from dotenv import load_dotenv, set_key as _set_key
     load_dotenv()
+    _HAS_DOTENV = True
 except ImportError:
-    pass
+    _HAS_DOTENV = False
 
 from dtv.collector.haapi import authenticate
 from dtv.collector.connection import (
@@ -68,8 +71,8 @@ def main():
                         help="Skip the average-price snapshot")
     args = parser.parse_args()
 
-    login = os.environ.get("DTV_LOGIN")
-    password = os.environ.get("DTV_PASSWORD")
+    apikey = os.environ.get("DTV_APIKEY", "")
+    refresh_token = os.environ.get("DTV_REFRESH_TOKEN", "")
     server_id = args.server_id or int(os.environ.get("DTV_SERVER_ID", "533"))
     character_id = args.character_id or (int(os.environ.get("DTV_CHARACTER_ID")) if os.environ.get("DTV_CHARACTER_ID") else None)
 
@@ -82,17 +85,20 @@ def main():
     else:
         categories = CORE_RESOURCE_TYPE_IDS  # default: 40 core crafting resources
 
-    if not login or not password:
-        log.error("DTV_LOGIN and DTV_PASSWORD must be set")
+    if not apikey or not refresh_token:
+        log.error("DTV_APIKEY and DTV_REFRESH_TOKEN must be set in .env")
         sys.exit(1)
 
-    log.info("=== DTV Collect | account=%s server=%d categories=%s ===", login, server_id, categories)
+    log.info("=== DTV Collect | server=%d categories=%s ===", server_id, categories)
 
     # 1. Auth
     log.info("Authenticating...")
     try:
-        account_id, token = authenticate(login, password)
+        account_id, token, new_apikey, new_rt = authenticate(apikey, refresh_token)
         log.info("Token obtained (%d chars), account_id=%s", len(token), account_id)
+        if _HAS_DOTENV and _DOTENV_PATH.exists():
+            _set_key(str(_DOTENV_PATH), "DTV_APIKEY", new_apikey)
+            _set_key(str(_DOTENV_PATH), "DTV_REFRESH_TOKEN", new_rt)
     except Exception as e:
         log.error("Auth failed: %s", e)
         sys.exit(1)

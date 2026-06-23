@@ -5,51 +5,55 @@ Connects to login server, authenticates, prints server list and character list.
 Does NOT enter the game or open HDV.
 
 Usage:
-    set DTV_LOGIN=yourmail@gmail.com
-    set DTV_PASSWORD=yourpassword
+    set DTV_APIKEY=78ab2339-...
+    set DTV_REFRESH_TOKEN=0af20b4e-...
     set DTV_SERVER_ID=533
     python -m dtv.scripts.test_login
 
 Server IDs (région canada, confirmés live ServersListMessage S6):
     530=Tiliwan  531=Kelerog  532=Blair  533=Talok  411=Tournament
-    The throwaway test account's character is on 533 (Talok).
     (server id is account-specific — check ServersListMessage for yours)
 """
 import logging
 import os
 import sys
-import time
+from pathlib import Path
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s — %(message)s")
 log = logging.getLogger(__name__)
 
-sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent.parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 try:
-    from dotenv import load_dotenv
+    from dotenv import load_dotenv, set_key
     load_dotenv()
+    _DOTENV_PATH = Path(__file__).parent.parent.parent / ".env"
+    _HAS_DOTENV = True
 except ImportError:
-    pass
+    _HAS_DOTENV = False
 
 from dtv.collector.haapi import authenticate
 from dtv.collector.connection import DofusTouchSession
 
 
 def main():
-    login = os.environ.get("DTV_LOGIN")
-    password = os.environ.get("DTV_PASSWORD")
+    apikey = os.environ.get("DTV_APIKEY", "")
+    refresh_token = os.environ.get("DTV_REFRESH_TOKEN", "")
     server_id = int(os.environ.get("DTV_SERVER_ID", "533"))
 
-    if not login or not password:
-        print("Usage: DTV_LOGIN=x DTV_PASSWORD=y DTV_SERVER_ID=533 python -m dtv.scripts.test_login")
+    if not apikey or not refresh_token:
+        print("Usage: DTV_APIKEY=x DTV_REFRESH_TOKEN=y DTV_SERVER_ID=533 python -m dtv.scripts.test_login")
         sys.exit(1)
 
-    print(f"\n=== Test login: {login} → server {server_id} ===\n")
+    print(f"\n=== Test login → server {server_id} ===\n")
 
     print("1. Authenticating with HAAPI...")
     try:
-        account_id, token = authenticate(login, password)
+        account_id, token, new_apikey, new_rt = authenticate(apikey, refresh_token)
         print(f"   ✓ Token obtained ({len(token)} chars), account_id={account_id}")
+        if _HAS_DOTENV and _DOTENV_PATH.exists():
+            set_key(str(_DOTENV_PATH), "DTV_APIKEY", new_apikey)
+            set_key(str(_DOTENV_PATH), "DTV_REFRESH_TOKEN", new_rt)
     except Exception as e:
         print(f"   ✗ Auth failed: {e}")
         sys.exit(1)
@@ -61,9 +65,6 @@ def main():
         account_id=account_id,
         character_id=None,  # auto-select first character
     )
-
-    # Intercept messages to print them
-    from dtv.collector.primus_client import PrimusClient
 
     try:
         session.connect()
