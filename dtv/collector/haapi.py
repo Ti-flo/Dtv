@@ -38,8 +38,13 @@ def refresh_api_key(apikey: str, refresh_token: str) -> dict:
     POST with current apikey + refresh_token → refreshed credentials dict.
 
     Body is sent as text/plain (not form-encoded) — as observed in live capture.
-    Returns dict with at minimum: {"key": "...", "refresh_token": "...", "account_id": ...}
-    The old apikey and refresh_token are invalidated after this call.
+    Returns a 13-field dict including: key, account_id, refresh_token,
+    expiration_date, ip.
+
+    Token lifecycle (CONFIRMED live, session 7): with long_life_token=1 the
+    apikey does NOT rotate — three consecutive refreshes returned the SAME key
+    and refresh_token. They are reusable, not single-use. (The per-call
+    game_token from create_token() IS single-use; only that one changes.)
     """
     url = f"{HAAPI_BASE}/Ankama/v5/Api/RefreshApiKey"
     headers = {
@@ -83,11 +88,16 @@ def authenticate(apikey: str, refresh_token: str) -> tuple[str, str, str, str]:
     """
     Full refresh flow → (account_id, game_token, new_apikey, new_refresh_token).
 
-    NOTE on token rotation: RefreshApiKey may rotate the refresh_token (the app
-    sends long_life_token=1, which usually means a reusable long-life token, but
-    that's unconfirmed). The new values are returned so the caller can persist
-    them. Do NOT use the Ankama app on this account while the bot runs — both
-    sharing one token chain can invalidate each other.
+    NOTE on token rotation: CONFIRMED live (session 7) that with long_life_token=1
+    the apikey and refresh_token do NOT rotate — they come back identical across
+    refreshes, so they're reusable. The new values are still returned (and should
+    be persisted) in case Ankama ever changes this. Do NOT use the Ankama app on
+    this account while the bot runs — both sharing one token chain risks one
+    invalidating the other.
+
+    NOTE on IP binding: the RefreshApiKey response includes an "ip" field —
+    Ankama binds the apikey to the IP it was bootstrapped from. The bot must run
+    from that same residential IP.
 
     Usage:
         account_id, token, new_key, new_rt = authenticate(apikey, refresh_token)
