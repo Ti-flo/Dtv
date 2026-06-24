@@ -19,13 +19,10 @@ Usage:
 """
 import argparse
 import csv
-import json
 import logging
-import math
-import os
 import sys
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -468,10 +465,13 @@ def print_avg_comparison(rows: list[dict], avg_data: dict, top_n: int = 20):
     for g in shown:
         diff = g["diff_pct"]
         diff_str = f"{diff:+.0f}%"
-        if diff > 10:
-            diff_str = _c(diff_str, _GREEN)  # HDV cheaper than avg? Good deal
-        elif diff < -10:
-            diff_str = _c(diff_str, _RED)    # HDV more expensive
+        # diff = (prix_hdv - prix_moyen) / prix_moyen :
+        #   diff < 0 → HDV moins cher que la moyenne = bonne affaire (vert)
+        #   diff > 0 → HDV plus cher que la moyenne (rouge)
+        if diff < -10:
+            diff_str = _c(diff_str, _GREEN)
+        elif diff > 10:
+            diff_str = _c(diff_str, _RED)
         table_rows.append([
             str(g["item_gid"]),
             g["type_name"],

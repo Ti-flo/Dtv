@@ -32,8 +32,6 @@ to the WireGuard network.
 import argparse
 import json
 import logging
-import os
-import signal
 import subprocess
 import sys
 import threading
@@ -103,18 +101,34 @@ def _start(params: dict) -> dict:
     return {"ok": True, "pid": _process.pid, "cmd": cmd}
 
 
-def _stop() -> dict:
+def _stop(timeout: float = 5.0) -> dict:
     global _process
     with _lock:
         if _process is None or _process.poll() is not None:
             return {"ok": False, "error": "not_running"}
-        pid = _process.pid
+        proc = _process
+        pid = proc.pid
         try:
-            os.kill(pid, signal.SIGTERM)
+            proc.terminate()  # SIGTERM
         except ProcessLookupError:
             return {"ok": False, "error": "process_already_gone", "pid": pid}
-    log.info("SIGTERM sent to capture process (pid=%d)", pid)
-    return {"ok": True, "pid": pid, "message": "SIGTERM sent"}
+
+    # Wait for the process to actually die OUTSIDE the lock (so /status stays
+    # responsive). proc.wait() also reaps the zombie so a following /start sees
+    # poll() != None and is allowed to launch — this is what makes /restart work.
+    killed = False
+    try:
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()  # SIGKILL
+        try:
+            proc.wait(timeout=2.0)
+        except subprocess.TimeoutExpired:
+            pass
+        killed = True
+        log.warning("Capture pid=%d ignored SIGTERM — killed", pid)
+    log.info("Capture stopped (pid=%d)", pid)
+    return {"ok": True, "pid": pid, "killed": killed}
 
 
 def _tail_log(n: int = 40) -> list[str]:
