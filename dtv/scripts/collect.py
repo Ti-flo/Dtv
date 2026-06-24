@@ -111,8 +111,8 @@ def main():
         character_id=character_id,
     )
 
-    collector = HdvCollector(session, account=login)
-    avg_collector = AveragePricesCollector(session, account=login)
+    collector = HdvCollector(session, account=account_id)
+    avg_collector = AveragePricesCollector(session, account=account_id)
 
     failed = False
     try:
