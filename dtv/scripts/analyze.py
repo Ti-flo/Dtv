@@ -16,6 +16,11 @@ Usage:
     python -m dtv.scripts.analyze --html out.html   # export self-contained HTML report
     python -m dtv.scripts.analyze --csv out.csv     # export merged/enriched CSV
     python -m dtv.scripts.analyze --avg             # compare HDV prices vs avg snapshot
+
+Item names (GID → "Blé", "Frêne" …):
+    Run ONCE while the game is open:
+        python -m dtv.scripts.dump_item_names
+    This saves data/item_names.json and names appear in all tables automatically.
 """
 import argparse
 import csv
@@ -34,6 +39,7 @@ DATA_DIR = ROOT / "data" / "raw"
 sys.path.insert(0, str(ROOT))
 
 from dtv.collector.item_types import RESOURCE_TYPES
+from dtv.collector.item_names import load_item_names
 
 # All known item types (equipment + resources). Extend as new types are discovered.
 ALL_ITEM_TYPES: dict[int, str] = {
@@ -106,7 +112,8 @@ def load_avg_data(data_dir: Path = DATA_DIR) -> dict[int, list[dict]]:
 
 
 def enrich(rows: list[dict]) -> list[dict]:
-    """Add type_name, numeric fields. Returns new list."""
+    """Add type_name, item_name, numeric fields. Returns new list."""
+    names = load_item_names()
     out = []
     for r in rows:
         r = dict(r)
@@ -129,6 +136,7 @@ def enrich(rows: list[dict]) -> list[dict]:
             r["item_gid"] = int(float(r.get("item_gid") or 0))
         except (ValueError, TypeError):
             r["item_gid"] = 0
+        r["item_name"] = names.get(r["item_gid"], "")
 
         try:
             r["nb_offres"] = int(float(r.get("nb_offres") or 0))
@@ -255,6 +263,7 @@ def aggregate_by_gid(rows: list[dict], top_n: int = 20) -> list[dict]:
 
         result.append({
             "item_gid": gid,
+            "item_name": obs[0].get("item_name", "") if obs else "",
             "type_name": g["type_name"],
             "nb_observations": len(obs),
             "derniere_observation": obs[-1].get("timestamp", "")[:16] if obs else "",
@@ -286,7 +295,9 @@ def all_avg_prices(avg_data: dict, rows: list[dict]) -> list[dict]:
     carries no type — that needs GID→item resolution, still TODO).
     Sorted by price descending.
     """
+    names = load_item_names()
     gid_type = {r["item_gid"]: r["type_name"] for r in rows if r["item_gid"]}
+    gid_name = {r["item_gid"]: r.get("item_name", "") for r in rows if r["item_gid"]}
     out = []
     for gid, snaps in avg_data.items():
         if not snaps:
@@ -294,6 +305,7 @@ def all_avg_prices(avg_data: dict, rows: list[dict]) -> list[dict]:
         latest = snaps[-1]
         out.append({
             "item_gid": gid,
+            "item_name": gid_name.get(gid) or names.get(gid, ""),
             "type_name": gid_type.get(gid, ""),
             "avg_price_x1": latest["avg_price_x1"],
             "timestamp": (latest.get("timestamp") or "")[:16],
@@ -425,11 +437,12 @@ def print_top_items(rows: list[dict], top_n: int = 20):
     if not items:
         return
     print(_c(f"── Top {top_n} items les plus observés (derniers prix par palier) ──", _BOLD))
-    headers = ["GID", "Type", "Obs.", "x1", "x10", "x100", "x1000",
+    headers = ["GID", "Nom", "Type", "Obs.", "x1", "x10", "x100", "x1000",
                "x1 moy", "Tendance", "Vu le"]
     table_rows = [
         [
             str(g["item_gid"]),
+            (g.get("item_name") or "")[:28],
             g["type_name"],
             str(g["nb_observations"]),
             _fmt_price(g["dernier_prix_x1"]),
@@ -453,7 +466,9 @@ def print_gid_history(rows: list[dict], gid: int, avg_data: dict):
         return
 
     type_name = history[0]["type_name"] if history else "?"
-    print(_c(f"── Historique GID {gid}  [{type_name}] ──", _BOLD))
+    item_name = history[0].get("item_name", "") if history else ""
+    name_part = f" · {item_name}" if item_name else ""
+    print(_c(f"── Historique GID {gid}{name_part}  [{type_name}] ──", _BOLD))
 
     avg_snapshots = avg_data.get(gid, [])
     avg_by_date: dict[str, int] = {}
@@ -508,6 +523,7 @@ def print_avg_comparison(rows: list[dict], avg_data: dict, top_n: int = 20):
         diff_pct = (hdv_p - avg_p) / avg_p * 100
         comparison.append({
             "item_gid": gid,
+            "item_name": hdv_row.get("item_name", ""),
             "type_name": hdv_row["type_name"],
             "hdv_prix_x1": hdv_p,
             "avg_prix_x1": avg_p,
@@ -517,7 +533,7 @@ def print_avg_comparison(rows: list[dict], avg_data: dict, top_n: int = 20):
     comparison.sort(key=lambda x: abs(x["diff_pct"]), reverse=True)
     shown = comparison[:top_n]
 
-    headers = ["GID", "Type", "Prix HDV x1", "Prix moy. x1", "Écart"]
+    headers = ["GID", "Nom", "Type", "Prix HDV x1", "Prix moy. x1", "Écart"]
     table_rows = []
     for g in shown:
         diff = g["diff_pct"]
@@ -531,6 +547,7 @@ def print_avg_comparison(rows: list[dict], avg_data: dict, top_n: int = 20):
             diff_str = _c(diff_str, _RED)
         table_rows.append([
             str(g["item_gid"]),
+            (g.get("item_name") or "")[:28],
             g["type_name"],
             _fmt_price(g["hdv_prix_x1"]),
             _fmt_price(g["avg_prix_x1"]),
@@ -548,10 +565,13 @@ def print_all_avg(avg_data: dict, rows: list[dict], limit: int = 40):
         return
     shown = items[:limit]
     print(_c(f"── Tous les prix moyens du marché ({len(items):,} items, top {len(shown)} par prix) ──", _BOLD))
-    headers = ["GID", "Type", "Prix moyen x1", "Snapshot"]
+    headers = ["GID", "Nom", "Type", "Prix moyen x1", "Snapshot"]
     table_rows = [
-        [str(a["item_gid"]), a["type_name"] or _c("?", _DIM),
-         _fmt_price(a["avg_price_x1"]), a["timestamp"]]
+        [str(a["item_gid"]),
+         (a.get("item_name") or "")[:28],
+         a["type_name"] or _c("?", _DIM),
+         _fmt_price(a["avg_price_x1"]),
+         a["timestamp"]]
         for a in shown
     ]
     _table(headers, table_rows)
@@ -590,6 +610,7 @@ def export_html(rows: list[dict], avg_data: dict, output_path: Path):
         diff_pct = (hdv_row["prix_x1"] - avg_p) / avg_p * 100
         comparison.append({
             "item_gid": gid,
+            "item_name": hdv_row.get("item_name", ""),
             "type_name": hdv_row["type_name"],
             "hdv_prix_x1": hdv_row["prix_x1"],
             "avg_prix_x1": avg_p,
@@ -612,7 +633,9 @@ def export_html(rows: list[dict], avg_data: dict, output_path: Path):
 
     top_rows_html = "".join(
         "<tr>"
-        + f"<td>{g['item_gid']}</td><td>{g['type_name']}</td>"
+        + f"<td>{g['item_gid']}</td>"
+        + f"<td>{g.get('item_name', '')}</td>"
+        + f"<td>{g['type_name']}</td>"
         + f"<td>{g['nb_observations']}</td>"
         + f"<td>{g['dernier_prix_x1']:,}</td><td>{g['dernier_prix_x10']:,}</td>"
         + f"<td>{g['dernier_prix_x100']:,}</td><td>{g['dernier_prix_x1000']:,}</td>"
@@ -626,11 +649,13 @@ def export_html(rows: list[dict], avg_data: dict, output_path: Path):
     all_avg = all_avg_prices(avg_data, rows)
     allavg_rows_html = "".join(
         "<tr>"
-        + f"<td>{a['item_gid']}</td><td>{a['type_name']}</td>"
+        + f"<td>{a['item_gid']}</td>"
+        + f"<td>{a.get('item_name', '')}</td>"
+        + f"<td>{a['type_name']}</td>"
         + f"<td>{a['avg_price_x1']:,}</td><td>{a['timestamp']}</td>"
         + "</tr>"
         for a in all_avg
-    ) or "<tr><td colspan=4>Aucun snapshot de prix moyens</td></tr>"
+    ) or "<tr><td colspan=5>Aucun snapshot de prix moyens</td></tr>"
 
     def _diff_color(pct: float) -> str:
         if pct < -10:
@@ -642,14 +667,16 @@ def export_html(rows: list[dict], avg_data: dict, output_path: Path):
     if comparison:
         avg_rows_html = "".join(
             "<tr>"
-            + f"<td>{g['item_gid']}</td><td>{g['type_name']}</td>"
+            + f"<td>{g['item_gid']}</td>"
+            + f"<td>{g.get('item_name', '')}</td>"
+            + f"<td>{g['type_name']}</td>"
             + f"<td>{g['hdv_prix_x1']:,}</td><td>{g['avg_prix_x1']:,}</td>"
             + f'<td style="color:{_diff_color(g["diff_pct"])}">{g["diff_pct"]:+.1f}%</td>'
             + "</tr>"
             for g in comparison[:50]
         )
     else:
-        avg_rows_html = "<tr><td colspan=5>Aucune donnée de comparaison</td></tr>"
+        avg_rows_html = "<tr><td colspan=6>Aucune donnée de comparaison</td></tr>"
 
     html = f"""<!DOCTYPE html>
 <html lang="fr">
@@ -708,10 +735,10 @@ function filterTable(inputId, tableId) {{
 
 <section>
   <h2>Top 50 items les plus observés — derniers prix par palier</h2>
-  <input type="text" id="f-top" placeholder="Filtrer (GID, type, prix)..." oninput="filterTable('f-top','t-top')">
+  <input type="text" id="f-top" placeholder="Filtrer (GID, nom, type, prix)..." oninput="filterTable('f-top','t-top')">
   <table id="t-top">
     <thead><tr>
-      <th>GID</th><th>Type</th><th>Obs.</th>
+      <th>GID</th><th>Nom</th><th>Type</th><th>Obs.</th>
       <th>Prix x1</th><th>Prix x10</th><th>Prix x100</th><th>Prix x1000</th>
       <th>Tendance</th><th>Dernière obs.</th>
     </tr></thead>
@@ -721,10 +748,10 @@ function filterTable(inputId, tableId) {{
 
 <section>
   <h2>Comparaison prix HDV vs prix moyen (snapshot connexion)</h2>
-  <input type="text" id="f-avg" placeholder="Filtrer..." oninput="filterTable('f-avg','t-avg')">
+  <input type="text" id="f-avg" placeholder="Filtrer (GID, nom, type)..." oninput="filterTable('f-avg','t-avg')">
   <table id="t-avg">
     <thead><tr>
-      <th>GID</th><th>Type</th><th>Prix HDV x1</th><th>Prix moy. x1</th><th>Écart %</th>
+      <th>GID</th><th>Nom</th><th>Type</th><th>Prix HDV x1</th><th>Prix moy. x1</th><th>Écart %</th>
     </tr></thead>
     <tbody>{avg_rows_html}</tbody>
   </table>
@@ -732,10 +759,10 @@ function filterTable(inputId, tableId) {{
 
 <section>
   <h2>Tous les prix moyens du marché ({len(all_avg):,} items — snapshot connexion)</h2>
-  <input type="text" id="f-allavg" placeholder="Filtrer (GID ou type)..." oninput="filterTable('f-allavg','t-allavg')">
+  <input type="text" id="f-allavg" placeholder="Filtrer (GID, nom, type)..." oninput="filterTable('f-allavg','t-allavg')">
   <table id="t-allavg">
     <thead><tr>
-      <th>GID</th><th>Type</th><th>Prix moyen x1</th><th>Snapshot</th>
+      <th>GID</th><th>Nom</th><th>Type</th><th>Prix moyen x1</th><th>Snapshot</th>
     </tr></thead>
     <tbody>{allavg_rows_html}</tbody>
   </table>
@@ -757,7 +784,7 @@ def export_csv(rows: list[dict], output_path: Path):
         print("Aucune donnée à exporter.")
         return
     # Determine field names: standard + extras
-    base_fields = ["timestamp", "session", "item_gid", "hdv_type_id", "type_name",
+    base_fields = ["timestamp", "session", "item_gid", "item_name", "hdv_type_id", "type_name",
                    "prix_x1", "prix_x10", "prix_x100", "prix_x1000",
                    "nb_offres", "all_prices_x1", "compte_collecteur"]
     with open(output_path, "w", newline="", encoding="utf-8") as f:
