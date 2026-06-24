@@ -247,6 +247,23 @@ class PrimusClient:
             log.warning("Non-JSON message received: %r", raw[:100])
             return
 
+        # Primus control messages can arrive as JSON-encoded strings,
+        # e.g. "primus::server::open" — the browser WebView absorbs these
+        # internally so they don't appear in DevTools captures.
+        if isinstance(msg, str):
+            if msg == "primus::server::close":
+                log.info("primus::server::close (JSON) received")
+                self._server_closed = True
+            elif msg.startswith("primus::ping::"):
+                ts = msg.split("::", 2)[2]
+                with self._send_lock:
+                    ws.send(f"primus::pong::{ts}")
+                self._last_ping_at = time.time()
+                log.debug("↔ heartbeat pong (JSON) %s", ts)
+            else:
+                log.debug("String frame (ignored): %r", msg[:80])
+            return
+
         msg_type = msg.get("_messageType") or msg.get("type") or "unknown"
         log.debug("← %s", msg_type)
 
