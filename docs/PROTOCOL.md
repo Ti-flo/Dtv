@@ -16,7 +16,7 @@
 - **Primus** (framework WebSocket) sur `wss://…/primus?STICKER=<id>&_primuscb=<cb>`
 - Messages **JSON** (pas de binaire DofusProtocol)
 - **Version protocole : 1595** (`ProtocolRequired.requiredVersion`, identique login + game)
-- Build client : `appVersion=3.11.0`, `buildVersion=1.72.11`
+- Build client : `appVersion=3.11.0`, `buildVersion=1.72.12` (har_3 / S7 ; était 1.72.11 sur har_1/2)
 
 ### Format des trames
 
@@ -52,6 +52,10 @@
 - **Intervalle serveur : exactement 30,0 s** (mesuré sur les 2 captures)
 - 2 pings ratés (~65 s sans ping) → considérer la connexion morte
 - `"primus::server::close"` = fermeture serveur (kick/maintenance) → ne PAS reconnecter
+- ⚠️ **Frames de contrôle en string JSON-encodé (S7)** : certaines arrivent **entre
+  guillemets** (`"primus::server::open"` après le handshake). `json.loads()` les renvoie
+  comme `str` Python → planter sur `.get()`. Le WebView les absorbe → **absentes des HAR**.
+  Toujours tester `isinstance(msg, str)` après `json.loads` avant de traiter comme un dict.
 
 ---
 
@@ -61,7 +65,7 @@ Toutes les trames, dans l'ordre, identiques entre les 3 captures :
 
 ```
 → connecting   {language:"en", server:"login", client:"android",
-                appVersion:"3.11.0", buildVersion:"1.72.11"}          ← AUCUN token
+                appVersion:"3.11.0", buildVersion:"1.72.12"}          ← AUCUN token
 ← ProtocolRequired   {requiredVersion:1595, currentVersion:1595}
 ← HelloConnectMessage   {salt:"<32 chars>", key:[<~340 bytes signés>]}
 → login   {username:"188926644", token:"<UUID>",
@@ -111,7 +115,7 @@ Séquence confirmée (numéros = ordre des trames dans har_1) :
 
 ```
  0 → connecting   {language:"en", server:{address:"172.29.2.186", port:5555, id:533},
-                   client:"android", appVersion:"3.11.0", buildVersion:"1.72.11"}
+                   client:"android", appVersion:"3.11.0", buildVersion:"1.72.12"}
  1 ← ProtocolRequired   {requiredVersion:1595}
  2 ← HelloGameMessage   {}
  3 → sendMessage:AuthenticationTicketMessage   {ticket:"<ticket de SelectedServerData>", lang:"en"}
@@ -356,14 +360,27 @@ est ancien (Chrome 91). En production on imite plutôt un vrai device. `curl_cff
 
 ## 9. Invariants — ce qui change vs reste constant entre sessions
 
-Analyse croisée sur **3 sessions du même compte** (S4, S6a, S6b ; accountId 188926644).
+Analyse croisée sur **3 sessions du même compte** (S4, S6a, S6b ; accountId 188926644)
++ **tests live S7** (auth + login validés bout en bout).
 Crucial pour distinguer ce qu'on peut coder en dur de ce qui doit être dérivé à chaque run.
 
-### Authentification
+### HAAPI (couche auth REST) — ✅ testé S7
+
+| Champ | Constant / Variable | Note |
+|---|---|---|
+| `apikey` (RefreshApiKey.key) | 🟢 **constant** | avec `long_life_token=1`, **NE TOURNE PAS** (3 refresh = même UUID). Réutilisable, pas single-use. |
+| `refresh_token` | 🟢 ~constant | re-renvoyé à chaque RefreshApiKey ; on le persiste par sécurité (rotation auto `.env`) |
+| `expiration_date` | ℹ️ à surveiller | présent dans la réponse — durée de vie du long-life token à logger |
+| `game_token` (CreateToken.token) | 🔴 **variable** | UUID 36 ch, **jetable**, régénéré à chaque CreateToken |
+
+> Bootstrap initial = OAuth2 PKCE (`auth.ankama.com/token`), fait une fois depuis l'app.
+> `CreateApiKey`=comptes invités uniquement ; `Account/Login`=404 (n'existe pas en v5).
+
+### Authentification (couche WebSocket)
 
 | Champ | Constant / Variable | Valeur(s) observée(s) |
 |---|---|---|
-| `appVersion` / `buildVersion` | 🟢 **constant** | `3.11.0` / `1.72.11` |
+| `appVersion` / `buildVersion` | 🟢 **constant*** | `3.11.0` / `1.72.12` (*bumpé 1.72.11→.12 entre captures — suivre les MAJ) |
 | Version protocole | 🟢 **constant** | `1595` |
 | `connecting.language` | 🟢 constant (locale device) | `en` |
 | `login.username` (= accountId) | 🟢 **constant** (propre au compte) | `188926644` |
@@ -418,7 +435,7 @@ la collecte HDV → indice de suspicion côté serveur, lever une alerte.
 | URL | Contenu |
 |---|---|
 | `…/login.ankama-games.com/config.json?lang=fr` | config (avant auth) |
-| `…/data/dictionary?lang=fr&v=1.72.11` | noms d'items (⚠️ 404 hors contexte jeu — chargé en mémoire) |
+| `…/data/dictionary?lang=fr&v=1.72.12` | noms d'items (⚠️ 404 hors contexte jeu — chargé en mémoire) |
 | `haapi.ankama.com/json/Ankama/v5/Account/CreateToken` | game_token (confirmé `Account`, pas `Game`) |
 | `dofustouch.cdn.ankama.com/…` | assets (images, atlas) |
 

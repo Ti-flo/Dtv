@@ -16,7 +16,7 @@
 
 | Domaine | IP | Proto | Rôle |
 |---|---|---|---|
-| `haapi.ankama.com` | 3.174.255.11 | HTTPS | Auth (login/password → api_key → game_token) |
+| `haapi.ankama.com` | 3.174.255.11 | HTTPS | Auth (apikey + refresh_token → game_token). Bootstrap initial via OAuth2 `auth.ankama.com/token` |
 | `dt-proxy-production-login.ankama-games.com` | 34.248.24.94 | WebSocket/TLS | Login server (sélection serveur + personnage) |
 | `dt-proxy-production-france.ankama-games.com` | 18.202.155.164 | WebSocket/HTTPS | Game server France (protocole de jeu) |
 | `dofustouch.cdn.ankama.com` | 3.160.188.6 | HTTPS | CDN assets (images, sons, data) |
@@ -30,25 +30,53 @@
 - L'IP du game server peut changer (AWS load balancer) — utiliser le hostname, pas l'IP.
 - `config.json` chargé depuis le login server avant toute auth : `GET https://dt-proxy-production-login.ankama-games.com/config.json?lang=fr`
 
-### Flux d'authentification complet — ✅ CONFIRMÉ PAR CAPTURE LIVE (session 4, HAR DevTools)
+### Flux d'authentification complet — ✅ CONFIRMÉ + TESTÉ LIVE BOUT EN BOUT (session 7)
 
+> ⚠️ **CORRECTION MAJEURE S7** : l'ancien flux `CreateApiKey {login, password}` était **faux
+> pour un compte Ankama régulier** (`/Api/CreateApiKey` est réservé aux comptes invités ;
+> `/Account/Login` n'existe pas en HAAPI v5 → 404). Le vrai flux a 2 niveaux :
+
+**Niveau 0 — Bootstrap initial (une seule fois, manuel, OAuth2 PKCE)**
+Fait par l'app au login « se souvenir de moi ». Capturé via DevTools mais **non
+réimplémenté** (nécessite un navigateur pour le `code` PKCE) :
 ```
-1. POST haapi.ankama.com/json/Ankama/v5/Api/CreateApiKey
-   Body: {login, password, long_life_token: false, game: 18}
-   → Retourne: {key: "...", account_id: ...}
+POST auth.ankama.com/token   (Content-Type: application/x-www-form-urlencoded)
+  Body: grant_type=authorization_code&client_id=18&code=<PKCE code>
+        &code_verifier=<verifier>&redirect_uri=dofustouch://authorized
+  → produit l'apikey longue durée (UUID) + refresh_token (UUID)
+```
+On **extrait apikey + refresh_token une fois** depuis l'app (DevTools Network →
+en-tête `apikey` + `refresh_token` du body RefreshApiKey) et on les met dans `.env`
+(`DTV_APIKEY`, `DTV_REFRESH_TOKEN`).
+
+**Niveau 1 — Refresh à chaque run du bot (réimplémenté, `haapi.py`)** :
+```
+1. POST haapi.ankama.com/json/Ankama/v5/Api/RefreshApiKey
+   Content-Type: text/plain;charset=UTF-8     ← PAS form-encoded ni JSON
+   Header: apikey: <apikey>
+   Body: game_id=18&refresh_token=<refresh_token>&long_life_token=1
+   → Retourne (13 champs confirmés S7) : {key, account_id, account_uuid, ip, added_date,
+     meta, data, game_id, certificate_id, external_auth_id, access, refresh_token, expiration_date}
+   ⚠️ TESTÉ : avec long_life_token=1, `key` (apikey) NE TOURNE PAS (même UUID renvoyé
+      sur 3 refresh consécutifs). Le refresh_token est re-renvoyé à chaque fois.
+      → token réutilisable, pas single-use. Bonus : `expiration_date` dispo pour pré-check.
 
 2. GET haapi.ankama.com/json/Ankama/v5/Account/CreateToken?game=18   ← "Account" PAS "Game"
    Header: apikey: <key>
-   → Retourne: {token: "..."}  ← game_token au format UUID (ex: 75692171-4b20-4b07-91e1-d773ec66a4cf)
-   ⚠️ La capture live montre "Account/CreateToken", pas "Game/CreateToken". À tester.
+   → Retourne: {token: "..."}  ← game_token UUID 36 chars (ex: bd829158-9348-49a1-9c34-7a0eff0d4a5a)
+   ✅ CONFIRMÉ live 3 captures + testé S7. game_token CHANGE à chaque appel (jetable).
+```
 
+**Niveau 2 — WebSocket (inchangé)** :
+```
 3. WebSocket wss://dt-proxy-production-login.ankama-games.com/primus?STICKER=<id>&_primuscb=<cb>
-   ✅ Chemin = /primus CONFIRMÉ
-   STICKER = id de session généré côté client par Primus (même valeur pour les 2 WS).
-            Sticky-session du load balancer. À tester si omettable.
+   ✅ Chemin = /primus CONFIRMÉ + testé S7
+   STICKER = id de session généré côté client. ✅ TESTÉ S7 : charset base64 (`/`,`+`,`-`)
+            accepté par le serveur, et la MÊME valeur est réutilisée sur les 2 WS
+            (login + jeu), seul `_primuscb` change. Sticky-session du load balancer.
 
    → send "connecting": {language:"en", server:"login", client:"android",
-                         appVersion:"3.11.0", buildVersion:"1.72.11"}   ← PAS de token ici !
+                         appVersion:"3.11.0", buildVersion:"1.72.12"}   ← PAS de token ici !
    → reçoit ProtocolRequired {requiredVersion:1595, currentVersion:1595}
    → reçoit HelloConnectMessage {salt:"...", key:[bytes signés]}
    → send "login": {username:"<account_id>", token:"<game_token>",
@@ -65,7 +93,7 @@
 
 4. WebSocket wss://<_access host>/primus?STICKER=...&_primuscb=...
    → send "connecting": {language:"en", server:{address, port, id}, client:"android",
-                         appVersion:"3.11.0", buildVersion:"1.72.11"}
+                         appVersion:"3.11.0", buildVersion:"1.72.12"}
    → reçoit ProtocolRequired puis HelloGameMessage
    → send AuthenticationTicketMessage {ticket:"<ticket de SelectedServerData>", lang:"en"}  (via sendMessage)
    → reçoit AuthenticationTicketAcceptedMessage
@@ -121,6 +149,14 @@ Confirmé par analyse de `script.js` (bundle webpack 5MB extrait du device Andro
 → "primus::pong::1234567890"
 ```
 Doit être répondu dans ~30s sinon le serveur déconnecte.
+
+**⚠️ Frames de contrôle Primus en string JSON-encodé (découvert + corrigé S7) :**
+Le serveur envoie des frames de contrôle comme `"primus::server::open"` **encodées en
+JSON** (avec guillemets) juste après le handshake. `json.loads()` les renvoie comme un
+`str` Python (pas un dict) → `msg.get()` plantait avec `'str' object has no attribute 'get'`.
+Le WebView du navigateur les absorbe en interne → **invisibles dans les captures DevTools**,
+d'où leur absence des HAR. `primus_client._on_message` gère désormais le cas `isinstance(msg, str)`
+(ignore `server::open`, traite `ping`/`close` même JSON-encodés).
 
 **Note :** Le login server utilise des calls spéciaux ("connecting", "login") en plus du standard "sendMessage".
 
@@ -227,17 +263,21 @@ Le projet se concentre sur les ressources (équipements hors scope — rolls var
 ```
 Nécessaire pour `npcMapId` dans l'ouverture HDV.
 
-### Headers Android requis (confirmé capture.har)
+### Headers Android requis (✅ alignés sur l'émulateur réel, capture har_3 S7)
+
+> ⚠️ **CORRECTION S7** : l'ancien UA (`SM-S908E / Android 9 / Chrome/129`) ne correspondait
+> PAS à l'émulateur de capture. Le vrai UA de l'AVD (Android 12, Chrome/91) est ci-dessous.
+> Mis à jour dans `haapi.py` (HAAPI) ET `primus_client.py` (WebSocket) pour cohérence.
 
 ```
-User-Agent: Mozilla/5.0 (Linux; Android 9; SM-S908E Build/TP1A.220624.014; wv)
-            AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/129.0.6668.70
-            Safari/537.36 DofusTouch Client 3.11.0
-sec-ch-ua: "Android WebView";v="129", "Not=A?Brand";v="8", "Chromium";v="129"
-sec-ch-ua-mobile: ?0
-sec-ch-ua-platform: "Android"
+User-Agent: Mozilla/5.0 (Linux; Android 12; sdk_gphone64_x86_64 Build/SE1A.220826.008; wv)
+            AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/91.0.4472.114
+            Mobile Safari/537.36 DofusTouch Client 3.11.0
 x-requested-with: com.ankama.dofustouch
+accept-language: en-US,en;q=0.9      ← en-US (le compte est anglais/canada), PAS fr-FR
 ```
+HAAPI (POST RefreshApiKey) : `Content-Type: text/plain;charset=UTF-8`.
+WebSocket upgrade : ajoute `Origin: file://` + `Accept-Language: en-US,en;q=0.9`.
 
 ---
 
@@ -252,10 +292,13 @@ x-requested-with: com.ankama.dofustouch
 - Un compte a déjà été banni à cause de WireGuard (VPN datacenter) actif pendant les tests
 
 **2. TLS fingerprinting (JA3/JA4)**
-- Ankama utilise probablement Cloudflare (confirmé sur `haapi.ankama.com`) qui fait du JA3 fingerprinting natif
-- Un client Python standard (`requests`/`websocket-client`) a un JA3 hash complètement différent d'un Android WebView Chrome 129
+- Ankama utilise Cloudflare (confirmé sur `haapi.ankama.com`) qui fait du JA3 fingerprinting natif
+- Un client Python standard (`requests`/`websocket-client`) a un JA3 hash complètement différent d'un Android WebView Chrome
 - **Solution : `curl_cffi` avec `impersonate="chrome_android"` pour HAAPI**
-- Le WebSocket Primus reste un vecteur de fingerprinting (à surveiller)
+- ✅ **WebSocket Primus — RISQUE LEVÉ EN PRATIQUE (testé S7)** : `websocket-client` (JA3 Python)
+  a connecté **sans souci aux DEUX serveurs** (login + jeu) jusqu'à « game ready ». Les proxies
+  `dt-proxy-production-*` ne sont PAS derrière Cloudflare et ne semblent pas faire de JA3 sur le
+  WebSocket. Migration vers `curl_cffi.ws_connect` non nécessaire (reste en réserve si bans inexpliqués).
 
 **3. Détection de proxy/MITM**
 - PCAPdroid seul semble toléré (nos captures récentes OK)
@@ -392,9 +435,9 @@ Ankama bloque Protonmail à l'inscription
 
 | Fichier | État | Notes |
 |---|---|---|
-| `dtv/collector/haapi.py` | ✅ Réécrit S4 | `authenticate()` → (account_id, token), endpoint Account/CreateToken |
-| `dtv/collector/primus_client.py` | ✅ Prêt | DisconnectReason, heartbeat watchdog (30s ping), send lock |
-| `dtv/collector/connection.py` | ✅ MAJ S6 | Login + anti-cheat + **maintenance/MAJ/ban détectés, classify_error** |
+| `dtv/collector/haapi.py` | ✅ **Réécrit S7 + TESTÉ** | Flux **RefreshApiKey → CreateToken** ; `authenticate(apikey, refresh_token)` → (account_id, token, new_apikey, new_rt) |
+| `dtv/collector/primus_client.py` | ✅ **MAJ S7** | + gestion frames string JSON (`primus::server::open`) ; UA émulateur |
+| `dtv/collector/connection.py` | ✅ **MAJ S7** | + STICKER session-stable base64 ; buildVersion 1.72.12 ; login flow **testé OK** |
 | `dtv/collector/hdv.py` | ✅ MAJ S6 | Flow HDV 2 étapes + `collect_resources()` + `economics` |
 | `dtv/collector/avg_prices.py` | ✅ Nouveau S6 | **Snapshot prix moyens (~4900 items / message)** |
 | `dtv/collector/item_types.py` | ✅ Nouveau S5 | 64 types ressources (superTypeId=9) + 41 core |
@@ -404,27 +447,30 @@ Ankama bloque Protonmail à l'inscription
 | `dtv/scripts/test_login.py` | ✅ Prêt | Test login flow complet |
 | `dtv/scripts/collect.py` | ✅ MAJ S6 | Pipeline : avg-prices + HDV ressources (défaut: core) |
 
-### Prochaine étape immédiate : premier test live
+### Prochaine étape immédiate : première COLLECTE live (auth + login ✅ testés S7)
 
 ```
+# 0. Bootstrap (une fois) : extraire apikey + refresh_token depuis l'app via DevTools
+#    → mettre dans .env : DTV_APIKEY, DTV_REFRESH_TOKEN, DTV_SERVER_ID=533
+
 # 1. Installer les dépendances
 pip install -r requirements.txt
 
-# 2. Tester l'auth HAAPI (compte jetable, IP résidentielle, PAS de VPN)
-set DTV_LOGIN=compte_jetable@gmail.com
-set DTV_PASSWORD=motdepasse
+# 2. ✅ Auth HAAPI (TESTÉ OK S7) — rafraîchit le token, met à jour .env
 python -m dtv.scripts.test_auth
 
-# 3. Si auth OK → tester la connexion WebSocket
-python -m dtv.scripts.test_connect
-
-# 4. Si WebSocket OK → tester le login complet
-set DTV_SERVER_ID=<id_serveur>   # découvert à l'étape 3 via ServersListMessage
+# 3. ✅ Login complet jusqu'à « game ready » (TESTÉ OK S7)
 python -m dtv.scripts.test_login
 
-# 5. Si login OK → tester la collecte HDV
+# 4. ⏳ PROCHAIN TEST : collecte prix moyens (1 message, ~4900 items)
+python -m dtv.scripts.collect --avg-prices-only
+
+# 5. Puis collecte HDV ressources
 python -m dtv.scripts.collect
 ```
+
+⚠️ **Ne pas lancer l'app Ankama sur le compte pendant que le bot tourne** (chaîne de
+tokens partagée → risque d'invalidation mutuelle si le refresh_token venait à tourner).
 
 ### ✅ Inconnues résolues par les captures live (sessions 4–6)
 
@@ -441,12 +487,18 @@ python -m dtv.scripts.collect
 - ✅ **buyerDescriptor** : 128 types, tax 3%, maxItemPerAccount 75, unsoldDelay 672h
 - ✅ **ObjectAveragePrices** : ~4906 items/message, x1, par serveur, dynamique (115 chgts/51min)
 - ✅ **64 types ressources** (superTypeId=9) extraits ; 61 présents en HDV
+- ✅ **Auth réelle = RefreshApiKey → CreateToken** (S7) ; `CreateApiKey`=invités, `Account/Login`=404
+- ✅ **apikey ne tourne PAS** avec `long_life_token=1` (token réutilisable, pas single-use)
+- ✅ **WebSocket Python connecte OK** aux 2 serveurs (JA3 non vérifié sur les proxies de jeu)
+- ✅ **STICKER** : charset base64 accepté, réutilisé sur les 2 WS (testé S7)
+- ✅ **Frames de contrôle Primus string** (`primus::server::open`) invisibles en HAR (géré S7)
 
 ### Ce qui reste à investiguer
 
-- Le paramètre `STICKER` est-il requis ? (généré côté client — tester sans)
-- Endpoint token : `Account/CreateToken` **confirmé live** (3 captures) ; `Game/CreateToken` abandonné
-- Fingerprint TLS du WebSocket : `websocket-client` a un JA3 différent d'Android. Migrer vers `curl_cffi.requests.ws_connect` si bans inexpliqués.
+- Endpoint token : `Account/CreateToken` **confirmé live + testé** (S7) ; `Game/CreateToken` abandonné
+- Le paramètre `STICKER` est-il *omettable* ? (non bloquant — il fonctionne tel quel)
+- Expiration du `refresh_token` longue durée : durée de vie réelle ? (`expiration_date` dispo dans la réponse RefreshApiKey — à logger/surveiller)
+- Re-bootstrap : si le refresh_token expire un jour, refaire l'extraction OAuth depuis l'app (ou implémenter le flux PKCE complet)
 - Logstash télémétrie : confirmée active (config.json `mediatorUrl`). Absence non simulée par notre client. Risque faible à court terme.
 - Fréquence exacte de rafraîchissement du prix moyen (semble continu/au fil des ventes, pas 24h)
 
@@ -454,20 +506,54 @@ python -m dtv.scripts.collect
 
 ## 📋 TODO / Inconnues à résoudre
 
-- [ ] **Tester le code MAJ (S6) contre le serveur réel** — login flow + SequenceNumber + avg-prices
-- [ ] Mesurer la durée d'un run `--avg-prices-only` (1 message) vs collecte HDP ressources complète
-- [ ] Tester si `STICKER` est omettable dans l'URL Primus
+- [x] ~~Tester le code (S6/S7) contre le serveur réel — login flow + SequenceNumber~~ ✅ **S7 : auth + login testés OK bout en bout**
+- [x] ~~Token HAAPI : single-use ou réutilisable ?~~ ✅ **S7 : apikey réutilisable (long_life_token=1), game_token jetable**
+- [ ] ⏳ **PROCHAIN : tester `collect --avg-prices-only`** (1 message, ~4900 items) puis collecte HDV complète
+- [ ] Mesurer la durée d'un run `--avg-prices-only` (1 message) vs collecte HDV ressources complète
+- [ ] Logger `expiration_date` du refresh_token et surveiller sa durée de vie
 - [ ] Tester si l'absence de Logstash est détectée sur plusieurs jours
-- [ ] Fingerprint TLS WebSocket — tester curl_cffi ws_connect si bans inexpliqués
 - [ ] Watchlist / pruning : retirer les items dont le prix ne bouge jamais (après quelques jours de données)
 - [ ] Scheduler multi-comptes : rotation horaires + rotation des types consultés (anti-pattern)
 - [ ] **Scheduler : éviter la fenêtre de maintenance (mardi 7h30-11h Paris)** + gérer codes 2/3
 - [ ] Calcul de rentabilité « brisage » : croiser prix ressources (avg) avec recettes de craft
-- [ ] Token HAAPI : single-use ou réutilisable ? (impacte la reconnexion `auto_reconnect`)
 
 ---
 
 ## 📝 Historique des sessions
+
+### Session 7 (premier test live complet auth + login — ✅ SUCCÈS)
+- **Setup live sur le PC de Flo** (Windows, IP résidentielle, AVD émulateur).
+- **Correction majeure du flux d'auth** (l'ancien `CreateApiKey {login,password}` échouait) :
+  - `/Api/CreateApiKey` → HTTP 422 « Guest account only » (réservé aux comptes invités)
+  - `/Account/Login` → HTTP 404 « Unknown method » (n'existe pas en HAAPI v5)
+  - Diagnostic via **DevTools sur l'émulateur** (`adb forward` + WebView debuggable, comme S4)
+  - Vrai flux découvert : **OAuth2 PKCE** (`auth.ankama.com/token`) pour le bootstrap, puis
+    **`RefreshApiKey` → `CreateToken`** pour chaque run. `haapi.py` réécrit en conséquence
+    (`.env` : `DTV_APIKEY` + `DTV_REFRESH_TOKEN` au lieu de login/password, rotation auto via `set_key`).
+- **Analyse méticuleuse de la capture har_3** (6,9 Mo, 451 entrées, 186 frames WS) :
+  - `RefreshApiKey` : body `text/plain`, `game_id=18&refresh_token=…&long_life_token=1`
+  - Réponse 13 champs : `key, account_id, …, refresh_token, expiration_date`
+  - `CreateToken` → `{token:<uuid 36 chars>}` (48 octets), game_token jetable
+  - **Aucune empreinte d'appareil dans tout le protocole** (scan exhaustif : zéro `deviceId`,
+    `android_id`, `imei`, `safetynet`, `attestation`…) → Python reproduit le client à 100 %.
+    Le seul signal « device/lieu » est l'**IP**. Réponse définitive à la question fingerprint.
+  - `ObjectAveragePricesMessage` confirmé : `ids` (4908) + `avgPrices` (4908) parallèles
+  - Séquence init jeu re-validée byte-for-byte (ClientKey 21 ch, SequenceNumber, GameContextCreate)
+  - STICKER réel = base64 (`OUJ/6p9sxiOLdT/`), **même valeur sur les 2 WS** ; `_primuscb` = base64url
+- **Corrections de code (poussées) :**
+  - `haapi.py` : flux RefreshApiKey ; UA émulateur ; extraction de champs défensive (alias + erreur claire)
+  - `connection.py` : `buildVersion` 1.72.11 → **1.72.12** ; STICKER session-stable + charset base64
+  - `primus_client.py` : UA émulateur + `Accept-Language` ; **gestion frames string JSON**
+  - `test_auth.py` / `test_login.py` / `collect.py` : env vars apikey/refresh_token + rotation auto
+- **Tests live réussis :**
+  - ✅ `test_auth` : RefreshApiKey + CreateToken OK ; **3 refresh consécutifs → même apikey**
+    (long_life_token ne tourne pas → token réutilisable, résout la TODO `auto_reconnect`)
+  - ✅ `test_login` : login flow **complet jusqu'à « game ready »** (perso Ramunda id 2310145, Talok 533)
+  - **Bug trouvé + corrigé en live** : `"primus::server::open"` arrive en string JSON (absent des
+    HAR car absorbé par le WebView) → crash `'str' object has no attribute 'get'` → géré.
+  - ✅ **Le WebSocket Python (JA3 non-Chrome) connecte sans souci aux 2 serveurs** → le risque
+    fingerprint WebSocket signalé depuis S3 est levé en pratique.
+- **Prochaine étape : `collect --avg-prices-only` (première vraie collecte de données).**
 
 ### Session 6 (analyse approfondie 2 nouvelles captures + MAJ protocole)
 - Analyse méticuleuse de **2 HAR** (har_1 07:50, har_2 08:41) : login + HDV + achat + gameplay/tuto

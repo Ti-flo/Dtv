@@ -47,7 +47,7 @@ BDD + parfois MAJ). Il y a aussi des **sauvegardes quotidiennes** (brèves coupu
 
 Quand Ankama met à jour Dofus Touch, **`appVersion` / `buildVersion` / version de
 protocole changent**. Nos valeurs sont codées en dur (`connection.py`) :
-`APP_VERSION="3.11.0"`, `BUILD_VERSION="1.72.11"`, `PROTOCOL_VERSION=1595`.
+`APP_VERSION="3.11.0"`, `BUILD_VERSION="1.72.12"`, `PROTOCOL_VERSION=1595`.
 
 ### Détection par le bot (deux niveaux)
 1. **Indice précoce** : `ProtocolRequired.requiredVersion != 1595` → log `⚠️ PROTOCOL
