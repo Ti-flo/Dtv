@@ -20,6 +20,7 @@ Usage:
 import argparse
 import csv
 import logging
+import os
 import sys
 from collections import defaultdict
 from datetime import datetime
@@ -33,6 +34,21 @@ DATA_DIR = ROOT / "data" / "raw"
 sys.path.insert(0, str(ROOT))
 
 from dtv.collector.item_types import RESOURCE_TYPES
+
+# All known item types (equipment + resources). Extend as new types are discovered.
+ALL_ITEM_TYPES: dict[int, str] = {
+    # Equipment
+    1: "Amulette", 2: "Anneau", 9: "Sac à dos", 10: "Chapeau",
+    11: "Cape", 13: "Ceinture", 16: "Bottes", 17: "Bâton",
+    18: "Baguette", 19: "Épée", 21: "Pelle", 22: "Marteau",
+    23: "Lance", 24: "Arc", 25: "Dague", 27: "Bouclier",
+    44: "Familier", 45: "Monture", 56: "Dragodinde", 69: "Harnais",
+    83: "Équipement de Bouftou", 85: "Trophée",
+    # Consumables / misc
+    5: "Potion", 6: "Parchemin de sort", 7: "Parchemin de caractéristique",
+    8: "Document", 12: "Objet de quête",
+    **RESOURCE_TYPES,
+}
 
 
 # ------------------------------------------------------------------ #
@@ -100,7 +116,7 @@ def enrich(rows: list[dict]) -> list[dict]:
         except (ValueError, TypeError):
             tid = 0
         r["hdv_type_id"] = tid
-        r["type_name"] = RESOURCE_TYPES.get(tid, f"type_{tid}" if tid else "unknown")
+        r["type_name"] = ALL_ITEM_TYPES.get(tid, f"type_{tid}" if tid else "unknown")
 
         # Numeric prices
         for col in ("prix_x1", "prix_x10", "prix_x100", "prix_x1000"):
@@ -266,7 +282,15 @@ _CYAN = "\033[36m"
 _YELLOW = "\033[33m"
 _DIM = "\033[2m"
 
-_USE_COLOR = sys.stdout.isatty()
+# Windows cmd/PowerShell don't render ANSI unless explicitly enabled.
+# Windows Terminal and VSCode terminal set WT_SESSION or TERM_PROGRAM.
+_USE_COLOR = (
+    sys.stdout.isatty()
+    and not (sys.platform == "win32"
+             and not (os.environ.get("WT_SESSION")
+                      or os.environ.get("TERM_PROGRAM")
+                      or os.environ.get("TERM")))
+)
 
 
 def _c(text: str, code: str) -> str:
