@@ -248,12 +248,20 @@ def aggregate_by_gid(rows: list[dict], top_n: int = 20) -> list[dict]:
         obs = sorted(g["observations"], key=lambda x: x["_ts"] or datetime.min)
         prices = [o["prix_x1"] for o in obs]
         last = next((p for p in reversed(prices) if p > 0), 0)
+
+        # Last observed price for each quantity tier (most recent non-zero).
+        def _last_tier(col):
+            return next((o[col] for o in reversed(obs) if o.get(col, 0) > 0), 0)
+
         result.append({
             "item_gid": gid,
             "type_name": g["type_name"],
             "nb_observations": len(obs),
             "derniere_observation": obs[-1].get("timestamp", "")[:16] if obs else "",
             "dernier_prix_x1": last,
+            "dernier_prix_x10": _last_tier("prix_x10"),
+            "dernier_prix_x100": _last_tier("prix_x100"),
+            "dernier_prix_x1000": _last_tier("prix_x1000"),
             "prix_x1_min": min((p for p in prices if p > 0), default=0),
             "prix_x1_avg": round(_safe_avg(prices)),
             "prix_x1_max": max((p for p in prices if p > 0), default=0),
@@ -268,6 +276,29 @@ def gid_history(rows: list[dict], gid: int) -> list[dict]:
     items = [r for r in rows if r["item_gid"] == gid]
     items.sort(key=lambda x: x["_ts"] or datetime.min)
     return items
+
+
+def all_avg_prices(avg_data: dict, rows: list[dict]) -> list[dict]:
+    """
+    Every item from the login average-price snapshots (the whole market), with
+    its latest average price. Type is resolved from HDV observations when the
+    player happened to open that item; otherwise left blank (the snapshot itself
+    carries no type — that needs GID→item resolution, still TODO).
+    Sorted by price descending.
+    """
+    gid_type = {r["item_gid"]: r["type_name"] for r in rows if r["item_gid"]}
+    out = []
+    for gid, snaps in avg_data.items():
+        if not snaps:
+            continue
+        latest = snaps[-1]
+        out.append({
+            "item_gid": gid,
+            "type_name": gid_type.get(gid, ""),
+            "avg_price_x1": latest["avg_price_x1"],
+            "timestamp": (latest.get("timestamp") or "")[:16],
+        })
+    return sorted(out, key=lambda x: x["avg_price_x1"], reverse=True)
 
 
 # ------------------------------------------------------------------ #
@@ -393,17 +424,19 @@ def print_top_items(rows: list[dict], top_n: int = 20):
     items = aggregate_by_gid(rows, top_n)
     if not items:
         return
-    print(_c(f"── Top {top_n} items les plus observés ──", _BOLD))
-    headers = ["GID", "Type", "Obs.", "Dernier prix x1", "Min", "Moy", "Max", "Tendance", "Vu le"]
+    print(_c(f"── Top {top_n} items les plus observés (derniers prix par palier) ──", _BOLD))
+    headers = ["GID", "Type", "Obs.", "x1", "x10", "x100", "x1000",
+               "x1 moy", "Tendance", "Vu le"]
     table_rows = [
         [
             str(g["item_gid"]),
             g["type_name"],
             str(g["nb_observations"]),
             _fmt_price(g["dernier_prix_x1"]),
-            _fmt_price(g["prix_x1_min"]),
+            _fmt_price(g["dernier_prix_x10"]),
+            _fmt_price(g["dernier_prix_x100"]),
+            _fmt_price(g["dernier_prix_x1000"]),
             _fmt_price(g["prix_x1_avg"]),
-            _fmt_price(g["prix_x1_max"]),
             _trend_color(g["tendance"]),
             g["derniere_observation"],
         ]
@@ -507,26 +540,29 @@ def print_avg_comparison(rows: list[dict], avg_data: dict, top_n: int = 20):
     print()
 
 
+def print_all_avg(avg_data: dict, rows: list[dict], limit: int = 40):
+    """Print the full market snapshot (all average prices), most expensive first."""
+    items = all_avg_prices(avg_data, rows)
+    if not items:
+        print("Aucun snapshot de prix moyens disponible (se crée à la connexion).")
+        return
+    shown = items[:limit]
+    print(_c(f"── Tous les prix moyens du marché ({len(items):,} items, top {len(shown)} par prix) ──", _BOLD))
+    headers = ["GID", "Type", "Prix moyen x1", "Snapshot"]
+    table_rows = [
+        [str(a["item_gid"]), a["type_name"] or _c("?", _DIM),
+         _fmt_price(a["avg_price_x1"]), a["timestamp"]]
+        for a in shown
+    ]
+    _table(headers, table_rows)
+    if len(items) > limit:
+        print(_c(f"  … {len(items) - limit:,} autres — exporte en HTML pour la liste complète filtrable.", _DIM))
+    print()
+
+
 # ------------------------------------------------------------------ #
 # HTML export                                                         #
 # ------------------------------------------------------------------ #
-
-def _html_table(title: str, headers: list[str], rows: list[list]) -> str:
-    th = "".join(f"<th>{h}</th>" for h in headers)
-    body = ""
-    for row in rows:
-        tds = "".join(f"<td>{cell}</td>" for cell in row)
-        body += f"<tr>{tds}</tr>\n"
-    return f"""
-<section>
-  <h2>{title}</h2>
-  <table>
-    <thead><tr>{th}</tr></thead>
-    <tbody>{body}</tbody>
-  </table>
-</section>
-"""
-
 
 def export_html(rows: list[dict], avg_data: dict, output_path: Path):
     ts_values = [r["_ts"] for r in rows if r["_ts"]]
@@ -534,26 +570,9 @@ def export_html(rows: list[dict], avg_data: dict, output_path: Path):
     date_max = max(ts_values).strftime("%Y-%m-%d %H:%M") if ts_values else "?"
     generated = datetime.now().strftime("%Y-%m-%d %H:%M")
 
-    # By-type table
+    # By-type aggregation + top items (rendered inline below).
     agg = aggregate_by_type(rows)
-    type_table = _html_table(
-        "Par type d'item",
-        ["Type", "ID", "Observations", "Items uniques", "Prix x1 min", "Prix x1 moy", "Prix x1 max"],
-        [[g["type_name"], g["hdv_type_id"], g["nb_observations"], g["nb_items"],
-          g["prix_x1_min"], round(g["prix_x1_avg"]), g["prix_x1_max"]]
-         for g in agg],
-    )
-
-    # Top items table
     top = aggregate_by_gid(rows, top_n=50)
-    top_table = _html_table(
-        "Top 50 items les plus observés",
-        ["GID", "Type", "Obs.", "Dernier prix x1", "Min", "Moy", "Max", "Tendance", "Dernière obs."],
-        [[g["item_gid"], g["type_name"], g["nb_observations"],
-          g["dernier_prix_x1"], g["prix_x1_min"], g["prix_x1_avg"],
-          g["prix_x1_max"], g["tendance"], g["derniere_observation"]]
-         for g in top],
-    )
 
     # Avg comparison
     last_hdv: dict[int, dict] = {}
@@ -577,12 +596,6 @@ def export_html(rows: list[dict], avg_data: dict, output_path: Path):
             "diff_pct": round(diff_pct, 1),
         })
     comparison.sort(key=lambda x: abs(x["diff_pct"]), reverse=True)
-    avg_table = _html_table(
-        "Comparaison HDV vs prix moyen snapshot",
-        ["GID", "Type", "Prix HDV x1", "Prix moy. x1", "Écart %"],
-        [[g["item_gid"], g["type_name"], g["hdv_prix_x1"], g["avg_prix_x1"], f"{g['diff_pct']:+.1f}%"]
-         for g in comparison[:50]],
-    ) if comparison else "<p>Aucune donnée de comparaison disponible.</p>"
 
     # Pre-build table bodies (no backslashes allowed inside f-string expressions < 3.12)
     unique_gids_count = len({r["item_gid"] for r in rows})
@@ -601,12 +614,23 @@ def export_html(rows: list[dict], avg_data: dict, output_path: Path):
         "<tr>"
         + f"<td>{g['item_gid']}</td><td>{g['type_name']}</td>"
         + f"<td>{g['nb_observations']}</td>"
-        + f"<td>{g['dernier_prix_x1']:,}</td><td>{g['prix_x1_min']:,}</td>"
-        + f"<td>{g['prix_x1_avg']:,}</td><td>{g['prix_x1_max']:,}</td>"
+        + f"<td>{g['dernier_prix_x1']:,}</td><td>{g['dernier_prix_x10']:,}</td>"
+        + f"<td>{g['dernier_prix_x100']:,}</td><td>{g['dernier_prix_x1000']:,}</td>"
         + f"<td>{g['tendance']}</td><td>{g['derniere_observation']}</td>"
         + "</tr>"
         for g in top
     )
+
+    # All average prices from the login snapshots — the full market, not just
+    # the items the player opened. Resolve type from HDV observations when known.
+    all_avg = all_avg_prices(avg_data, rows)
+    allavg_rows_html = "".join(
+        "<tr>"
+        + f"<td>{a['item_gid']}</td><td>{a['type_name']}</td>"
+        + f"<td>{a['avg_price_x1']:,}</td><td>{a['timestamp']}</td>"
+        + "</tr>"
+        for a in all_avg
+    ) or "<tr><td colspan=4>Aucun snapshot de prix moyens</td></tr>"
 
     def _diff_color(pct: float) -> str:
         if pct < -10:
@@ -683,12 +707,12 @@ function filterTable(inputId, tableId) {{
 </section>
 
 <section>
-  <h2>Top 50 items les plus observés</h2>
+  <h2>Top 50 items les plus observés — derniers prix par palier</h2>
   <input type="text" id="f-top" placeholder="Filtrer (GID, type, prix)..." oninput="filterTable('f-top','t-top')">
   <table id="t-top">
     <thead><tr>
       <th>GID</th><th>Type</th><th>Obs.</th>
-      <th>Dernier prix x1</th><th>Min</th><th>Moy</th><th>Max</th>
+      <th>Prix x1</th><th>Prix x10</th><th>Prix x100</th><th>Prix x1000</th>
       <th>Tendance</th><th>Dernière obs.</th>
     </tr></thead>
     <tbody>{top_rows_html}</tbody>
@@ -703,6 +727,17 @@ function filterTable(inputId, tableId) {{
       <th>GID</th><th>Type</th><th>Prix HDV x1</th><th>Prix moy. x1</th><th>Écart %</th>
     </tr></thead>
     <tbody>{avg_rows_html}</tbody>
+  </table>
+</section>
+
+<section>
+  <h2>Tous les prix moyens du marché ({len(all_avg):,} items — snapshot connexion)</h2>
+  <input type="text" id="f-allavg" placeholder="Filtrer (GID ou type)..." oninput="filterTable('f-allavg','t-allavg')">
+  <table id="t-allavg">
+    <thead><tr>
+      <th>GID</th><th>Type</th><th>Prix moyen x1</th><th>Snapshot</th>
+    </tr></thead>
+    <tbody>{allavg_rows_html}</tbody>
   </table>
 </section>
 
@@ -756,6 +791,8 @@ def main():
                         help="Nombre d'items à afficher dans le top (défaut: 20)")
     parser.add_argument("--avg", action="store_true",
                         help="Afficher la comparaison prix HDV vs snapshots de prix moyens")
+    parser.add_argument("--avg-all", action="store_true",
+                        help="Afficher TOUS les prix moyens du marché (snapshot connexion)")
     parser.add_argument("--html", metavar="FICHIER",
                         help="Exporter un rapport HTML self-contained")
     parser.add_argument("--csv", metavar="FICHIER",
@@ -802,6 +839,12 @@ def main():
 
     if args.gid:
         print_gid_history(filtered, args.gid, avg_data)
+        return
+
+    if args.avg_all:
+        # Whole-market view doesn't depend on the HDV row filters (the snapshot
+        # covers every item), so pass the unfiltered rows for type resolution.
+        print_all_avg(avg_data, rows, limit=max(args.top, 40))
         return
 
     print_by_type(filtered)
