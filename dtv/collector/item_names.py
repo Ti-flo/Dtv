@@ -19,9 +19,34 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 ROOT = Path(__file__).parent.parent.parent
-DEFAULT_PATH = ROOT / "data" / "item_names.json"
+DATA_DIR = ROOT / "data"
+DEFAULT_PATH = DATA_DIR / "item_names.json"
+GID_TYPES_PATH = DATA_DIR / "item_types_by_gid.json"
+TYPE_NAMES_PATH = DATA_DIR / "item_type_names.json"
 
 _CACHE: "dict[int, str] | None" = None
+_GID_TYPES_CACHE: "dict[int, int] | None" = None
+_TYPE_NAMES_CACHE: "dict[int, str] | None" = None
+
+
+def _load_int_keyed(path: Path, value_cast) -> dict:
+    """Load a {int_key: value} JSON map, casting keys to int and values."""
+    if not path.exists():
+        return {}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as e:
+        log.warning("Could not load %s: %s", path.name, e)
+        return {}
+    out = {}
+    for k, v in raw.items():
+        try:
+            cv = value_cast(v)
+        except (ValueError, TypeError):
+            continue
+        if cv != "" and cv is not None:
+            out[int(k)] = cv
+    return out
 
 
 def load_item_names(path: Path = DEFAULT_PATH) -> dict[int, str]:
@@ -35,14 +60,25 @@ def load_item_names(path: Path = DEFAULT_PATH) -> dict[int, str]:
         )
         _CACHE = {}
         return _CACHE
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-        _CACHE = {int(k): v for k, v in raw.items() if v}
-        log.info("Loaded %d item names from %s", len(_CACHE), path.name)
-    except Exception as e:
-        log.warning("Could not load item_names.json: %s", e)
-        _CACHE = {}
+    _CACHE = _load_int_keyed(path, str)
+    log.info("Loaded %d item names from %s", len(_CACHE), path.name)
     return _CACHE
+
+
+def load_gid_types(path: Path = GID_TYPES_PATH) -> dict[int, int]:
+    """Return {gid: typeId} — the TRUE item type from the game data cache."""
+    global _GID_TYPES_CACHE
+    if _GID_TYPES_CACHE is None:
+        _GID_TYPES_CACHE = _load_int_keyed(path, int)
+    return _GID_TYPES_CACHE
+
+
+def load_type_names(path: Path = TYPE_NAMES_PATH) -> dict[int, str]:
+    """Return {typeId: name} — live type labels from the ItemTypes store."""
+    global _TYPE_NAMES_CACHE
+    if _TYPE_NAMES_CACHE is None:
+        _TYPE_NAMES_CACHE = _load_int_keyed(path, str)
+    return _TYPE_NAMES_CACHE
 
 
 def get_item_name(gid: int, fallback: str = "") -> str:

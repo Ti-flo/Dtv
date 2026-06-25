@@ -39,7 +39,11 @@ DATA_DIR = ROOT / "data" / "raw"
 sys.path.insert(0, str(ROOT))
 
 from dtv.collector.item_types import RESOURCE_TYPES
-from dtv.collector.item_names import load_item_names
+from dtv.collector.item_names import (
+    load_item_names,
+    load_gid_types,
+    load_type_names,
+)
 
 # All known item types (equipment + resources). Extend as new types are discovered.
 ALL_ITEM_TYPES: dict[int, str] = {
@@ -114,16 +118,33 @@ def load_avg_data(data_dir: Path = DATA_DIR) -> dict[int, list[dict]]:
 def enrich(rows: list[dict]) -> list[dict]:
     """Add type_name, item_name, numeric fields. Returns new list."""
     names = load_item_names()
+    gid_types = load_gid_types()       # gid → TRUE typeId (from game data)
+    live_type_names = load_type_names()  # typeId → label (live, English)
     out = []
     for r in rows:
         r = dict(r)
-        # Resolve type name
+
         try:
-            tid = int(float(r.get("hdv_type") or 0))
+            r["item_gid"] = int(float(r.get("item_gid") or 0))
         except (ValueError, TypeError):
-            tid = 0
+            r["item_gid"] = 0
+        r["item_name"] = names.get(r["item_gid"], "")
+
+        # Resolve the item TYPE. Prefer the item's real typeId from the game
+        # data cache; the captured hdv_type is only the category tab the player
+        # was browsing and is often wrong (e.g. potions tagged under "Cape").
+        tid = gid_types.get(r["item_gid"])
+        if tid is None:
+            try:
+                tid = int(float(r.get("hdv_type") or 0))
+            except (ValueError, TypeError):
+                tid = 0
         r["hdv_type_id"] = tid
-        r["type_name"] = ALL_ITEM_TYPES.get(tid, f"type_{tid}" if tid else "unknown")
+        r["type_name"] = (
+            ALL_ITEM_TYPES.get(tid)            # curated French label
+            or live_type_names.get(tid)        # live English label (fills gaps)
+            or (f"type_{tid}" if tid else "unknown")
+        )
 
         # Numeric prices
         for col in ("prix_x1", "prix_x10", "prix_x100", "prix_x1000"):
@@ -131,12 +152,6 @@ def enrich(rows: list[dict]) -> list[dict]:
                 r[col] = int(float(r[col])) if r.get(col) else 0
             except (ValueError, TypeError):
                 r[col] = 0
-
-        try:
-            r["item_gid"] = int(float(r.get("item_gid") or 0))
-        except (ValueError, TypeError):
-            r["item_gid"] = 0
-        r["item_name"] = names.get(r["item_gid"], "")
 
         try:
             r["nb_offres"] = int(float(r.get("nb_offres") or 0))

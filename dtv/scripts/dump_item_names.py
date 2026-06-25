@@ -85,29 +85,39 @@ _JS = r"""
           resolve(JSON.stringify({error: "no Items store", db: target, stores: stores}));
           return;
         }
-        var names = {};
-        try {
-          var os = db.transaction("Items", "readonly").objectStore("Items");
-          var cur = os.openCursor();
-          cur.onsuccess = function(e) {
-            var c = e.target.result;
-            if (c) {
-              var v = c.value;
-              if (v && v.id != null && typeof v.nameId === "string" && v.nameId.length)
-                names[v.id] = v.nameId;
-              c.continue();
-            } else {
-              db.close();
-              resolve(JSON.stringify({ok: true, db: target,
-                count: Object.keys(names).length, items: names}));
-            }
-          };
-          cur.onerror = function(){ db.close();
-            resolve(JSON.stringify({error: "cursor failed", db: target})); };
-        } catch (e) {
-          db.close();
-          resolve(JSON.stringify({error: "tx threw: " + e, db: target}));
+        var names = {};      // gid → resolved item name
+        var gidTypes = {};   // gid → typeId
+        var typeNames = {};  // typeId → resolved type name (from ItemTypes store)
+
+        // Cursor one store, calling collect(record) per row, then `next`.
+        function sweep(storeName, collect, next) {
+          if (!db.objectStoreNames.contains(storeName)) { next(); return; }
+          try {
+            var cur = db.transaction(storeName, "readonly").objectStore(storeName).openCursor();
+            cur.onsuccess = function(e) {
+              var c = e.target.result;
+              if (c) { collect(c.value); c.continue(); }
+              else next();
+            };
+            cur.onerror = function(){ next(); };
+          } catch (e) { next(); }
         }
+
+        sweep("Items", function(v) {
+          if (!v || v.id == null) return;
+          if (typeof v.nameId === "string" && v.nameId.length) names[v.id] = v.nameId;
+          if (v.typeId != null) gidTypes[v.id] = v.typeId;
+        }, function() {
+          sweep("ItemTypes", function(v) {
+            if (v && v.id != null && typeof v.nameId === "string" && v.nameId.length)
+              typeNames[v.id] = v.nameId;
+          }, function() {
+            db.close();
+            resolve(JSON.stringify({ok: true, db: target,
+              count: Object.keys(names).length, items: names,
+              gidTypes: gidTypes, typeNames: typeNames}));
+          });
+        });
       };
     });
   }).catch(function(e){ return JSON.stringify({error: String(e)}); });
@@ -673,26 +683,38 @@ def dump_item_names(
     log.info("Read %d item names from IndexedDB %s",
              parsed.get("count", len(fresh)), parsed.get("db", "?"))
 
-    # Merge with what we already have on disk.
-    merged: dict[str, str] = {}
-    if out_path.exists():
-        try:
-            merged = json.loads(out_path.read_text(encoding="utf-8"))
-        except Exception as e:
-            log.warning("Could not read existing %s (%s) — starting fresh", out_path.name, e)
-    before = len(merged)
-    merged.update(fresh)
-    added = len(merged) - before
-    log.info("Merged: %d new, %d total (was %d)", added, len(merged), before)
-
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    # Compact JSON: one line, no indentation.
-    out_path.write_text(
-        json.dumps(merged, ensure_ascii=False, separators=(",", ":")),
-        encoding="utf-8",
-    )
+
+    def _merge_save(path: Path, fresh_map: dict, label: str) -> int:
+        """Merge fresh_map into the JSON at path (lazy cache → keep old keys)."""
+        existing: dict = {}
+        if path.exists():
+            try:
+                existing = json.loads(path.read_text(encoding="utf-8"))
+            except Exception as e:
+                log.warning("Could not read existing %s (%s) — starting fresh", path.name, e)
+        before = len(existing)
+        existing.update(fresh_map)
+        added = len(existing) - before
+        path.write_text(
+            json.dumps(existing, ensure_ascii=False, separators=(",", ":")),
+            encoding="utf-8",
+        )
+        log.info("%-10s %d new, %d total (was %d) → %s",
+                 label + ":", added, len(existing), before, path.name)
+        return len(existing)
+
+    total = _merge_save(out_path, fresh, "names")
+    # Sibling metadata files, written next to item_names.json. These let the
+    # analyzer label each item by its TRUE type (from the game data) instead of
+    # the HDV category tab the player happened to be browsing.
+    _merge_save(out_path.parent / "item_types_by_gid.json",
+                parsed.get("gidTypes", {}), "gid→type")
+    _merge_save(out_path.parent / "item_type_names.json",
+                parsed.get("typeNames", {}), "type names")
+
     log.info("Saved → %s  (%.1f KB)", out_path, out_path.stat().st_size / 1024)
-    return len(merged)
+    return total
 
 
 def _run_js(host: str, port: int, target_filter: str, js: str, timeout: float,
