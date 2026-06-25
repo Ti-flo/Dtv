@@ -118,38 +118,82 @@ _JS = r"""
 })()
 """
 
-# Lightweight JS just to inspect the game's JS structure — used by --diagnose.
+# Deep probe of the game's JS structure — used by --diagnose.
+# Dofus Touch loads item templates lazily (not into gui.databases), so we hunt
+# for the real store: the module registry, any window-level cache, and the
+# player's own inventory (whose items carry resolved names).
 _JS_DIAG = r"""
 (function() {
-  var r = {
-    hasGui: typeof window.gui !== "undefined",
-    guiKeys: [],
-    databaseKeys: [],
-    sampleItem: null
-  };
+  var r = {hasGui: typeof window.gui !== "undefined"};
+  function keysOf(o, n) { try { return Object.keys(o).slice(0, n || 60); } catch(e) { return []; } }
+
   try {
-    if (window.gui) {
-      r.guiKeys = Object.keys(window.gui).slice(0, 40);
-      if (window.gui.databases) {
-        r.databaseKeys = Object.keys(window.gui.databases);
-        // Grab first item from any *item*-keyed DB so we can see its fields.
-        for (var k in window.gui.databases) {
-          if (k.toLowerCase().indexOf("item") === 0) {
-            var store = window.gui.databases[k]._dataStore
-                     || window.gui.databases[k].dataStore;
-            if (store) {
-              var firstKey = Object.keys(store)[0];
-              if (firstKey) {
-                r.sampleItem = {dbKey: k, id: firstKey,
-                                fields: Object.keys(store[firstKey]).slice(0, 20)};
-              }
+    // 1) Top-level window keys that might hold data managers.
+    r.windowKeys = keysOf(window).filter(function(k){
+      return /item|data|i18n|cache|content|dofus|iso|manager/i.test(k);
+    });
+
+    // 2) gui.databases keys (static reference data only, but list anyway).
+    if (window.gui && window.gui.databases) r.databaseKeys = keysOf(window.gui.databases);
+
+    // 3) Module registry — Dofus Touch may use requirejs or browserify.
+    r.modules = {kind: null, itemModules: []};
+    var ctx = window.require && window.require.s && window.require.s.contexts
+              && window.require.s.contexts._;
+    if (ctx && ctx.defined) {
+      r.modules.kind = "requirejs";
+      r.modules.itemModules = keysOf(ctx.defined).filter(function(n){
+        return /item|i18n/i.test(n);
+      }).slice(0, 40);
+    } else if (typeof window.require === "function") {
+      r.modules.kind = "require-fn";
+    }
+
+    // 4) Player inventory — items here have a resolved name/nameId.
+    if (window.gui && window.gui.playerData) {
+      r.playerDataKeys = keysOf(window.gui.playerData);
+      var inv = window.gui.playerData.inventory;
+      if (inv) {
+        r.inventoryKeys = keysOf(inv);
+        // objects is usually {uid: itemInstance}; itemInstance.item is the template.
+        var objs = inv.objects || inv._items || inv.items;
+        if (objs) {
+          var firstUid = Object.keys(objs)[0];
+          if (firstUid) {
+            var inst = objs[firstUid];
+            r.invSample = {uid: firstUid, instanceFields: keysOf(inst, 25)};
+            var tmpl = inst.item || inst.template || inst;
+            if (tmpl) {
+              r.invSample.templateFields = keysOf(tmpl, 30);
+              r.invSample.exampleName = tmpl.name || tmpl.nameId || null;
+              r.invSample.exampleId = tmpl.id || tmpl._id || null;
             }
-            break;
           }
         }
       }
     }
-  } catch(e) { r.error = String(e); }
+
+    // 5) Brute scan: any window.gui.databases value whose store looks like items
+    //    (large, entries have a nameId). Report the biggest candidate.
+    if (window.gui && window.gui.databases) {
+      var best = null;
+      for (var k in window.gui.databases) {
+        var db = window.gui.databases[k];
+        var store = db && (db._dataStore || db.dataStore);
+        if (!store || typeof store !== "object") continue;
+        var ks = Object.keys(store);
+        if (ks.length < 50) continue;
+        var sample = store[ks[0]];
+        var hasName = sample && (typeof sample.name === "string" || "nameId" in sample);
+        if (hasName && (!best || ks.length > best.count)) {
+          best = {key: k, count: ks.length, sampleFields: keysOf(sample, 20),
+                  exampleName: sample.name || ("#" + sample.nameId)};
+        }
+      }
+      r.bestStore = best;
+    }
+  } catch(e) { r.error = String(e) + " | " + String(e.stack || ""); }
+
   return JSON.stringify(r);
 })()
 """
@@ -286,17 +330,29 @@ def main():
     if args.diagnose:
         raw = _run_js(args.host, args.port, args.target_filter, _JS_DIAG, args.timeout)
         d = json.loads(raw)
-        print("\n=== Diagnostic window.gui ===")
-        print(f"  window.gui present : {d.get('hasGui')}")
-        print(f"  gui keys           : {d.get('guiKeys')}")
-        print(f"  databases keys     : {d.get('databaseKeys')}")
-        si = d.get("sampleItem")
-        if si:
-            print(f"  DB key used        : {si['dbKey']}")
-            print(f"  sample item id     : {si['id']}")
-            print(f"  sample item fields : {si['fields']}")
+        print("\n=== Sonde structure JS Dofus Touch ===")
+        print(f"  window.gui present  : {d.get('hasGui')}")
+        print(f"  window keys (data)  : {d.get('windowKeys')}")
+        print(f"  databases keys      : {d.get('databaseKeys')}")
+        mods = d.get("modules") or {}
+        print(f"  module system       : {mods.get('kind')}")
+        print(f"  item/i18n modules   : {mods.get('itemModules')}")
+        print(f"  playerData keys     : {d.get('playerDataKeys')}")
+        print(f"  inventory keys      : {d.get('inventoryKeys')}")
+        inv = d.get("invSample")
+        if inv:
+            print(f"  inv instance fields : {inv.get('instanceFields')}")
+            print(f"  inv template fields : {inv.get('templateFields')}")
+            print(f"  inv example name    : {inv.get('exampleName')!r} (id={inv.get('exampleId')})")
+        best = d.get("bestStore")
+        if best:
+            print(f"  >>> STORE TROUVÉ    : databases.{best['key']} "
+                  f"({best['count']} entrées)")
+            print(f"      champs          : {best['sampleFields']}")
+            print(f"      exemple nom     : {best['exampleName']!r}")
         if d.get("error"):
-            print(f"  JS error           : {d['error']}")
+            print(f"  JS error            : {d['error']}")
+        print()
         return
 
     n = dump_item_names(
