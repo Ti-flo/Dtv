@@ -238,6 +238,46 @@ _JS_DIAG = r"""
 })()
 """
 
+# Reads the SOURCE of getItem/getName so we can confirm getItem is a local
+# synchronous lookup (no network) before iterating it over thousands of ids.
+# Also does a tiny, safe, bounded test on a few ids.
+_JS_SOURCES = r"""
+(function() {
+  var r = {};
+  try {
+    var inv = window.gui.playerData.inventory.objects;
+    var uids = Object.keys(inv);
+    r.invCount = uids.length;
+    if (!uids.length) return JSON.stringify({error: "inventory empty — need >=1 item"});
+
+    var t = inv[uids[0]].item;
+    r.getItemSrc    = typeof t.getItem    === "function" ? String(t.getItem).slice(0, 600)    : null;
+    r.getRawNameSrc = typeof t.getRawName === "function" ? String(t.getRawName).slice(0, 400) : null;
+    r.getNameSrc    = typeof t.getName    === "function" ? String(t.getName).slice(0, 400)    : null;
+    var ctor = t.constructor;
+    r.initListSrc = (ctor && typeof ctor.initializeList === "function")
+                    ? String(ctor.initializeList).slice(0, 500) : null;
+
+    // Safe bounded test: own gid + a few well-known low resource gids + a high
+    // improbable id (to confirm unknown ids return null synchronously, no hang).
+    var ownGid = inv[uids[0]].objectGID || t.id;
+    var probeIds = [ownGid, 311, 312, 289, 1, 99999];
+    r.tests = {};
+    probeIds.forEach(function(id){
+      try {
+        var it = t.getItem(id);
+        if (!it) { r.tests[id] = null; return; }
+        var nm = (typeof it.getRawName === "function") ? it.getRawName()
+               : (typeof it.getName === "function") ? it.getName()
+               : (it.name || "?");
+        r.tests[id] = nm;
+      } catch(e) { r.tests[id] = "ERR:" + e; }
+    });
+  } catch(e) { r.error = String(e) + " | " + String(e.stack || ""); }
+  return JSON.stringify(r);
+})()
+"""
+
 
 def _discover_ws_url(host: str, port: int, target_filter: str) -> str:
     url = f"http://{host}:{port}/json"
@@ -360,12 +400,32 @@ def main():
                         help="Seconds to wait for JS response (default: 30)")
     parser.add_argument("--diagnose", action="store_true",
                         help="Inspect the game's JS structure (use when dump fails)")
+    parser.add_argument("--sources", action="store_true",
+                        help="Print getItem/getName source + a safe id test (no network)")
     args = parser.parse_args()
 
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s — %(message)s",
     )
+
+    if args.sources:
+        raw = _run_js(args.host, args.port, args.target_filter, _JS_SOURCES, args.timeout)
+        d = json.loads(raw)
+        print("\n=== Sources getItem / getName ===")
+        if d.get("error"):
+            print(f"  ERREUR : {d['error']}")
+            return
+        print(f"  items en inventaire : {d.get('invCount')}")
+        print(f"\n  getItem source :\n    {d.get('getItemSrc')}")
+        print(f"\n  getRawName source :\n    {d.get('getRawNameSrc')}")
+        print(f"\n  getName source :\n    {d.get('getNameSrc')}")
+        print(f"\n  initializeList source :\n    {d.get('initListSrc')}")
+        print(f"\n  tests getItem(id) → nom :")
+        for k, v in (d.get("tests") or {}).items():
+            print(f"    {k:>6} → {v!r}")
+        print()
+        return
 
     if args.diagnose:
         raw = _run_js(args.host, args.port, args.target_filter, _JS_DIAG, args.timeout)
