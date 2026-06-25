@@ -45,17 +45,51 @@ DEFAULT_OUT = ROOT / "data" / "item_names.json"
 _JS = r"""
 (function() {
   try {
-    var db = window.gui && window.gui.databases && window.gui.databases.Items;
-    if (!db) return JSON.stringify({error: "no Items database found"});
+    // Diagnostic: report what's available if we can't find the Items DB.
+    function diag() {
+      var d = {
+        hasGui: typeof window.gui !== "undefined",
+        guiKeys: [],
+        databaseKeys: [],
+        hint: "run dump_item_names while logged in and in the game world"
+      };
+      if (window.gui) {
+        try { d.guiKeys = Object.keys(window.gui).slice(0, 30); } catch(e) {}
+        if (window.gui.databases) {
+          try { d.databaseKeys = Object.keys(window.gui.databases); } catch(e) {}
+        }
+      }
+      return JSON.stringify({error: "no Items database found", diag: d});
+    }
+
+    if (!window.gui || !window.gui.databases)
+      return diag();
+
+    // Try several key names used across Dofus Touch versions.
+    var dbs = window.gui.databases;
+    var db = dbs.Items || dbs.items || dbs.Item || dbs.item
+          || dbs.ItemTemplate || dbs.ItemTemplates || null;
+
+    // Also accept a key that contains "item" (case-insensitive) as fallback.
+    if (!db) {
+      for (var k in dbs) {
+        if (k.toLowerCase().indexOf("item") === 0 && dbs[k] && dbs[k]._dataStore) {
+          db = dbs[k];
+          break;
+        }
+      }
+    }
+
+    if (!db) return diag();
 
     var store = db._dataStore || db.dataStore || db;
     if (!store || typeof store !== "object")
       return JSON.stringify({error: "Items store not an object"});
 
-    // I18n table for nameId resolution (present in most builds)
+    // I18n table for nameId resolution (present in most builds).
     var i18nStore = null;
     try {
-      var i18nDb = window.gui.databases.I18n;
+      var i18nDb = dbs.I18n || dbs.i18n || null;
       i18nStore = i18nDb && (i18nDb._dataStore || i18nDb.dataStore || i18nDb);
     } catch(e) {}
 
@@ -81,6 +115,42 @@ _JS = r"""
   } catch(e) {
     return JSON.stringify({error: String(e), stack: String(e.stack || "")});
   }
+})()
+"""
+
+# Lightweight JS just to inspect the game's JS structure — used by --diagnose.
+_JS_DIAG = r"""
+(function() {
+  var r = {
+    hasGui: typeof window.gui !== "undefined",
+    guiKeys: [],
+    databaseKeys: [],
+    sampleItem: null
+  };
+  try {
+    if (window.gui) {
+      r.guiKeys = Object.keys(window.gui).slice(0, 40);
+      if (window.gui.databases) {
+        r.databaseKeys = Object.keys(window.gui.databases);
+        // Grab first item from any *item*-keyed DB so we can see its fields.
+        for (var k in window.gui.databases) {
+          if (k.toLowerCase().indexOf("item") === 0) {
+            var store = window.gui.databases[k]._dataStore
+                     || window.gui.databases[k].dataStore;
+            if (store) {
+              var firstKey = Object.keys(store)[0];
+              if (firstKey) {
+                r.sampleItem = {dbKey: k, id: firstKey,
+                                fields: Object.keys(store[firstKey]).slice(0, 20)};
+              }
+            }
+            break;
+          }
+        }
+      }
+    }
+  } catch(e) { r.error = String(e); }
+  return JSON.stringify(r);
 })()
 """
 
@@ -122,58 +192,19 @@ def dump_item_names(
     timeout: float = 30.0,
 ) -> int:
     """Run the JS dump and save the result.  Returns the number of names saved."""
-    ws_url = _discover_ws_url(host, port, target_filter)
-
-    log.info("Connecting to %s", ws_url)
-    conn = websocket.create_connection(ws_url, timeout=timeout)
-    try:
-        cmd_id = 1
-        conn.send(json.dumps({
-            "id": cmd_id,
-            "method": "Runtime.evaluate",
-            "params": {
-                "expression": _JS,
-                "returnByValue": True,
-                "awaitPromise": False,
-            },
-        }))
-        log.info("Runtime.evaluate sent — waiting for response (timeout=%.0fs)…", timeout)
-
-        deadline = time.monotonic() + timeout
-        raw_value = None
-        while time.monotonic() < deadline:
-            try:
-                raw = conn.recv()
-            except websocket.WebSocketTimeoutException:
-                continue
-            msg = json.loads(raw)
-            if msg.get("id") != cmd_id:
-                continue  # CDP event or unrelated response
-
-            result = msg.get("result", {})
-            exc = result.get("exceptionDetails")
-            if exc:
-                log.error("JS exception: %s", exc)
-                sys.exit(1)
-
-            raw_value = result.get("result", {}).get("value")
-            break
-        else:
-            log.error("Timed out waiting for Runtime.evaluate response after %.0fs", timeout)
-            sys.exit(1)
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
-
-    if raw_value is None:
-        log.error("Runtime.evaluate returned no value")
-        sys.exit(1)
-
+    log.info("Runtime.evaluate sent — waiting for response (timeout=%.0fs)…", timeout)
+    raw_value = _run_js(host, port, target_filter, _JS, timeout)
     parsed = json.loads(raw_value)
     if "error" in parsed:
-        log.error("JavaScript error: %s\n%s", parsed["error"], parsed.get("stack", ""))
+        diag = parsed.get("diag", {})
+        log.error("JavaScript error: %s", parsed["error"])
+        if diag:
+            log.error("window.gui present: %s", diag.get("hasGui"))
+            log.error("window.gui keys: %s", diag.get("guiKeys"))
+            log.error("window.gui.databases keys: %s", diag.get("databaseKeys"))
+            hint = diag.get("hint", "")
+            if hint:
+                log.error("Hint: %s", hint)
         sys.exit(1)
 
     items: dict[str, str] = parsed.get("items", {})
@@ -190,6 +221,45 @@ def dump_item_names(
     return count
 
 
+def _run_js(host: str, port: int, target_filter: str, js: str, timeout: float) -> str:
+    """Connect to CDP, evaluate js, return the raw string value."""
+    ws_url = _discover_ws_url(host, port, target_filter)
+    log.info("Connecting to %s", ws_url)
+    conn = websocket.create_connection(ws_url, timeout=timeout)
+    try:
+        conn.send(json.dumps({
+            "id": 1,
+            "method": "Runtime.evaluate",
+            "params": {"expression": js, "returnByValue": True, "awaitPromise": False},
+        }))
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                raw = conn.recv()
+            except websocket.WebSocketTimeoutException:
+                continue
+            msg = json.loads(raw)
+            if msg.get("id") != 1:
+                continue
+            result = msg.get("result", {})
+            exc = result.get("exceptionDetails")
+            if exc:
+                log.error("JS exception: %s", exc)
+                sys.exit(1)
+            val = result.get("result", {}).get("value")
+            if val is None:
+                log.error("Runtime.evaluate returned no value")
+                sys.exit(1)
+            return val
+        log.error("Timed out after %.0fs", timeout)
+        sys.exit(1)
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Dump GID→name from Dofus Touch WebView via CDP Runtime.evaluate"
@@ -204,12 +274,30 @@ def main():
                         help=f"Output JSON path (default: {DEFAULT_OUT})")
     parser.add_argument("--timeout", type=float, default=30.0,
                         help="Seconds to wait for JS response (default: 30)")
+    parser.add_argument("--diagnose", action="store_true",
+                        help="Inspect the game's JS structure (use when dump fails)")
     args = parser.parse_args()
 
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s — %(message)s",
     )
+
+    if args.diagnose:
+        raw = _run_js(args.host, args.port, args.target_filter, _JS_DIAG, args.timeout)
+        d = json.loads(raw)
+        print("\n=== Diagnostic window.gui ===")
+        print(f"  window.gui present : {d.get('hasGui')}")
+        print(f"  gui keys           : {d.get('guiKeys')}")
+        print(f"  databases keys     : {d.get('databaseKeys')}")
+        si = d.get("sampleItem")
+        if si:
+            print(f"  DB key used        : {si['dbKey']}")
+            print(f"  sample item id     : {si['id']}")
+            print(f"  sample item fields : {si['fields']}")
+        if d.get("error"):
+            print(f"  JS error           : {d['error']}")
+        return
 
     n = dump_item_names(
         host=args.host,
