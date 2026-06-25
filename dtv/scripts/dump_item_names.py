@@ -192,6 +192,46 @@ _JS_DIAG = r"""
       }
       r.bestStore = best;
     }
+
+    // 6) HOW does item.name resolve? + how does the client LOAD items by id?
+    //    This reveals the i18n function and the lazy item loader.
+    function methodsOf(o) {
+      var out = [], p = o, depth = 0;
+      while (p && depth < 5) {
+        Object.getOwnPropertyNames(p).forEach(function(k){
+          try { if (typeof o[k] === "function") out.push(k); } catch(e){}
+        });
+        p = Object.getPrototypeOf(p); depth++;
+      }
+      return out.filter(function(v,i,a){return a.indexOf(v)===i;}).slice(0, 70);
+    }
+    r.probe = {};
+    try {
+      var inv2 = window.gui.playerData.inventory.objects;
+      var uid2 = Object.keys(inv2)[0];
+      var tmpl2 = inv2[uid2].item;
+      r.probe.templateCtor = tmpl2.constructor && tmpl2.constructor.name;
+      r.probe.templateCtorStatics = tmpl2.constructor ? keysOf(tmpl2.constructor, 40) : [];
+      r.probe.templateMethods = methodsOf(tmpl2);
+      // Source of the `name` getter — shows the i18n call.
+      var pr = Object.getPrototypeOf(tmpl2), desc = null;
+      while (pr && !desc) { desc = Object.getOwnPropertyDescriptor(pr, "name"); pr = Object.getPrototypeOf(pr); }
+      r.probe.nameGetterSrc = (desc && desc.get) ? String(desc.get).slice(0, 400) : "(no name getter)";
+    } catch(e) { r.probe.errTemplate = String(e); }
+    try {
+      var dbo = window.gui.databases.ItemTypes;
+      r.probe.dbCtor = dbo.constructor && dbo.constructor.name;
+      r.probe.dbMethods = methodsOf(dbo);
+    } catch(e) { r.probe.errDb = String(e); }
+    try {
+      r.probe.invManagerMethods = methodsOf(window.gui.playerData.inventoryManager);
+    } catch(e) { r.probe.errInvMgr = String(e); }
+    // Common global i18n function names.
+    r.probe.globals = {
+      getText: typeof window.getText,
+      i18n: typeof window.i18n,
+      processStaticData: typeof window.processStaticData,
+    };
   } catch(e) { r.error = String(e) + " | " + String(e.stack || ""); }
 
   return JSON.stringify(r);
@@ -350,6 +390,20 @@ def main():
                   f"({best['count']} entrées)")
             print(f"      champs          : {best['sampleFields']}")
             print(f"      exemple nom     : {best['exampleName']!r}")
+        p = d.get("probe") or {}
+        if p:
+            print("  --- résolution nom / chargement items ---")
+            print(f"  template class      : {p.get('templateCtor')}")
+            print(f"  template statics    : {p.get('templateCtorStatics')}")
+            print(f"  template methods    : {p.get('templateMethods')}")
+            print(f"  name getter source  : {p.get('nameGetterSrc')}")
+            print(f"  ItemTypes db class  : {p.get('dbCtor')}")
+            print(f"  ItemTypes db methods: {p.get('dbMethods')}")
+            print(f"  invManager methods  : {p.get('invManagerMethods')}")
+            print(f"  globals i18n        : {p.get('globals')}")
+            for ek in ("errTemplate", "errDb", "errInvMgr"):
+                if p.get(ek):
+                    print(f"  {ek:18}: {p[ek]}")
         if d.get("error"):
             print(f"  JS error            : {d['error']}")
         print()
