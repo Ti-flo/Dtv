@@ -45,9 +45,13 @@ from dtv.collector.item_names import (
     load_type_names,
 )
 
-# All known item types (equipment + resources). Extend as new types are discovered.
+# Fallback type labels, used ONLY when item_type_names.json is absent (no dump
+# yet). The live ItemTypes dump is authoritative and takes priority — see
+# enrich(). NOTE: the equipment IDs below were taken from Dofus PC and DON'T
+# match Dofus Touch (e.g. Touch type 11 = Boots, not Cape). Resources below
+# come from RESOURCE_TYPES, which WAS extracted live and is correct.
 ALL_ITEM_TYPES: dict[int, str] = {
-    # Equipment
+    # Equipment — UNRELIABLE on Dofus Touch, kept only as a last-resort fallback.
     1: "Amulette", 2: "Anneau", 9: "Sac à dos", 10: "Chapeau",
     11: "Cape", 13: "Ceinture", 16: "Bottes", 17: "Bâton",
     18: "Baguette", 19: "Épée", 21: "Pelle", 22: "Marteau",
@@ -141,8 +145,8 @@ def enrich(rows: list[dict]) -> list[dict]:
                 tid = 0
         r["hdv_type_id"] = tid
         r["type_name"] = (
-            ALL_ITEM_TYPES.get(tid)            # curated French label
-            or live_type_names.get(tid)        # live English label (fills gaps)
+            live_type_names.get(tid)           # authoritative label from game data
+            or ALL_ITEM_TYPES.get(tid)         # curated fallback (only if no live dump)
             or (f"type_{tid}" if tid else "unknown")
         )
 
