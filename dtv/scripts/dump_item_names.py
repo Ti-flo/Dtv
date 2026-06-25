@@ -376,6 +376,43 @@ _JS_CONFIG = r"""
 })()
 """
 
+# Test candidate data-file URLs by fetching them FROM the WebView (same origin
+# as the asset CDN, so no CORS). Hits only the static asset CDN, never the game
+# server. Returns which URLs respond + a sample so we find the items data file.
+# Runs as a Promise → call _run_js(..., await_promise=True).
+_JS_FETCH_TEST = r"""
+(function() {
+  var base = window.Config.assetsUrl;
+  var lang = window.Config.language || "en";
+  var paths = [
+    "/data/Items.json",
+    "/data/" + lang + "/Items.json",
+    "/data/items.json",
+    "/data/Items_0.json",
+    "/data/Items/0.json",
+    "/data/i18n/i18n_" + lang + ".json",
+    "/data/i18n_" + lang + ".json",
+    "/data/" + lang + "/i18n.json",
+    "/data/ItemTypes.json",
+    "/data/" + lang + "/ItemTypes.json",
+    "/data/index.json",
+    "/data/filemap.json",
+    "/data/manifest.json"
+  ];
+  var urls = paths.map(function(p){ return base + p; });
+  return Promise.all(urls.map(function(u){
+    return fetch(u).then(function(res){
+      if (!res.ok) return {url: u, status: res.status};
+      return res.text().then(function(t){
+        return {url: u, status: res.status, len: t.length, head: t.slice(0, 160)};
+      });
+    }).catch(function(e){ return {url: u, err: String(e) }; });
+  })).then(function(results){
+    return JSON.stringify({base: base, lang: lang, results: results});
+  });
+})()
+"""
+
 
 def _discover_ws_url(host: str, port: int, target_filter: str) -> str:
     url = f"http://{host}:{port}/json"
@@ -443,7 +480,8 @@ def dump_item_names(
     return count
 
 
-def _run_js(host: str, port: int, target_filter: str, js: str, timeout: float) -> str:
+def _run_js(host: str, port: int, target_filter: str, js: str, timeout: float,
+            await_promise: bool = False) -> str:
     """Connect to CDP, evaluate js, return the raw string value."""
     ws_url = _discover_ws_url(host, port, target_filter)
     log.info("Connecting to %s", ws_url)
@@ -452,7 +490,8 @@ def _run_js(host: str, port: int, target_filter: str, js: str, timeout: float) -
         conn.send(json.dumps({
             "id": 1,
             "method": "Runtime.evaluate",
-            "params": {"expression": js, "returnByValue": True, "awaitPromise": False},
+            "params": {"expression": js, "returnByValue": True,
+                       "awaitPromise": await_promise},
         }))
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
@@ -504,12 +543,33 @@ def main():
                         help="Hunt for the real item registry (statics + big maps)")
     parser.add_argument("--config", action="store_true",
                         help="Read window.Config — CDN/data URLs for the item data file")
+    parser.add_argument("--probe-data", action="store_true",
+                        help="Fetch-test candidate data-file URLs from the WebView (asset CDN only)")
     args = parser.parse_args()
 
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s — %(message)s",
     )
+
+    if args.probe_data:
+        raw = _run_js(args.host, args.port, args.target_filter, _JS_FETCH_TEST,
+                      args.timeout, await_promise=True)
+        d = json.loads(raw)
+        print("\n=== Test des URLs de données (CDN assets) ===")
+        print(f"  base : {d.get('base')}   lang : {d.get('lang')}")
+        for res in d.get("results", []):
+            u = res.get("url", "")
+            tail = u.split("/assets/", 1)[-1] if "/assets/" in u else u
+            if res.get("status") == 200:
+                print(f"  ✓ 200  len={res.get('len'):>9}  …/{tail}")
+                print(f"         head: {res.get('head')}")
+            elif res.get("err"):
+                print(f"  ✗ ERR  …/{tail}  ({res['err']})")
+            else:
+                print(f"  ✗ {res.get('status')}  …/{tail}")
+        print()
+        return
 
     if args.config:
         raw = _run_js(args.host, args.port, args.target_filter, _JS_CONFIG, args.timeout)
