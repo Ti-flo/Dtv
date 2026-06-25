@@ -62,6 +62,10 @@ class PrimusClient:
         self._thread: Optional[threading.Thread] = None
         self._handlers: dict[str, list[Callable]] = {}
         self._handlers_lock = threading.Lock()
+        # Serialises socket writes: pongs are sent from the receive thread while
+        # send_message() may be called from the main/collector thread. Concurrent
+        # websocket-client sends can interleave frames and corrupt the stream.
+        self._send_lock = threading.Lock()
         self._closed = threading.Event()
         self._connected = threading.Event()
         # Disconnect reason tracking — reset on each connect()
@@ -107,11 +111,12 @@ class PrimusClient:
 
         headers = {
             "User-Agent": (
-                "Mozilla/5.0 (Linux; Android 9; SM-S908E Build/TP1A.220624.014; wv) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/129.0.6668.70 "
-                "Safari/537.36 DofusTouch Client 3.11.0"
+                "Mozilla/5.0 (Linux; Android 12; sdk_gphone64_x86_64 Build/SE1A.220826.008; wv) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/91.0.4472.114 "
+                "Mobile Safari/537.36 DofusTouch Client 3.11.0"
             ),
             "Origin": "file://",
+            "Accept-Language": "en-US,en;q=0.9",
         }
         self._ws = websocket.WebSocketApp(
             self._url,
@@ -143,9 +148,19 @@ class PrimusClient:
     def send_message(self, msg_type: str, data: dict = None):
         """
         Send a game message.
-        Wraps in {"call": "sendMessage", "data": {"type": ..., "data": ...}}.
+        Wraps in {"call":"sendMessage","data":{"type":...[,"data":...]}}.
+
+        The inner "data" field is OMITTED for no-arg messages, matching the real
+        client byte-for-byte: it sends {"type":"CharactersListRequestMessage"}
+        with no "data" key, NOT data:{}. Always sending data:{} would be a
+        wire-level fingerprint distinguishing us from the official client.
+        (Confirmed across 3 live captures: every no-arg request omits "data";
+        only messages with real fields carry it.)
         """
-        self._write("sendMessage", {"type": msg_type, "data": data or {}})
+        inner = {"type": msg_type}
+        if data:  # falsy for None and {} → omit, matching the real client
+            inner["data"] = data
+        self._write("sendMessage", inner)
 
     def send_call(self, call: str, data=None):
         """
@@ -168,7 +183,8 @@ class PrimusClient:
             raise RuntimeError("Not connected — call connect() first")
         payload = json.dumps({"call": call, "data": data})
         try:
-            self._ws.send(payload)
+            with self._send_lock:
+                self._ws.send(payload)
         except websocket.WebSocketConnectionClosedException:
             raise RuntimeError(f"Cannot send '{call}': WebSocket is already closed")
         log.debug("→ %s", call)
@@ -213,7 +229,8 @@ class PrimusClient:
         # Primus heartbeat — respond immediately and track time for watchdog
         if isinstance(raw, str) and raw.startswith("primus::ping::"):
             ts = raw.split("::", 2)[2]
-            ws.send(f"primus::pong::{ts}")
+            with self._send_lock:
+                ws.send(f"primus::pong::{ts}")
             self._last_ping_at = time.time()
             log.debug("↔ heartbeat pong %s", ts)
             return
@@ -228,6 +245,23 @@ class PrimusClient:
             msg = json.loads(raw)
         except json.JSONDecodeError:
             log.warning("Non-JSON message received: %r", raw[:100])
+            return
+
+        # Primus control messages can arrive as JSON-encoded strings,
+        # e.g. "primus::server::open" — the browser WebView absorbs these
+        # internally so they don't appear in DevTools captures.
+        if isinstance(msg, str):
+            if msg == "primus::server::close":
+                log.info("primus::server::close (JSON) received")
+                self._server_closed = True
+            elif msg.startswith("primus::ping::"):
+                ts = msg.split("::", 2)[2]
+                with self._send_lock:
+                    ws.send(f"primus::pong::{ts}")
+                self._last_ping_at = time.time()
+                log.debug("↔ heartbeat pong (JSON) %s", ts)
+            else:
+                log.debug("String frame (ignored): %r", msg[:80])
             return
 
         msg_type = msg.get("_messageType") or msg.get("type") or "unknown"

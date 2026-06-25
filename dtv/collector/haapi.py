@@ -1,80 +1,121 @@
 """
 HAAPI authentication for Dofus Touch.
 
-Flow: login + password → api_key → game_token
-The game_token is then sent to the game server via AuthenticationTicketMessage.
+Flow (returning sessions): apikey + refresh_token → new apikey → game_token
+The initial apikey/refresh_token must be bootstrapped once from a logged-in
+app session (extract from Chrome DevTools connected to the emulator).
 
-Confirmed from mitmproxy capture:
+Confirmed from live DevTools capture (sdk_gphone64_x86_64 emulator, Android 12):
   - Host: haapi.ankama.com
   - GAME_ID = 18 (Dofus Touch)
-  - Cloudflare is active → curl_cffi with chrome_android impersonation required
-    (standard Python requests has a different JA3/JA4 fingerprint and gets blocked)
+  - Cloudflare active → curl_cffi with chrome_android impersonation required
+  - RefreshApiKey body: game_id=18&refresh_token=UUID&long_life_token=1
+    with Content-Type: text/plain;charset=UTF-8 (as sent by the real app)
 """
 from curl_cffi import requests
 
 HAAPI_BASE = "https://haapi.ankama.com/json"
 GAME_ID = 18
 
-# Exact headers from mitmproxy capture (capture.har)
+# Matched to live emulator capture (sdk_gphone64_x86_64, Android 12, Chrome/91)
 _HEADERS = {
     "User-Agent": (
-        "Mozilla/5.0 (Linux; Android 9; SM-S908E Build/TP1A.220624.014; wv) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/129.0.6668.70 "
-        "Safari/537.36 DofusTouch Client 3.11.0"
+        "Mozilla/5.0 (Linux; Android 12; sdk_gphone64_x86_64 Build/SE1A.220826.008; wv) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/91.0.4472.114 "
+        "Mobile Safari/537.36 DofusTouch Client 3.11.0"
     ),
-    "sec-ch-ua": '"Android WebView";v="129", "Not=A?Brand";v="8", "Chromium";v="129"',
-    "sec-ch-ua-mobile": "?0",
-    "sec-ch-ua-platform": '"Android"',
     "x-requested-with": "com.ankama.dofustouch",
-    "Content-Type": "application/json",
     "Accept": "application/json",
     "sec-fetch-site": "cross-site",
     "sec-fetch-mode": "cors",
     "sec-fetch-dest": "empty",
-    "accept-language": "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7",
+    "accept-language": "en-US,en;q=0.9",
 }
 
 
-def create_api_key(login: str, password: str) -> dict:
+def refresh_api_key(apikey: str, refresh_token: str) -> dict:
     """
-    POST credentials → api_key dict.
+    POST with current apikey + refresh_token → refreshed credentials dict.
 
-    Returns dict with at minimum: {"key": "...", "account_id": ...}
-    The "key" field is what's passed to create_token().
+    Body is sent as text/plain (not form-encoded) — as observed in live capture.
+    Returns a 13-field dict including: key, account_id, refresh_token,
+    expiration_date, ip.
+
+    Token lifecycle (CONFIRMED live, session 7): with long_life_token=1 the
+    apikey does NOT rotate — three consecutive refreshes returned the SAME key
+    and refresh_token. They are reusable, not single-use. (The per-call
+    game_token from create_token() IS single-use; only that one changes.)
     """
-    url = f"{HAAPI_BASE}/Ankama/v5/Api/CreateApiKey"
-    payload = {
-        "login": login,
-        "password": password,
-        "long_life_token": False,
-        "game": GAME_ID,
+    url = f"{HAAPI_BASE}/Ankama/v5/Api/RefreshApiKey"
+    headers = {
+        **_HEADERS,
+        "apikey": apikey,
+        "Content-Type": "text/plain;charset=UTF-8",
     }
-    resp = requests.post(url, json=payload, headers=_HEADERS, impersonate="chrome_android", timeout=30)
-    resp.raise_for_status()
+    body = f"game_id={GAME_ID}&refresh_token={refresh_token}&long_life_token=1"
+    resp = requests.post(url, data=body, headers=headers, impersonate="chrome_android", timeout=30)
+    if not resp.ok:
+        raise RuntimeError(f"HTTP {resp.status_code}: {resp.text}")
     return resp.json()
 
 
 def create_token(api_key: str) -> str:
     """
-    GET with api_key header → game token string.
+    GET with api_key header → game token (UUID string).
 
-    The token is a short-lived JWT passed to the game server as the
-    "ticket" field in AuthenticationTicketMessage.
+    The token is sent to the login server in the Primus "login" call alongside
+    account_id as username.
     """
-    url = f"{HAAPI_BASE}/Ankama/v5/Game/CreateToken"
+    url = f"{HAAPI_BASE}/Ankama/v5/Account/CreateToken"
     headers = {**_HEADERS, "apikey": api_key}
     resp = requests.get(url, params={"game": GAME_ID}, headers=headers, impersonate="chrome_android", timeout=30)
-    resp.raise_for_status()
+    if not resp.ok:
+        raise RuntimeError(f"HTTP {resp.status_code}: {resp.text}")
     return resp.json()["token"]
 
 
-def get_game_token(login: str, password: str) -> str:
+def _field(d: dict, *names: str):
+    """Return the first present key among names, or None — HAAPI field naming
+    (key/apikey, account_id/accountId) varies; the live response body wasn't
+    captured, so accept the known aliases instead of crashing on KeyError."""
+    for n in names:
+        if n in d:
+            return d[n]
+    return None
+
+
+def authenticate(apikey: str, refresh_token: str) -> tuple[str, str, str, str]:
     """
-    Full auth flow: credentials → game token ready for the WebSocket server.
+    Full refresh flow → (account_id, game_token, new_apikey, new_refresh_token).
+
+    NOTE on token rotation: CONFIRMED live (session 7) that with long_life_token=1
+    the apikey and refresh_token do NOT rotate — they come back identical across
+    refreshes, so they're reusable. The new values are still returned (and should
+    be persisted) in case Ankama ever changes this. Do NOT use the Ankama app on
+    this account while the bot runs — both sharing one token chain risks one
+    invalidating the other.
+
+    NOTE on IP binding: the RefreshApiKey response includes an "ip" field —
+    Ankama binds the apikey to the IP it was bootstrapped from. The bot must run
+    from that same residential IP.
 
     Usage:
-        token = get_game_token("email@gmail.com", "password")
+        account_id, token, new_key, new_rt = authenticate(apikey, refresh_token)
     """
-    api_data = create_api_key(login, password)
-    api_key = api_data["key"]
-    return create_token(api_key)
+    refreshed = refresh_api_key(apikey, refresh_token)
+    new_apikey = _field(refreshed, "key", "apikey", "api_key")
+    account_id = _field(refreshed, "account_id", "accountId", "id")
+    if not new_apikey or account_id is None:
+        raise RuntimeError(
+            f"RefreshApiKey response missing key/account_id. Got fields: "
+            f"{list(refreshed.keys())}"
+        )
+    new_refresh_token = _field(refreshed, "refresh_token", "refreshToken") or refresh_token
+    token = create_token(new_apikey)
+    return str(account_id), token, new_apikey, new_refresh_token
+
+
+def get_game_token(apikey: str, refresh_token: str) -> str:
+    """Backwards-compatible helper — returns only the game token."""
+    _, token, _, _ = authenticate(apikey, refresh_token)
+    return token

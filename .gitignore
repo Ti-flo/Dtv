@@ -37,3 +37,4 @@ Thumbs.db
 *.properties
 stamp-cert-sha256
 AndroidManifest.xml
+data/*.log

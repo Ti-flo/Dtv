@@ -22,7 +22,13 @@ log = logging.getLogger(__name__)
 
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent.parent.parent))
 
-import requests
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
+from curl_cffi import requests
 from dtv.collector.primus_client import PrimusClient
 from dtv.collector.connection import LOGIN_SERVER, PRIMUS_PATH
 
