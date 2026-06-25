@@ -529,6 +529,94 @@ _JS_FETCH_EXACT = r"""
 })()
 """
 
+# Sweep ALL persistent web caches (IndexedDB, Cache API, localStorage) for the
+# cached game data. Cordova apps store boot-downloaded JSON in one of these so
+# they work offline — if the item/i18n data is anywhere on the device, it's here.
+# Runs as a Promise → _run_js(..., await_promise=True).
+_JS_CACHE_SWEEP = r"""
+(function() {
+  function clip(s, n){ s = (s == null ? "" : String(s)); return s.length > n ? s.slice(0, n) : s; }
+
+  // ---- IndexedDB: enumerate dbs → stores → count + first record sample ----
+  function sweepIDB() {
+    if (!window.indexedDB) return Promise.resolve({error: "no indexedDB"});
+    var listDbs = indexedDB.databases ? indexedDB.databases()
+                                      : Promise.resolve(null);
+    return listDbs.then(function(dbs){
+      if (!dbs) return {error: "indexedDB.databases() unsupported"};
+      if (!dbs.length) return {databases: []};
+      function inspect(meta){
+        return new Promise(function(resolve){
+          var req;
+          try { req = indexedDB.open(meta.name); }
+          catch(e){ resolve({name: meta.name, error: String(e)}); return; }
+          req.onerror = function(){ resolve({name: meta.name, error: "open failed"}); };
+          req.onsuccess = function(){
+            var db = req.result;
+            var stores = Array.prototype.slice.call(db.objectStoreNames);
+            if (!stores.length){ db.close(); resolve({name: meta.name, stores: []}); return; }
+            var out = [], pending = stores.length;
+            function done(){ if (--pending === 0){ db.close();
+              resolve({name: meta.name, version: meta.version, stores: out}); } }
+            stores.forEach(function(sn){
+              var info = {store: sn, count: null, sampleKey: null, sample: null};
+              try {
+                var os = db.transaction(sn, "readonly").objectStore(sn);
+                info.keyPath = os.keyPath;
+                var cReq = os.count();
+                cReq.onsuccess = function(){ info.count = cReq.result; };
+                var curReq = os.openCursor();
+                curReq.onsuccess = function(e){
+                  var cur = e.target.result;
+                  if (cur){
+                    info.sampleKey = clip(cur.key, 80);
+                    var v; try { v = JSON.stringify(cur.value); } catch(_){ v = String(cur.value); }
+                    info.sample = clip(v, 500);
+                  }
+                  out.push(info); done();
+                };
+                curReq.onerror = function(){ out.push(info); done(); };
+              } catch(err){ out.push({store: sn, error: String(err)}); done(); }
+            });
+          };
+        });
+      }
+      return Promise.all(dbs.map(inspect)).then(function(all){ return {databases: all}; });
+    }).catch(function(e){ return {error: String(e)}; });
+  }
+
+  // ---- Cache API (Service Worker / PWA cache): list caches + their request URLs ----
+  function sweepCaches() {
+    if (!window.caches || !caches.keys) return Promise.resolve({error: "no CacheStorage"});
+    return caches.keys().then(function(names){
+      if (!names.length) return {caches: []};
+      return Promise.all(names.map(function(n){
+        return caches.open(n).then(function(c){ return c.keys(); }).then(function(reqs){
+          var urls = reqs.map(function(r){ return r.url; });
+          var data = urls.filter(function(u){ return /\/data\/|item|\.json|i18n|dictionary|text/i.test(u); });
+          return {name: n, total: urls.length, dataUrls: data.slice(0, 40),
+                  sample: urls.slice(0, 8)};
+        });
+      })).then(function(all){ return {caches: all}; });
+    }).catch(function(e){ return {error: String(e)}; });
+  }
+
+  // ---- localStorage: key names + sizes (data sometimes parked here) ----
+  function sweepLocal() {
+    try {
+      var keys = Object.keys(localStorage);
+      var big = keys.map(function(k){ return {key: clip(k, 60), len: (localStorage.getItem(k) || "").length }; })
+                    .sort(function(a, b){ return b.len - a.len; });
+      return {count: keys.length, biggest: big.slice(0, 15)};
+    } catch(e){ return {error: String(e)}; }
+  }
+
+  return Promise.all([sweepIDB(), sweepCaches()]).then(function(r){
+    return JSON.stringify({idb: r[0], caches: r[1], localStorage: sweepLocal()});
+  }).catch(function(e){ return JSON.stringify({error: String(e)}); });
+})()
+"""
+
 
 def _discover_ws_url(host: str, port: int, target_filter: str) -> str:
     url = f"http://{host}:{port}/json"
@@ -667,12 +755,73 @@ def main():
                         help="Fetch + inspect the data-proxy text/dictionary endpoints")
     parser.add_argument("--probe-exact", action="store_true",
                         help="Re-fetch the EXACT boot data URLs (text/dictionary/map) with cookies")
+    parser.add_argument("--probe-cache", action="store_true",
+                        help="Sweep IndexedDB + Cache API + localStorage for cached game data")
     args = parser.parse_args()
 
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s — %(message)s",
     )
+
+    if args.probe_cache:
+        raw = _run_js(args.host, args.port, args.target_filter, _JS_CACHE_SWEEP,
+                      args.timeout, await_promise=True)
+        d = json.loads(raw)
+        print("\n=== Sweep des caches persistants (IndexedDB / Cache API / localStorage) ===")
+        if d.get("error"):
+            print(f"  ERREUR globale : {d['error']}")
+            return
+
+        idb = d.get("idb") or {}
+        print("\n--- IndexedDB ---")
+        if idb.get("error"):
+            print(f"  {idb['error']}")
+        else:
+            dbs = idb.get("databases") or []
+            if not dbs:
+                print("  (aucune base)")
+            for db in dbs:
+                if db.get("error"):
+                    print(f"  • {db.get('name')!r} : {db['error']}")
+                    continue
+                print(f"  • base {db.get('name')!r} (v{db.get('version')})")
+                for st in db.get("stores", []):
+                    if st.get("error"):
+                        print(f"      store {st.get('store')!r}: {st['error']}")
+                        continue
+                    print(f"      store {st.get('store')!r}  count={st.get('count')}  keyPath={st.get('keyPath')}")
+                    if st.get("sampleKey") is not None:
+                        print(f"        sampleKey: {st.get('sampleKey')}")
+                    if st.get("sample"):
+                        print(f"        sample   : {st.get('sample')}")
+
+        caches = d.get("caches") or {}
+        print("\n--- Cache API (Service Worker / PWA) ---")
+        if caches.get("error"):
+            print(f"  {caches['error']}")
+        else:
+            cs = caches.get("caches") or []
+            if not cs:
+                print("  (aucun cache)")
+            for c in cs:
+                print(f"  • cache {c.get('name')!r}  ({c.get('total')} entrées)")
+                for u in c.get("dataUrls", []):
+                    print(f"      data: {u}")
+                if not c.get("dataUrls"):
+                    for u in c.get("sample", []):
+                        print(f"      ex: {u}")
+
+        ls = d.get("localStorage") or {}
+        print("\n--- localStorage ---")
+        if ls.get("error"):
+            print(f"  {ls['error']}")
+        else:
+            print(f"  {ls.get('count')} clés. Plus grosses :")
+            for e in ls.get("biggest", []):
+                print(f"      {e.get('len'):>9} o   {e.get('key')}")
+        print()
+        return
 
     if args.probe_exact:
         raw = _run_js(args.host, args.port, args.target_filter, _JS_FETCH_EXACT,
