@@ -328,6 +328,55 @@ _JS_FIND = r"""
 """
 
 
+# Read window.Config (CDN/data URLs) so we can fetch the item data file the
+# client downloads at login — the full id→name source, fetched without
+# touching the game server.
+_JS_CONFIG = r"""
+(function() {
+  var r = {};
+  function flat(o, prefix, out, depth) {
+    if (depth > 2) return;
+    for (var k in o) {
+      try {
+        var v = o[k];
+        var key = prefix ? prefix + "." + k : k;
+        if (v == null) continue;
+        if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") {
+          out[key] = v;
+        } else if (typeof v === "object" && depth < 2) {
+          flat(v, key, out, depth + 1);
+        }
+      } catch(e){}
+    }
+  }
+  try {
+    r.hasConfig = typeof window.Config;
+    if (window.Config) {
+      r.config = {};
+      flat(window.Config, "", r.config, 0);
+      // Keep only entries that look like URLs / paths / versions (avoid noise).
+      var filtered = {};
+      for (var k in r.config) {
+        var v = String(r.config[k]);
+        if (/url|uri|host|cdn|path|version|assets|data|lang|server/i.test(k)
+            || /^https?:|^\/\/|\.json|\.swf|\/data\//i.test(v)) {
+          filtered[k] = r.config[k];
+        }
+      }
+      r.urlish = filtered;
+    }
+    // Other possibly-useful globals.
+    r.globals = {
+      Config: typeof window.Config,
+      dataManager: typeof window.dataManager,
+      require: typeof window.require,
+    };
+  } catch(e) { r.error = String(e); }
+  return JSON.stringify(r);
+})()
+"""
+
+
 def _discover_ws_url(host: str, port: int, target_filter: str) -> str:
     url = f"http://{host}:{port}/json"
     try:
@@ -453,12 +502,32 @@ def main():
                         help="Print getItem/getName source + a safe id test (no network)")
     parser.add_argument("--find", action="store_true",
                         help="Hunt for the real item registry (statics + big maps)")
+    parser.add_argument("--config", action="store_true",
+                        help="Read window.Config — CDN/data URLs for the item data file")
     args = parser.parse_args()
 
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s — %(message)s",
     )
+
+    if args.config:
+        raw = _run_js(args.host, args.port, args.target_filter, _JS_CONFIG, args.timeout)
+        d = json.loads(raw)
+        print("\n=== window.Config — URLs de données ===")
+        if d.get("error"):
+            print(f"  ERREUR : {d['error']}")
+            return
+        print(f"  globals             : {d.get('globals')}")
+        urlish = d.get("urlish") or {}
+        if urlish:
+            print("  --- entrées URL / data / version ---")
+            for k, v in urlish.items():
+                print(f"    {k} = {v}")
+        else:
+            print("  (window.Config absent ou sans URL — colle le bloc ci-dessus)")
+        print()
+        return
 
     if args.find:
         raw = _run_js(args.host, args.port, args.target_filter, _JS_FIND, args.timeout)
