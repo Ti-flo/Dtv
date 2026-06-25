@@ -439,6 +439,50 @@ _JS_RESOURCES = r"""
 })()
 """
 
+# Fetch the data-proxy text/dictionary endpoints (versioned static data the
+# client loads at boot) and report their structure so we can see which holds
+# item names. Runs as a Promise → _run_js(..., await_promise=True).
+_JS_FETCH_DATA = r"""
+(function() {
+  var data  = window.Config.dataUrl;  // e.g. dt-proxy-production-canada
+  var login = "https://dt-proxy-production-login.ankama-games.com";
+  var lang  = window.Config.language || "en";
+  var v     = "1.72.12";
+  var urls = {
+    text:       data  + "/data/text?lang=" + lang + "&v=" + v,
+    dictionary: login + "/data/dictionary?lang=" + lang + "&v=" + v
+  };
+  function probe(u){
+    return fetch(u).then(function(res){
+      if (!res.ok) return {status: res.status};
+      return res.text().then(function(t){
+        var info = {status: 200, len: t.length, head: t.slice(0, 160)};
+        try {
+          var j = JSON.parse(t);
+          info.type = Array.isArray(j) ? "array" : typeof j;
+          if (j && typeof j === "object") {
+            var ks = Object.keys(j);
+            info.count = ks.length;
+            info.topKeys = ks.slice(0, 15);
+            info.sample = {};
+            ks.slice(0, 6).forEach(function(k){
+              var val = j[k];
+              info.sample[k] = (val && typeof val === "object")
+                ? "[obj:" + Object.keys(val).slice(0, 8).join(",") + "]"
+                : String(val).slice(0, 50);
+            });
+          }
+        } catch(e) { info.parseErr = String(e).slice(0, 80); }
+        return info;
+      });
+    }).catch(function(e){ return {err: String(e)}; });
+  }
+  return Promise.all([probe(urls.text), probe(urls.dictionary)]).then(function(res){
+    return JSON.stringify({urls: urls, text: res[0], dictionary: res[1]});
+  });
+})()
+"""
+
 
 def _discover_ws_url(host: str, port: int, target_filter: str) -> str:
     url = f"http://{host}:{port}/json"
@@ -573,12 +617,37 @@ def main():
                         help="Fetch-test candidate data-file URLs from the WebView (asset CDN only)")
     parser.add_argument("--resources", action="store_true",
                         help="List URLs the client actually loaded (find real data paths)")
+    parser.add_argument("--probe-text", action="store_true",
+                        help="Fetch + inspect the data-proxy text/dictionary endpoints")
     args = parser.parse_args()
 
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s — %(message)s",
     )
+
+    if args.probe_text:
+        raw = _run_js(args.host, args.port, args.target_filter, _JS_FETCH_DATA,
+                      args.timeout, await_promise=True)
+        d = json.loads(raw)
+        print("\n=== Inspection text / dictionary ===")
+        for label in ("text", "dictionary"):
+            info = d.get(label) or {}
+            print(f"\n  [{label}]  {d.get('urls', {}).get(label, '')}")
+            if info.get("err"):
+                print(f"    ERREUR : {info['err']}")
+            elif info.get("status") != 200:
+                print(f"    HTTP {info.get('status')}")
+            else:
+                print(f"    taille  : {info.get('len'):,} octets   type: {info.get('type')}   "
+                      f"entrées: {info.get('count')}")
+                print(f"    head    : {info.get('head')}")
+                print(f"    topKeys : {info.get('topKeys')}")
+                print(f"    sample  : {info.get('sample')}")
+                if info.get("parseErr"):
+                    print(f"    parseErr: {info['parseErr']}")
+        print()
+        return
 
     if args.resources:
         raw = _run_js(args.host, args.port, args.target_filter, _JS_RESOURCES, args.timeout)
