@@ -1,0 +1,19 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.9.34622.214
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Éléments de solution", "Éléments de solution", "{9741C9F0-41FB-46DB-9D0F-565623E19728}"
+	ProjectSection(SolutionItems) = preProject
+		fusion_releves.py = fusion_releves.py
+		fusion_releves_ressources.py = fusion_releves_ressources.py
+	EndProjectSection
+EndProject
+Global
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {218721F7-88B7-4034-B371-408056B5E7F7}
+	EndGlobalSection
+EndGlobal

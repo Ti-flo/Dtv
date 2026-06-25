@@ -1,0 +1,43 @@
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003" ToolsVersion="4.0">
+  <PropertyGroup>
+    <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
+    <SchemaVersion>2.0</SchemaVersion>
+    <ProjectGuid>8c869b3a-7d3c-4c84-9e0f-fd330480d77f</ProjectGuid>
+    <ProjectHome>.</ProjectHome>
+    <StartupFile>scrape_consommables_dofus_touch.py</StartupFile>
+    <SearchPath>
+    </SearchPath>
+    <WorkingDirectory>.</WorkingDirectory>
+    <OutputPath>.</OutputPath>
+    <Name>DofusScrapper</Name>
+    <RootNamespace>DofusScrapper</RootNamespace>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)' == 'Debug' ">
+    <DebugSymbols>true</DebugSymbols>
+    <EnableUnmanagedDebugging>false</EnableUnmanagedDebugging>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)' == 'Release' ">
+    <DebugSymbols>true</DebugSymbols>
+    <EnableUnmanagedDebugging>false</EnableUnmanagedDebugging>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="DofusScrapper.py" />
+    <Compile Include="DofusScrapperWeapon.py" />
+    <Compile Include="Nettoyage ressources.py" />
+    <Compile Include="RessourcesComplèteDofusOfficiel.py" />
+    <Compile Include="scrape_consommables_dofus_touch.py" />
+    <Compile Include="scrap_ingredients_dofusdb_api_mt_final.py" />
+    <Compile Include="scrap_ingredients_dofus_touch_xpath.py" />
+    <Compile Include="scrap_noms_complets_dofus_touch.py" />
+    <Compile Include="scrap_ressources_complet_dofus_touch.py" />
+  </ItemGroup>
+  <Import Project="$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\Python Tools\Microsoft.PythonTools.targets" />
+  <!-- Uncomment the CoreCompile target to enable the Build command in
+       Visual Studio and specify your pre- and post-build commands in
+       the BeforeBuild and AfterBuild targets below. -->
+  <!--<Target Name="CoreCompile" />-->
+  <Target Name="BeforeBuild">
+  </Target>
+  <Target Name="AfterBuild">
+  </Target>
+</Project>

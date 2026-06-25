@@ -1,0 +1,23 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.9.34622.214
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{888888A0-9F3D-457C-B088-3A5042F75D52}") = "DofusScrapper", "DofusScrapper\DofusScrapper.pyproj", "{8C869B3A-7D3C-4C84-9E0F-FD330480D77F}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{8C869B3A-7D3C-4C84-9E0F-FD330480D77F}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{8C869B3A-7D3C-4C84-9E0F-FD330480D77F}.Release|Any CPU.ActiveCfg = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {79FF8EF9-CFB0-4A9B-AFED-7365B9DA154B}
+	EndGlobalSection
+EndGlobal
