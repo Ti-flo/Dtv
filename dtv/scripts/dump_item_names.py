@@ -413,6 +413,32 @@ _JS_FETCH_TEST = r"""
 })()
 """
 
+# List the URLs the client ACTUALLY loaded (definitive — no guessing). Reveals
+# the real data-file paths (or file://android_asset/ if data ships in the APK).
+_JS_RESOURCES = r"""
+(function() {
+  var r = {};
+  try {
+    var entries = (performance.getEntriesByType("resource") || []).map(function(e){ return e.name; });
+    r.total = entries.length;
+    r.dataUrls = entries.filter(function(u){
+      return /\/data\/|item|i18n|\.json|\.jar|\.d2o|assetmap|filemap|manifest/i.test(u);
+    }).slice(0, 120);
+    // Distinct path prefixes to understand the layout.
+    var prefixes = {};
+    entries.forEach(function(u){
+      var m = u.replace(/^https?:\/\/[^/]+/, "").split("?")[0];
+      var parts = m.split("/"); parts.pop();
+      var pre = parts.slice(0, 5).join("/");
+      prefixes[pre] = (prefixes[pre] || 0) + 1;
+    });
+    r.prefixes = prefixes;
+    r.sample = entries.slice(0, 30);
+  } catch(e) { r.error = String(e); }
+  return JSON.stringify(r);
+})()
+"""
+
 
 def _discover_ws_url(host: str, port: int, target_filter: str) -> str:
     url = f"http://{host}:{port}/json"
@@ -545,12 +571,35 @@ def main():
                         help="Read window.Config — CDN/data URLs for the item data file")
     parser.add_argument("--probe-data", action="store_true",
                         help="Fetch-test candidate data-file URLs from the WebView (asset CDN only)")
+    parser.add_argument("--resources", action="store_true",
+                        help="List URLs the client actually loaded (find real data paths)")
     args = parser.parse_args()
 
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s — %(message)s",
     )
+
+    if args.resources:
+        raw = _run_js(args.host, args.port, args.target_filter, _JS_RESOURCES, args.timeout)
+        d = json.loads(raw)
+        print("\n=== URLs réellement chargées par le client ===")
+        if d.get("error"):
+            print(f"  ERREUR : {d['error']}")
+            return
+        print(f"  total resources     : {d.get('total')}")
+        print("  --- préfixes de chemins (compte) ---")
+        for pre, n in sorted((d.get("prefixes") or {}).items(), key=lambda x: -x[1]):
+            print(f"    {n:>4}  {pre}")
+        print("  --- URLs data / item / i18n / json ---")
+        for u in d.get("dataUrls", []):
+            print(f"    {u}")
+        if not d.get("dataUrls"):
+            print("    (aucune — les données sont peut-être dans l'APK. Échantillon :)")
+            for u in d.get("sample", []):
+                print(f"    {u}")
+        print()
+        return
 
     if args.probe_data:
         raw = _run_js(args.host, args.port, args.target_filter, _JS_FETCH_TEST,
