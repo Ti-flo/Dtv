@@ -279,6 +279,55 @@ _JS_SOURCES = r"""
 """
 
 
+# Hunt for the real item registry: ALL statics on the Item constructor (incl.
+# non-enumerable), their sources, and any large {id: {nameId}} map reachable
+# from window / window.gui. nameId already holds the resolved name string.
+_JS_FIND = r"""
+(function() {
+  var r = {};
+  function names(o, n) { try { return Object.getOwnPropertyNames(o).slice(0, n || 100); } catch(e) { return []; } }
+  try {
+    var inv = window.gui.playerData.inventory.objects;
+    var t = inv[Object.keys(inv)[0]].item;
+    var ctor = t.constructor;
+
+    // ALL statics on the constructor (own names, incl. non-enumerable).
+    r.ctorStatics = names(ctor, 100);
+    r.staticSrcs = {};
+    r.staticBigMaps = {};
+    names(ctor, 100).forEach(function(k){
+      try {
+        var v = ctor[k];
+        if (typeof v === "function") {
+          r.staticSrcs[k] = String(v).slice(0, 180);
+        } else if (v && typeof v === "object") {
+          var ck = Object.keys(v);
+          // A big map keyed by numeric ids whose values have nameId = the list.
+          if (ck.length > 100) {
+            var s = v[ck[0]];
+            r.staticBigMaps[k] = {count: ck.length,
+              sampleKey: ck[0],
+              sampleNameId: s && s.nameId,
+              sampleFields: s && typeof s === "object" ? Object.keys(s).slice(0,12) : typeof s};
+          }
+        }
+      } catch(e){}
+    });
+
+    r.getItemInstanceSrc = (typeof t.getItemInstance === "function") ? String(t.getItemInstance).slice(0, 300) : null;
+    r.getPropertySrc     = (typeof t.getProperty     === "function") ? String(t.getProperty).slice(0, 300)     : null;
+
+    // Broad listing to spot a data manager we filtered out before.
+    r.windowKeys = Object.keys(window).slice(0, 160);
+    r.guiAllKeys = Object.keys(window.gui).slice(0, 90);
+    var w = window.gui.windowsList || window.gui.windows;
+    r.guiWindowKeys = w ? Object.keys(w).slice(0, 100) : null;
+  } catch(e) { r.error = String(e) + " | " + String(e.stack || ""); }
+  return JSON.stringify(r);
+})()
+"""
+
+
 def _discover_ws_url(host: str, port: int, target_filter: str) -> str:
     url = f"http://{host}:{port}/json"
     try:
@@ -402,12 +451,38 @@ def main():
                         help="Inspect the game's JS structure (use when dump fails)")
     parser.add_argument("--sources", action="store_true",
                         help="Print getItem/getName source + a safe id test (no network)")
+    parser.add_argument("--find", action="store_true",
+                        help="Hunt for the real item registry (statics + big maps)")
     args = parser.parse_args()
 
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s — %(message)s",
     )
+
+    if args.find:
+        raw = _run_js(args.host, args.port, args.target_filter, _JS_FIND, args.timeout)
+        d = json.loads(raw)
+        print("\n=== Recherche du registre d'items ===")
+        if d.get("error"):
+            print(f"  ERREUR : {d['error']}")
+            return
+        print(f"  ctor statics        : {d.get('ctorStatics')}")
+        print("  --- sources des statics ---")
+        for k, v in (d.get("staticSrcs") or {}).items():
+            print(f"    {k} = {v}")
+        bigmaps = d.get("staticBigMaps") or {}
+        if bigmaps:
+            print("  >>> GROS MAPS STATIQUES (candidats registre) :")
+            for k, v in bigmaps.items():
+                print(f"    ctor.{k}: {v}")
+        print(f"\n  getItemInstance src : {d.get('getItemInstanceSrc')}")
+        print(f"  getProperty src     : {d.get('getPropertySrc')}")
+        print(f"\n  window keys         : {d.get('windowKeys')}")
+        print(f"\n  gui keys            : {d.get('guiAllKeys')}")
+        print(f"\n  gui.windows keys    : {d.get('guiWindowKeys')}")
+        print()
+        return
 
     if args.sources:
         raw = _run_js(args.host, args.port, args.target_filter, _JS_SOURCES, args.timeout)
