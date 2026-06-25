@@ -1,8 +1,7 @@
 """
 Dump GID → item name from the running Dofus Touch WebView via CDP.
 
-Run ONCE while Dofus Touch is open and you are logged in (the Items DB
-is fully populated after login):
+Run while Dofus Touch is open and you are in the game world:
 
     python -m dtv.scripts.dump_item_names
 
@@ -10,12 +9,19 @@ Prerequisites — same as capture_phone:
   • `adb forward tcp:9222 localabstract:webview_devtools_remote_<pid>` must
     already be set up (or use --port if you forwarded on a different port).
 
-Saves  data/item_names.json  (~10,000+ entries, no personal data).
-Re-run after game updates that add new items.
+Source: Dofus Touch caches its static game data in IndexedDB, in a
+language-specific database "<lang>DataCache" (e.g. enDataCache). Its "Items"
+object store holds one record per item, with the resolved name already in
+the `nameId` field. We cursor that store via CDP Runtime.evaluate and write
+{gid: name} to data/item_names.json.
 
-The script uses CDP Runtime.evaluate to call JavaScript directly in the
-WebView; it reads window.gui.databases.Items._dataStore which is already
-populated and has the localized item names for the game's current language.
+The cache fills LAZILY as the player encounters items, so a run only sees
+what's been loaded so far — but every item you open in the HDV gets cached,
+so the names you need for collected data are always there. Runs MERGE into
+the existing JSON, so coverage grows across sessions. Re-run anytime.
+
+Diagnostic flags (--diagnose, --probe-cache, …) remain for inspecting the
+WebView when something looks off; --probe-cache sweeps all caches.
 """
 import argparse
 import json
@@ -35,86 +41,76 @@ DEFAULT_OUT = ROOT / "data" / "item_names.json"
 # ---------------------------------------------------------------------- #
 # JavaScript that runs inside the WebView to extract item names.          #
 #                                                                         #
-# In Dofus Touch the game databases are loaded as JS objects at login.    #
-# window.gui.databases.Items._dataStore is a plain object { id: item }.   #
-# Each item has either:                                                    #
-#   • item.name  — already-resolved string (most builds)                  #
-#   • item.nameId — integer into the I18n table (some builds)             #
-# We try both and fall back to a numeric placeholder so no GID is lost.   #
+# Dofus Touch caches its static game data in IndexedDB under a            #
+# language-specific database "<lang>DataCache" (e.g. enDataCache). The    #
+# "Items" object store holds one record per item, keyed by id, and each   #
+# record already carries the RESOLVED name string in `nameId`:            #
+#   {"id":127,"nameId":"Bowisse's Boots","typeId":11, ...}                #
+# The cache fills lazily as the player encounters items, so anything you  #
+# open in the HDV ends up here. We cursor the whole store → {id: name}.   #
+# Runs as a Promise → _run_js(..., await_promise=True).                   #
 # ---------------------------------------------------------------------- #
 _JS = r"""
 (function() {
-  try {
-    // Diagnostic: report what's available if we can't find the Items DB.
-    function diag() {
-      var d = {
-        hasGui: typeof window.gui !== "undefined",
-        guiKeys: [],
-        databaseKeys: [],
-        hint: "run dump_item_names while logged in and in the game world"
+  if (!window.indexedDB)
+    return Promise.resolve(JSON.stringify({error: "no indexedDB in this WebView"}));
+
+  var listDbs = indexedDB.databases
+    ? indexedDB.databases()
+    : Promise.resolve(null);  // older WebViews: fall back to a guessed name
+
+  return Promise.resolve(listDbs).then(function(dbs) {
+    // Find the <lang>DataCache database (enDataCache, frDataCache, …).
+    var target = null;
+    if (dbs && dbs.length) {
+      dbs.forEach(function(d){ if (/DataCache$/i.test(d.name || "")) target = d.name; });
+    }
+    if (!target) {
+      // databases() unsupported or empty → guess from the client language.
+      var lang = (window.Config && window.Config.language) ? window.Config.language : "en";
+      target = lang + "DataCache";
+    }
+
+    return new Promise(function(resolve) {
+      var req;
+      try { req = indexedDB.open(target); }
+      catch (e) { resolve(JSON.stringify({error: "open threw: " + e, db: target})); return; }
+
+      req.onerror = function(){ resolve(JSON.stringify({error: "open failed", db: target})); };
+      req.onsuccess = function() {
+        var db = req.result;
+        if (!db.objectStoreNames.contains("Items")) {
+          var stores = Array.prototype.slice.call(db.objectStoreNames);
+          db.close();
+          resolve(JSON.stringify({error: "no Items store", db: target, stores: stores}));
+          return;
+        }
+        var names = {};
+        try {
+          var os = db.transaction("Items", "readonly").objectStore("Items");
+          var cur = os.openCursor();
+          cur.onsuccess = function(e) {
+            var c = e.target.result;
+            if (c) {
+              var v = c.value;
+              if (v && v.id != null && typeof v.nameId === "string" && v.nameId.length)
+                names[v.id] = v.nameId;
+              c.continue();
+            } else {
+              db.close();
+              resolve(JSON.stringify({ok: true, db: target,
+                count: Object.keys(names).length, items: names}));
+            }
+          };
+          cur.onerror = function(){ db.close();
+            resolve(JSON.stringify({error: "cursor failed", db: target})); };
+        } catch (e) {
+          db.close();
+          resolve(JSON.stringify({error: "tx threw: " + e, db: target}));
+        }
       };
-      if (window.gui) {
-        try { d.guiKeys = Object.keys(window.gui).slice(0, 30); } catch(e) {}
-        if (window.gui.databases) {
-          try { d.databaseKeys = Object.keys(window.gui.databases); } catch(e) {}
-        }
-      }
-      return JSON.stringify({error: "no Items database found", diag: d});
-    }
-
-    if (!window.gui || !window.gui.databases)
-      return diag();
-
-    // Try several key names used across Dofus Touch versions.
-    var dbs = window.gui.databases;
-    var db = dbs.Items || dbs.items || dbs.Item || dbs.item
-          || dbs.ItemTemplate || dbs.ItemTemplates || null;
-
-    // Also accept a key that contains "item" (case-insensitive) as fallback.
-    if (!db) {
-      for (var k in dbs) {
-        if (k.toLowerCase().indexOf("item") === 0 && dbs[k] && dbs[k]._dataStore) {
-          db = dbs[k];
-          break;
-        }
-      }
-    }
-
-    if (!db) return diag();
-
-    var store = db._dataStore || db.dataStore || db;
-    if (!store || typeof store !== "object")
-      return JSON.stringify({error: "Items store not an object"});
-
-    // I18n table for nameId resolution (present in most builds).
-    var i18nStore = null;
-    try {
-      var i18nDb = dbs.I18n || dbs.i18n || null;
-      i18nStore = i18nDb && (i18nDb._dataStore || i18nDb.dataStore || i18nDb);
-    } catch(e) {}
-
-    var out = {};
-    for (var id in store) {
-      if (!Object.prototype.hasOwnProperty.call(store, id)) continue;
-      var item = store[id];
-      var name = null;
-
-      if (typeof item.name === "string" && item.name.length > 0) {
-        name = item.name;
-      } else if (i18nStore && item.nameId) {
-        var entry = i18nStore[item.nameId];
-        if (entry && typeof entry.text === "string") name = entry.text;
-        else if (typeof entry === "string") name = entry;
-      }
-
-      if (!name && item.nameId) name = "#" + item.nameId;
-      if (name) out[id] = name;
-    }
-
-    return JSON.stringify({ok: true, count: Object.keys(out).length, items: out});
-  } catch(e) {
-    return JSON.stringify({error: String(e), stack: String(e.stack || "")});
-  }
+    });
+  }).catch(function(e){ return JSON.stringify({error: String(e)}); });
 })()
 """
 
@@ -654,34 +650,49 @@ def dump_item_names(
     out_path: Path = DEFAULT_OUT,
     timeout: float = 30.0,
 ) -> int:
-    """Run the JS dump and save the result.  Returns the number of names saved."""
+    """Run the JS dump and save the result.  Returns the total names known.
+
+    The IndexedDB cache fills lazily, so a single run only sees the items the
+    player has encountered so far. We MERGE into any existing item_names.json
+    rather than overwriting — names captured in earlier sessions are kept even
+    if the game later evicted them from its cache.
+    """
     log.info("Runtime.evaluate sent — waiting for response (timeout=%.0fs)…", timeout)
-    raw_value = _run_js(host, port, target_filter, _JS, timeout)
+    raw_value = _run_js(host, port, target_filter, _JS, timeout, await_promise=True)
     parsed = json.loads(raw_value)
     if "error" in parsed:
-        diag = parsed.get("diag", {})
-        log.error("JavaScript error: %s", parsed["error"])
-        if diag:
-            log.error("window.gui present: %s", diag.get("hasGui"))
-            log.error("window.gui keys: %s", diag.get("guiKeys"))
-            log.error("window.gui.databases keys: %s", diag.get("databaseKeys"))
-            hint = diag.get("hint", "")
-            if hint:
-                log.error("Hint: %s", hint)
+        log.error("Item dump failed: %s", parsed["error"])
+        if parsed.get("db"):
+            log.error("  IndexedDB database tried: %s", parsed["db"])
+        if parsed.get("stores"):
+            log.error("  stores present: %s", parsed["stores"])
+        log.error("  Hint: be logged in and in the game world, then re-run.")
         sys.exit(1)
 
-    items: dict[str, str] = parsed.get("items", {})
-    count = parsed.get("count", len(items))
-    log.info("Extracted %d item names", count)
+    fresh: dict[str, str] = parsed.get("items", {})
+    log.info("Read %d item names from IndexedDB %s",
+             parsed.get("count", len(fresh)), parsed.get("db", "?"))
+
+    # Merge with what we already have on disk.
+    merged: dict[str, str] = {}
+    if out_path.exists():
+        try:
+            merged = json.loads(out_path.read_text(encoding="utf-8"))
+        except Exception as e:
+            log.warning("Could not read existing %s (%s) — starting fresh", out_path.name, e)
+    before = len(merged)
+    merged.update(fresh)
+    added = len(merged) - before
+    log.info("Merged: %d new, %d total (was %d)", added, len(merged), before)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    # Compact JSON: one line, no indentation (file is ~1 MB with 10k items)
+    # Compact JSON: one line, no indentation.
     out_path.write_text(
-        json.dumps(items, ensure_ascii=False, separators=(",", ":")),
+        json.dumps(merged, ensure_ascii=False, separators=(",", ":")),
         encoding="utf-8",
     )
     log.info("Saved → %s  (%.1f KB)", out_path, out_path.stat().st_size / 1024)
-    return count
+    return len(merged)
 
 
 def _run_js(host: str, port: int, target_filter: str, js: str, timeout: float,

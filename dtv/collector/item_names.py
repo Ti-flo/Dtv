@@ -1,12 +1,13 @@
 """
 GID → item name lookup.
 
-The name database is built once by running:
+The name database is built by running:
     python -m dtv.scripts.dump_item_names
 
-That script connects to the running Dofus Touch WebView via CDP and dumps
-the Items database into data/item_names.json (~10,000+ entries). Re-run
-after game updates that add new items.
+That script connects to the running Dofus Touch WebView via CDP and reads
+the game's IndexedDB item cache (enDataCache → Items store) into
+data/item_names.json. The game caches items lazily, so each run merges new
+names into the file; coverage grows as you play. Re-run anytime.
 
 If the JSON doesn't exist, load_item_names() returns an empty dict and
 everything falls back to showing bare GIDs (same behaviour as before).
