@@ -1,15 +1,15 @@
 """
-scrap_ressources_test.py
-VERSION DE TEST de scrap_ressources_full.py — ne scrappe que les 2 premières pages
-de listing (~2 × ~24 ressources). Sert à valider les sélecteurs et le format de
-sortie AVANT de lancer le scrap complet.
+scrap_ressources_test.py  v2
+VERSION DE TEST de scrap_ressources_full.py — 2 pages de listing (~48 ressources).
 
-Différences avec scrap_ressources_full.py :
-  - MAX_PAGES = 2 (au lieu de 120)
-  - Fichiers checkpoint/sortie séparés (préfixe "test_")
-  - Délais raccourcis (le run complet garde les délais prudents)
-
-Une fois le résultat validé → lancer scrap_ressources_full.py.
+Corrections v2 :
+  - Niveau + Nom_FR + Type capturés dès le LISTING (td.item-level / td.item-type)
+    → plus de sélecteur raté sur la page détail
+  - Nom_EN supprimé : dofus-touch.com /en/ utilise des slugs anglais différents
+    → 404 systématique sur les slugs français. Remplir via api.dofusdb.fr (PC uniquement).
+  - Prix_PNJ supprimé : non affiché sur les pages ressources
+  - DEBUG panels : affiche tous les titres de panels trouvés sur les 3 premières
+    ressources pour identifier le bon sélecteur pour les drops monstres
 """
 import re
 import json
@@ -23,19 +23,18 @@ from tqdm import tqdm
 import pandas as pd
 
 # ── Configuration (TEST) ───────────────────────────────────────────────────────
-BASE_URL      = "https://www.dofus-touch.com"
-LIST_URL_FR   = BASE_URL + "/fr/mmorpg/encyclopedie/ressources?page={}"
+BASE_URL    = "https://www.dofus-touch.com"
+LIST_URL_FR = BASE_URL + "/fr/mmorpg/encyclopedie/ressources?page={}"
 
-CHECKPOINT    = Path("checkpoint_ressources_test.json")
-OUTPUT_JSON   = "ressources_dofus_touch_test.json"
-OUTPUT_XLSX   = "ressources_dofus_touch_test.xlsx"
+OUTPUT_JSON = "ressources_dofus_touch_test.json"
+OUTPUT_XLSX = "ressources_dofus_touch_test.xlsx"
 
-DELAY_MIN     = 1.0
-DELAY_MAX     = 2.0
-MAX_PAGES     = 2            # ← TEST : seulement 2 pages de listing
-MAX_RETRIES   = 3
+DELAY_MIN   = 1.0
+DELAY_MAX   = 2.0
+MAX_PAGES   = 2
+MAX_RETRIES = 3
 
-HEADERS_FR = {
+HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) "
         "Gecko/20100101 Firefox/124.0"
@@ -44,21 +43,20 @@ HEADERS_FR = {
     "Accept-Language": "fr-FR,fr;q=0.8,en-US;q=0.5,en;q=0.3",
     "Connection": "keep-alive",
 }
-HEADERS_EN = {**HEADERS_FR, "Accept-Language": "en-US,en;q=0.9,fr;q=0.3"}
 
 GID_RE = re.compile(r'/encyclopedie/[\w-]+/(\d+)-')
 
-PANEL_DROP_KW   = ("monstre", "obtenu en tuant", "droppé", "larguée par", "larguée", "larguées")
 PANEL_RECIPE_KW = ("recette",)
 PANEL_USEDBY_KW = ("est utilisé pour", "utilisé pour les recettes")
+# Mots-clés drops à ajuster après avoir vu le debug des titres de panels
+PANEL_DROP_KW   = ("monstre", "obtenu en tuant", "droppé", "larguée", "drop")
 
 
 # ── HTTP helper ────────────────────────────────────────────────────────────────
-def get_html(url: str, lang: str = "fr") -> str | None:
-    headers = HEADERS_FR if lang == "fr" else HEADERS_EN
+def get_html(url: str) -> str | None:
     for attempt in range(MAX_RETRIES):
         try:
-            r = requests.get(url, headers=headers, timeout=15)
+            r = requests.get(url, headers=HEADERS, timeout=15)
             if r.status_code == 200:
                 return r.text
             if r.status_code == 403:
@@ -79,10 +77,10 @@ def extract_gid(url: str) -> int | None:
     return int(m.group(1)) if m else None
 
 
-# ── Phase 1 : collecte des liens (2 pages) ─────────────────────────────────────
-def collect_links() -> list:
-    links = []
-    print(f"📄 Phase 1 (TEST) — collecte des URLs sur {MAX_PAGES} pages…")
+# ── Phase 1 : listing → nom, type, niveau (fiable depuis le tableau) ──────────
+def collect_from_listing() -> list:
+    items = []
+    print(f"📄 Phase 1 — collecte depuis listing ({MAX_PAGES} pages)…")
     for page in tqdm(range(1, MAX_PAGES + 1), desc="Pages listing"):
         html = get_html(LIST_URL_FR.format(page))
         if not html:
@@ -93,52 +91,50 @@ def collect_links() -> list:
             print(f"\n🏁 Fin pagination à la page {page}")
             break
         for row in rows:
-            a = row.select_one(".ak-linker a")
-            if a and a.get("href"):
-                links.append(BASE_URL + a["href"].strip())
+            a         = row.select_one(".ak-linker a")
+            type_tag  = row.select_one("td.item-type")
+            level_tag = row.select_one("td.item-level")
+            if not (a and a.get("href")):
+                continue
+            url = BASE_URL + a["href"].strip()
+            items.append({
+                "GID":    extract_gid(url),
+                "Nom_FR": a.get_text(strip=True),
+                "Type":   type_tag.get_text(strip=True) if type_tag else "",
+                "Niveau": (
+                    level_tag.get_text(strip=True).replace("Niv. ", "").strip()
+                    if level_tag else ""
+                ),
+                "Lien":   url,
+            })
         time.sleep(random.uniform(DELAY_MIN, DELAY_MAX))
-    print(f"✅ {len(links)} ressources trouvées (test)")
-    return links
+    print(f"✅ {len(items)} ressources trouvées")
+    return items
 
 
-# ── Phase 2 : scrape d'une fiche ressource ────────────────────────────────────
-def scrape_resource(url_fr: str) -> dict:
-    gid = extract_gid(url_fr)
-    url_en = url_fr.replace("/fr/mmorpg/", "/en/mmorpg/")
+# ── Phase 2 : fiche détail → recette, utilisé_dans, drops ────────────────────
+_debug_count = 0   # affiche les titres de panels pour les 3 premières fiches
 
-    html_fr = get_html(url_fr, "fr")
-    if not html_fr:
-        return {"GID": gid, "Lien": url_fr, "erreur": "HTTP error"}
+def scrape_detail(item: dict) -> dict:
+    global _debug_count
+    url = item["Lien"]
 
-    soup = BeautifulSoup(html_fr, "html.parser")
+    html = get_html(url)
+    if not html:
+        return {**item, "Recette": "", "Utilise_dans": "", "Drops_monstres": "", "erreur": "HTTP error"}
 
-    nom_fr = ""
-    h1 = soup.select_one("h1.ak-return-link")
-    if h1:
-        nom_fr = h1.get_text(strip=True)
-
-    niveau = ""
-    for sel in ("span.ak-encyclo-detail-level",
-                "div.ak-panel-content span.ak-encyclo-detail-level"):
-        tag = soup.select_one(sel)
-        if tag:
-            niveau = tag.get_text(strip=True).replace("Niv. ", "").strip()
-            break
-
-    item_type = ""
-    for sel in ("div.ak-encyclo-detail-type span",
-                "div.ak-encyclo-detail-type"):
-        tag = soup.select_one(sel)
-        if tag:
-            item_type = tag.get_text(strip=True).replace("Type : ", "").strip()
-            break
-
-    prix_pnj = ""
-    tag = soup.select_one("div.ak-encyclo-detail-price")
-    if tag:
-        prix_pnj = tag.get_text(separator=" ", strip=True)
-
+    soup = BeautifulSoup(html, "html.parser")
     recette, utilise_dans, drops = [], [], []
+
+    # ── DEBUG : afficher tous les titres de panels (3 premières ressources) ──
+    if _debug_count < 3:
+        all_titles = [
+            t.get_text(strip=True)
+            for t in soup.select("div.ak-container.ak-panel div.ak-panel-title")
+        ]
+        print(f"\n  [DEBUG GID {item['GID']} — {item['Nom_FR']}]")
+        print(f"  Panels trouvés : {all_titles}")
+        _debug_count += 1
 
     for panel in soup.select("div.ak-container.ak-panel"):
         title_tag = panel.select_one("div.ak-panel-title")
@@ -150,81 +146,70 @@ def scrape_resource(url_fr: str) -> dict:
         if any(kw in title for kw in PANEL_RECIPE_KW) and "utilisé" not in title:
             for el in elems:
                 qty  = el.select_one("div.ak-front")
-                name = el.select_one("div.ak-title span.ak-linker") or el.select_one("div.ak-title")
+                name = (el.select_one("div.ak-title span.ak-linker")
+                        or el.select_one("div.ak-title"))
                 if name:
                     qty_txt = qty.get_text(strip=True) if qty else ""
                     recette.append(f"{qty_txt} {name.get_text(strip=True)}".strip())
 
         elif any(kw in title for kw in PANEL_USEDBY_KW):
             for el in elems:
-                name = el.select_one("div.ak-title span.ak-linker") or el.select_one("div.ak-title")
+                name = (el.select_one("div.ak-title span.ak-linker")
+                        or el.select_one("div.ak-title"))
                 if name:
                     utilise_dans.append(name.get_text(strip=True))
 
         elif any(kw in title for kw in PANEL_DROP_KW):
             for el in elems:
-                monster = el.select_one("div.ak-title span.ak-linker") or el.select_one("div.ak-title")
-                rate = el.select_one("div.ak-front")
+                monster = (el.select_one("div.ak-title span.ak-linker")
+                           or el.select_one("div.ak-title"))
+                rate    = el.select_one("div.ak-front")
                 if monster:
                     entry = monster.get_text(strip=True)
                     if rate:
                         entry += f" ({rate.get_text(strip=True)})"
                     drops.append(entry)
 
-    nom_en = ""
-    html_en = get_html(url_en, "en")
-    if html_en:
-        soup_en = BeautifulSoup(html_en, "html.parser")
-        h1_en = soup_en.select_one("h1.ak-return-link")
-        if h1_en:
-            nom_en = h1_en.get_text(strip=True)
-
     return {
-        "GID":           gid,
-        "Nom_FR":        nom_fr,
-        "Nom_EN":        nom_en,
-        "Niveau":        niveau,
-        "Type":          item_type,
-        "Prix_PNJ":      prix_pnj,
-        "Recette":       ", ".join(recette),
-        "Utilise_dans":  ", ".join(utilise_dans),
+        **item,
+        "Recette":        ", ".join(recette),
+        "Utilise_dans":   ", ".join(utilise_dans),
         "Drops_monstres": " | ".join(drops),
-        "Lien":          url_fr,
     }
 
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    links = collect_links()
-    items = []
+    items = collect_from_listing()
 
-    print(f"\n🔍 Phase 2 (TEST) — {len(links)} ressources à scraper")
-    for url in tqdm(links, desc="Scraping ressources"):
-        items.append(scrape_resource(url))
+    print(f"\n🔍 Phase 2 — {len(items)} fiches à scraper")
+    results = []
+    for item in tqdm(items, desc="Scraping fiches"):
+        results.append(scrape_detail(item))
         time.sleep(random.uniform(DELAY_MIN, DELAY_MAX))
 
     with open(OUTPUT_JSON, "w", encoding="utf-8") as f:
-        json.dump(items, f, ensure_ascii=False, indent=2)
+        json.dump(results, f, ensure_ascii=False, indent=2)
     print(f"\n✅ JSON : {OUTPUT_JSON}")
 
-    df = pd.DataFrame(items)
+    df = pd.DataFrame(results)
     df.to_excel(OUTPUT_XLSX, index=False)
     print(f"✅ Excel : {OUTPUT_XLSX}  ({len(df)} ressources)")
 
-    # ── Aperçu console pour vérifier que tout est bien rempli ────────────────
+    # ── Aperçu console ────────────────────────────────────────────────────────
     print("\n📋 Aperçu des 3 premières ressources :")
-    for item in items[:3]:
-        print(f"\n  GID {item.get('GID')} — {item.get('Nom_FR')} / {item.get('Nom_EN')}")
-        print(f"    Niveau : {item.get('Niveau')}  |  Type : {item.get('Type')}")
-        print(f"    Prix PNJ : {item.get('Prix_PNJ') or '—'}")
-        print(f"    Recette : {item.get('Recette') or '—'}")
-        print(f"    Utilisé dans : {(item.get('Utilise_dans') or '—')[:80]}")
-        print(f"    Drops : {(item.get('Drops_monstres') or '—')[:80]}")
+    for r in results[:3]:
+        print(f"\n  GID {r.get('GID')} — {r.get('Nom_FR')}")
+        print(f"    Niveau : {r.get('Niveau')}  |  Type : {r.get('Type')}")
+        print(f"    Recette : {r.get('Recette') or '—'}")
+        print(f"    Utilisé dans : {(r.get('Utilise_dans') or '—')[:90]}")
+        print(f"    Drops : {(r.get('Drops_monstres') or '—')[:90]}")
 
-    # ── Diagnostic : colonnes vides ? ────────────────────────────────────────
-    print("\n🔎 Diagnostic remplissage des colonnes :")
-    for col in ["Nom_FR", "Nom_EN", "Niveau", "Type", "Prix_PNJ",
-                "Recette", "Utilise_dans", "Drops_monstres"]:
-        filled = sum(1 for it in items if it.get(col))
+    # ── Diagnostic remplissage ────────────────────────────────────────────────
+    print("\n🔎 Diagnostic remplissage :")
+    for col in ["Nom_FR", "Niveau", "Type", "Recette", "Utilise_dans", "Drops_monstres"]:
+        filled = sum(1 for r in results if r.get(col))
         flag = "✅" if filled else "⚠️ VIDE"
-        print(f"   {col:<16} : {filled}/{len(items)} {flag}")
+        print(f"   {col:<16} : {filled}/{len(results)} {flag}")
+
+    print("\n💡 Note : Nom_EN doit venir de api.dofusdb.fr (slugs EN différents → 404 sur dofus-touch.com)")
