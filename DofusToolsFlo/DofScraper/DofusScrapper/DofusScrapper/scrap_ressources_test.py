@@ -121,10 +121,11 @@ def collect_from_listing() -> list:
 
 
 # ── Phase 2 : fiche détail → recette, utilisé_dans, drops ────────────────────
-_debug_count = 0   # affiche les titres de panels pour les 3 premières fiches
+_debug_count      = 0   # affiche les titres de panels pour les 3 premières fiches
+_debug_drop_count = 0   # dump HTML d'un élément de drop pour 2 fiches
 
 def scrape_detail(item: dict) -> dict:
-    global _debug_count
+    global _debug_count, _debug_drop_count
     url = item["Lien"]
 
     html = get_html(url)
@@ -174,14 +175,31 @@ def scrape_detail(item: dict) -> dict:
                     utilise_dans.append(name.get_text(strip=True))
 
         elif any(kw in title for kw in PANEL_DROP_KW):
+            # DEBUG : dump du HTML du 1er élément de drop pour localiser le taux %
+            if _debug_drop_count < 2 and elems:
+                print(f"\n  [DEBUG DROP HTML — {item['Nom_FR']}]")
+                print("  " + elems[0].prettify()[:900].replace("\n", "\n  "))
+                _debug_drop_count += 1
             for el in elems:
                 monster = (el.select_one("div.ak-title span.ak-linker")
                            or el.select_one("div.ak-title"))
-                rate    = el.select_one("div.ak-front")
+                # Le taux peut être dans ak-front, ak-aside, ak-rate, un % en texte…
+                rate = (el.select_one("div.ak-front")
+                        or el.select_one("div.ak-aside")
+                        or el.select_one("div.ak-rate")
+                        or el.select_one("span.ak-rate"))
+                rate_txt = ""
+                if rate:
+                    rate_txt = rate.get_text(strip=True)
+                else:
+                    # Cherche un pourcentage n'importe où dans l'élément
+                    m = re.search(r'(\d+(?:[.,]\d+)?\s*%)', el.get_text(" ", strip=True))
+                    if m:
+                        rate_txt = m.group(1)
                 if monster:
                     entry = monster.get_text(strip=True)
-                    if rate:
-                        entry += f" ({rate.get_text(strip=True)})"
+                    if rate_txt:
+                        entry += f" ({rate_txt})"
                     drops.append(entry)
 
     return {
