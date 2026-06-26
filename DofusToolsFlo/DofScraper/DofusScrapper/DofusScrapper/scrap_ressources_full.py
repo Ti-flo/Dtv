@@ -52,8 +52,8 @@ HEADERS_EN = {**HEADERS_FR, "Accept-Language": "en-US,en;q=0.9,fr;q=0.3"}
 
 GID_RE = re.compile(r'/encyclopedie/[\w-]+/(\d+)-')
 
-# Titres de panel → catégorie sémantique
-PANEL_DROP_KW   = ("monstre", "obtenu en tuant", "droppé", "larguée par", "larguée", "larguées")
+# Titres de panel → catégorie sémantique (confirmés via debug du scraper test)
+PANEL_DROP_KW   = ("peut être obtenu sur", "obtenu sur", "monstre", "obtenu en tuant", "droppé")
 PANEL_RECIPE_KW = ("recette",)
 PANEL_USEDBY_KW = ("est utilisé pour", "utilisé pour les recettes")
 

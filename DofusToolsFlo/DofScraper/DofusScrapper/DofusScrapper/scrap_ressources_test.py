@@ -48,8 +48,8 @@ GID_RE = re.compile(r'/encyclopedie/[\w-]+/(\d+)-')
 
 PANEL_RECIPE_KW = ("recette",)
 PANEL_USEDBY_KW = ("est utilisé pour", "utilisé pour les recettes")
-# Mots-clés drops à ajuster après avoir vu le debug des titres de panels
-PANEL_DROP_KW   = ("monstre", "obtenu en tuant", "droppé", "larguée", "drop")
+# Titres réels confirmés via debug : "Peut être obtenu sur" = panel drops monstres
+PANEL_DROP_KW   = ("peut être obtenu sur", "obtenu sur", "monstre", "obtenu en tuant", "droppé")
 
 
 # ── HTTP helper ────────────────────────────────────────────────────────────────
@@ -91,15 +91,23 @@ def collect_from_listing() -> list:
             print(f"\n🏁 Fin pagination à la page {page}")
             break
         for row in rows:
-            a         = row.select_one(".ak-linker a")
+            # Le nom est dans le lien qui a du texte (le 1er .ak-linker a peut être
+            # l'image, texte vide) → on prend le 1er lien non-vide.
+            href, nom = "", ""
+            for a in row.select(".ak-linker a"):
+                if a.get("href"):
+                    href = href or a["href"].strip()
+                txt = a.get_text(strip=True)
+                if txt and not nom:
+                    nom = txt
             type_tag  = row.select_one("td.item-type")
             level_tag = row.select_one("td.item-level")
-            if not (a and a.get("href")):
+            if not href:
                 continue
-            url = BASE_URL + a["href"].strip()
+            url = BASE_URL + href
             items.append({
                 "GID":    extract_gid(url),
-                "Nom_FR": a.get_text(strip=True),
+                "Nom_FR": nom,
                 "Type":   type_tag.get_text(strip=True) if type_tag else "",
                 "Niveau": (
                     level_tag.get_text(strip=True).replace("Niv. ", "").strip()
@@ -125,6 +133,12 @@ def scrape_detail(item: dict) -> dict:
 
     soup = BeautifulSoup(html, "html.parser")
     recette, utilise_dans, drops = [], [], []
+
+    # Filet de sécurité pour le nom : si le listing l'a raté, on prend le h1
+    if not item.get("Nom_FR"):
+        h1 = soup.select_one("h1.ak-return-link")
+        if h1:
+            item = {**item, "Nom_FR": h1.get_text(strip=True)}
 
     # ── DEBUG : afficher tous les titres de panels (3 premières ressources) ──
     if _debug_count < 3:
