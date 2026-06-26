@@ -237,10 +237,14 @@ def scrape_detail(item: dict) -> dict:
                         entry += f" ({rate_txt})"
                     drops.append(entry)
 
+    # Le panel «Effets» du site inclut parfois la condition comme élément
+    # (ex: « < 25 ») → on la retire des effets puisqu'elle est déjà en Conditions.
+    cond_set = set(conditions)
+    effets_clean = [e for e in dict.fromkeys(effets) if e not in cond_set]
+
     return {
         **item,
-        # dict.fromkeys = dédup en préservant l'ordre (2 panels «Effets» identiques)
-        "Effets":         " | ".join(dict.fromkeys(effets)),
+        "Effets":         " | ".join(effets_clean),
         "Conditions":     " | ".join(dict.fromkeys(conditions)),
         "Recette":        ", ".join(recette),
         "Utilise_dans":   ", ".join(utilise_dans),
