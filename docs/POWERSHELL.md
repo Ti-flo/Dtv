@@ -135,6 +135,49 @@ python extract_gids.py
 
 ---
 
+## Nettoyage des sorties scrapers (effets dupliqués)
+
+dofus-touch.com sert 2 panels « Effets » identiques → valeurs dupliquées.
+Nettoyage en place, **sans re-scraper** (instantané, idempotent).
+
+```powershell
+cd "C:\Users\GAMING3\Desktop\dtv\DofusToolsFlo\DofScraper\DofusScrapper\DofusScrapper"
+
+# Nettoie les 3 catalogues d'un coup (équipements + conso + ressources)
+python clean_scraper_outputs.py
+
+# Ou juste les équipements (ancien script spécifique, équivalent pour ce fichier)
+python clean_effets_equipements.py
+
+# Inspecter la structure HTML d'une fiche (debug sélecteurs)
+python debug_consommable.py "URL_consommable"
+```
+
+---
+
+## Brisage — rentabilité (porté de RuneMaster)
+
+> Référence complète : `docs/BRISAGE.md`. Le moteur calcule la valeur des runes
+> obtenues en brisant chaque item × prix HDV → classement des items rentables.
+
+```powershell
+cd "C:\Users\GAMING3\Desktop\dtv"
+
+# Test du moteur (formule + parsing + rentabilité)
+python -m dtv.scripts.test_brisage
+
+# Classement par revenu de brisage (prix exemple — tourne tout de suite)
+python -m dtv.scripts.brisage --catalog "DofusToolsFlo\DofScraper\DofusScrapper\DofusScrapper\equipements_dofus_touch_full.xlsx" --top 50
+
+# 1) construire le mapping code rune → GID (depuis le catalogue ressources)
+python -m dtv.scripts.build_rune_gids --catalog "DofusToolsFlo\DofScraper\DofusScrapper\DofusScrapper\ressources_dofus_touch_full.xlsx"
+
+# 2) classement avec prix HDV live (coût items + prix runes via GID) + export
+python -m dtv.scripts.brisage --catalog "DofusToolsFlo\DofScraper\DofusScrapper\DofusScrapper\equipements_dofus_touch_full.xlsx" --avg-prices data\raw\avgprices_AAAAMMJJ.csv --rune-gids dtv\data\rune_gids.json --top 100 --out top_brisage.xlsx
+```
+
+---
+
 ## Fichiers de sortie des scrapers
 
 ```

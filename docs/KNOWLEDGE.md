@@ -6,6 +6,8 @@
 > 📖 **Référence wire-level complète du protocole : [`PROTOCOL.md`](PROTOCOL.md)**
 > (séquences exactes confirmées sur 3 captures HAR, catalogue des messages, formats).
 > 🛠️ **Exploitation (maintenance, MAJ, bans, codes de sortie) : [`OPERATIONS.md`](OPERATIONS.md)**
+> 💥 **Moteur de brisage (rentabilité runes) : [`BRISAGE.md`](BRISAGE.md)** (porté de RuneMaster).
+> 🖥️ **Commandes PowerShell prêtes au copier-coller : [`POWERSHELL.md`](POWERSHELL.md)** (chemins Flo).
 > Ce fichier-ci reste la vue d'ensemble (architecture, sécurité, état du projet).
 
 ---
@@ -594,8 +596,9 @@ tokens partagée → risque d'invalidation mutuelle si le refresh_token venait �
 ### DTV — intégration et analyses
 
 - [ ] **Tableau "meilleurs items à farmer"** : croiser prix HDV (CSV `capture_phone`) × drops monstres (maintenant dispo dans `ressources_dofus_touch_full.xlsx` colonne `Drops_monstres` avec GID monstre + taux %)
-- [ ] **Porter RuneMaster dans DTV** : moteur de calcul coût de craft + break-even brisage de runes (fichiers source : `poids_runes.xlsx`, `effets_moyens_par_rune.xlsx`, `Tableau_Brisage_Dofus_Resume.xlsx`)
-- [ ] Calcul de rentabilité « brisage » : croiser prix ressources (avg) avec recettes de craft
+- [x] ~~**Porter RuneMaster dans DTV** : moteur de brisage~~ ✅ **S10 : `dtv/collector/brisage.py` + CLI + tests** (formule vérifiée, voir [`BRISAGE.md`](BRISAGE.md))
+- [ ] **Brancher les prix runes HDV live** sur le brisage : lancer `build_rune_gids.py` (PC) pour remplir `rune_gids.json`, puis `brisage.py --rune-gids` → revenu au prix réel du marché
+- [ ] **Brisage : croiser coût de CRAFT** (colonne `Recette` + prix ingrédients) en plus du coût d'achat HDV → rentabilité « craft puis brise »
 - [ ] Résolution GID→nom d'item (charger les données i18n/d2o) pour des CSV lisibles
 
 ### Infrastructure (PC / téléphone)
@@ -705,6 +708,61 @@ tokens partagée → risque d'invalidation mutuelle si le refresh_token venait �
 - **`window.gui.databases.ItemTypes`** (console DevTools) → 64 types ressources extraits
 - Découverte `ObjectAveragePricesGetMessage`/`ObjectAveragePricesMessage` dans script.js
 - `item_types.py` créé (RESOURCE_TYPE_IDS + CORE), `collect.py` par défaut sur les ressources
+
+### Session 10 (moteur de brisage + scraper consommables + fix effets dupliqués)
+
+#### Moteur de brisage porté de RuneMaster → DTV (`docs/BRISAGE.md`)
+- **RuneMaster décortiqué** : système manuel en 2 parties — (1) pipeline de prix
+  (`fusion_releves_ressources.py` + relevés quotidiens manuels) que **DTV remplace**
+  par la capture HDV live ; (2) moteur de brisage (`Tableau_Brisage` + formule +
+  `poids_runes` + `effets_moyens_par_rune`).
+- **Formule de brisage rétro-ingénierée** depuis `objets_runes_formule_modele.xlsx`
+  (formule Excel lue cellule par cellule, pas devinée), **vérifiée au centième sur
+  9 points** :
+  ```
+  par effet (rune R, valeur V, niveau N, poids P) :
+    R ∈ {vi,ii,pod}: qty=(N/100)·V·P+1 ; sinon: qty=((N/100)·V·P+1)/P
+  ```
+  Le « +1 » = rune Ra de base ; division par P = pool de poids → compte de runes ;
+  vi/ii/pod (poids <1) sans division.
+- **Mapping effet→rune** (`dtv/data/runes.json`, 42 runes) dérivé en **croisant**
+  `effets_moyens_par_rune.xlsx` avec le catalogue scrapé (vote majoritaire sur les
+  valeurs) + convention Dofus pour les collisions (quatuor élémentaire).
+- **L'upgrade clé** : RuneMaster exigeait la saisie manuelle des effets ET des prix.
+  DTV prend les **effets du scraping** + les **prix du HDV live** → rentabilité de
+  brisage sur **tout le catalogue (2825 items)**, zéro saisie.
+- **Modules** : `dtv/collector/brisage.py` (moteur stdlib pur), `dtv/scripts/brisage.py`
+  (CLI classement), `build_rune_gids.py` (code rune→GID pour prix live), `test_brisage.py`.
+- Validé sur 2825 équipements : top brisage = boots/amulettes niv 200 (runes PA/PM
+  les plus chères). Chemin coût/bénéfice/rentabilité testé.
+
+#### Fix : effets dupliqués sur dofus-touch.com
+- dofus-touch.com sert **2 panels « Effets »/« Caractéristiques » identiques** →
+  les scrapers écrivaient chaque bloc 2× (**2773/2825 équipements**, idem conso).
+  La condition (« PA < 12 ») fuitait aussi dans les Effets.
+- **Corrigé** dans `DofusScrapper.py` + `scrape_consommables` (dédup `dict.fromkeys`
+  + retrait des conditions des effets). Le moteur de brisage **déduplique aussi**
+  les lignes identiques → robuste même sur un catalogue non nettoyé.
+- **`clean_scraper_outputs.py`** : nettoie les fichiers DÉJÀ produits sans re-scraper
+  (généralise aux 3 catalogues + toutes colonnes multi-valeurs, idempotent).
+- Dédup défensive ajoutée à `scrap_ressources_full` + consommables (Recette/Drops/used-in).
+
+#### Scraper consommables réécrit (`scrape_consommables_dofus_touch.py`)
+- Architecture Phase1/Phase2 validée (comme ressources). Corrige les bugs de l'ancien :
+  Niveau depuis listing (`td.item-level`), Type sans préfixe, GID depuis slug, checkpoint.
+- Colonnes : Effets, Conditions, Recette, Utilise_dans, Drops_monstres (+ GID monstre + taux %).
+- Structure confirmée via `debug_consommable.py` (drops dans `ak-aside`, used-in =
+  « Est utilisé pour les recettes »). Le faible taux de drops/used-in sur la page 1
+  était normal (consommables niv 200 = craftés, non droppés).
+
+#### Capture passive émulateur + bug prix moyens = 1
+- Le client officiel envoie `ObjectAveragePricesGetMessage` tout seul après login →
+  `capture_phone.py` le capte passivement (trafic 100 % légitime). Procédure émulateur
+  Android Studio ajoutée au docstring (`docs/POWERSHELL.md`).
+- **Hypothèse bug « tous les prix moyens à 1 »** : l'approche active envoyait la requête
+  trop tôt (avant d'être pleinement in-world). Diagnostic : CSV trié par GID, les vieux
+  items sont à 1 kama légitimement (vérifier `>1` et `max`). La voie passive (client
+  officiel) donne le bon timing.
 
 ### Session 9 (DofusToolsFlo intégration + scrapers réécrits)
 
