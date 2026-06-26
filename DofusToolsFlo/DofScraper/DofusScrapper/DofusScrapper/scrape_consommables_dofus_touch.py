@@ -14,7 +14,13 @@ Corrige les bugs de l'ancienne version :
 
 Colonnes de sortie :
   GID | Nom_FR | Niveau | Type
-  Effets | Recette | Utilise_dans | Drops_monstres | Lien
+  Effets | Conditions | Recette | Utilise_dans | Drops_monstres | Lien
+
+Structure confirmée (debug_consommable.py sur Pain d'Amakna + Parchemin) :
+  - 2 panels «Effets» + 1 «Description» listent les MÊMES effets → on déduplique
+  - panel «Conditions» = restrictions (ex: « < 25 » pour un parchemin)
+  - panel «Est utilisé pour les recettes» = used-in (ak-title span.ak-linker)
+  - panel «Peut être obtenu sur» = drops ; taux dans div.ak-aside (ex: « <1% »)
 
 Note Nom_EN : slugs anglais ≠ slugs français → 404 sur /en/
   Source correcte = api.dofusdb.fr (PC uniquement)
@@ -57,6 +63,7 @@ GID_RE  = re.compile(r'/encyclopedie/[\w-]+/(\d+)-')
 RATE_RE = re.compile(r'(\d+(?:[.,]\d+)?\s*%)')
 
 PANEL_EFFECTS_KW = ("effets", "caractéristique", "statistique")
+PANEL_COND_KW    = ("condition",)
 PANEL_RECIPE_KW  = ("recette",)
 PANEL_USEDBY_KW  = ("est utilisé pour", "utilisé pour les recettes")
 # Confirmé sur ressources : panel drops = "Peut être obtenu sur"
@@ -152,7 +159,7 @@ def scrape_detail(item: dict) -> dict:
                 "Drops_monstres": "", "erreur": "HTTP error"}
 
     soup = BeautifulSoup(html, "html.parser")
-    effets, recette, utilise_dans, drops = [], [], [], []
+    effets, conditions, recette, utilise_dans, drops = [], [], [], [], []
 
     # Filet de sécurité nom : si listing n'a rien donné, on prend le h1
     if not item.get("Nom_FR"):
@@ -179,6 +186,13 @@ def scrape_detail(item: dict) -> dict:
                     txt = el.get_text(" ", strip=True)
                     if txt:
                         effets.append(txt)
+
+        elif any(kw in title for kw in PANEL_COND_KW):
+            for el in elems:
+                label = el.select_one("div.ak-title")
+                txt = label.get_text(strip=True) if label else el.get_text(" ", strip=True)
+                if txt:
+                    conditions.append(txt)
 
         elif any(kw in title for kw in PANEL_RECIPE_KW) and "utilisé" not in title:
             for el in elems:
@@ -225,7 +239,9 @@ def scrape_detail(item: dict) -> dict:
 
     return {
         **item,
-        "Effets":         " | ".join(effets),
+        # dict.fromkeys = dédup en préservant l'ordre (2 panels «Effets» identiques)
+        "Effets":         " | ".join(dict.fromkeys(effets)),
+        "Conditions":     " | ".join(dict.fromkeys(conditions)),
         "Recette":        ", ".join(recette),
         "Utilise_dans":   ", ".join(utilise_dans),
         "Drops_monstres": " | ".join(drops),
@@ -270,11 +286,13 @@ if __name__ == "__main__":
     print(f"✅ Excel : {OUTPUT_XLSX}  ({len(df)} consommables)")
 
     has_effects = (df["Effets"] != "").sum()
+    has_cond    = (df["Conditions"] != "").sum()
     has_recipe  = (df["Recette"] != "").sum()
     has_usedin  = (df["Utilise_dans"] != "").sum()
     has_drops   = (df["Drops_monstres"] != "").sum()
     print(f"\n📊 Résumé :")
     print(f"   {has_effects}  consommables avec effets")
+    print(f"   {has_cond}  consommables avec conditions")
     print(f"   {has_recipe}  consommables craftables (recette)")
     print(f"   {has_usedin}  consommables utilisés dans une recette")
     print(f"   {has_drops}  consommables avec drops monstres")
