@@ -7,6 +7,29 @@ WebView via wireless ADB + CDP and records every item you open in the HDV plus
 the average-price snapshot sent at each login.
 
 ────────────────────────────────────────────────────────────────────────────
+ÉMULATEUR ANDROID STUDIO (Windows — chemin Flo)
+  Ordre impératif : lancer Dofus Touch → rester sur l'écran launcher/login
+  → démarrer la capture → PUIS se connecter. Le client officiel envoie
+  ObjectAveragePricesGetMessage tout seul après login → vraies valeurs,
+  trafic 100% légitime, pas de bot.
+
+  Powershell :
+    cd "C:\Users\GAMING3\AppData\Local\Android\Sdk\platform-tools"
+    .\adb.exe shell cat /proc/net/unix | findstr devtools
+    # → ligne "webview_devtools_remote_<pid>" ou "chrome_devtools_remote"
+
+    cd "C:\Users\GAMING3\Desktop\dtv"
+    python -m dtv.scripts.capture_phone --account jetable
+    # Lance Dofus Touch → se connecter → tu verras :
+    # "✓ average-price snapshot saved: ~4906 items → avgprices_<timestamp>.csv"
+
+  Si le forward automatique rate (socket mal détectée) :
+    cd "C:\Users\GAMING3\AppData\Local\Android\Sdk\platform-tools"
+    .\adb.exe forward tcp:9222 localabstract:chrome_devtools_remote
+    cd "C:\Users\GAMING3\Desktop\dtv"
+    python -m dtv.scripts.capture_phone --no-adb --port 9222 --account jetable
+
+────────────────────────────────────────────────────────────────────────────
 ONE-TIME SETUP (phone)
   1. Root with Magisk (already done) so the WebView is debuggable. Dofus Touch's
      WebView must allow inspection — on a release app this needs root + a module
