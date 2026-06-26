@@ -205,10 +205,16 @@ def scrape_detail(item: dict) -> dict:
             a_tag = panel.select_one("a.ak-linker")
             panoplie = a_tag.get_text(strip=True) if a_tag else title_tag.get_text(strip=True)
 
+    # Le site liste 2 panels «Caractéristiques»/«Effets» identiques → dédup.
+    # La condition (ex « PA < 12 ») apparaît aussi dans le bloc d'effets →
+    # on la retire des effets puisqu'elle est déjà en Conditions.
+    cond_set = set(conditions)
+    effets_clean = [e for e in dict.fromkeys(effets) if e not in cond_set]
+
     return {
         **item,
-        "Effets":      " | ".join(effets),
-        "Conditions":  " | ".join(conditions),
+        "Effets":      " | ".join(effets_clean),
+        "Conditions":  " | ".join(dict.fromkeys(conditions)),
         "Recette":     ", ".join(recette),
         "Panoplie":    panoplie,
     }
