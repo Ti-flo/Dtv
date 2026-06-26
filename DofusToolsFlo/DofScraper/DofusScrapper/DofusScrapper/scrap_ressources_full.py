@@ -40,7 +40,7 @@ OUTPUT_JSON = "ressources_dofus_touch_full.json"
 OUTPUT_XLSX = "ressources_dofus_touch_full.xlsx"
 
 DELAY_MIN   = 1.5
-DELAY_MAX   = 3.0
+DELAY_MAX   = 3.5
 MAX_PAGES   = 120       # plafond de sécurité (~78 pages réelles)
 MAX_RETRIES = 3
 

@@ -46,7 +46,7 @@ OUTPUT_JSON = "equipements_dofus_touch_full.json"
 OUTPUT_XLSX = "equipements_dofus_touch_full.xlsx"
 
 DELAY_MIN   = 1.5
-DELAY_MAX   = 3.0
+DELAY_MAX   = 3.5
 MAX_PAGES   = 200
 MAX_RETRIES = 3
 
