@@ -1,0 +1,393 @@
+{
+  "runes": {
+    "ag": {
+      "code": "ag",
+      "nom": "Agilité",
+      "display": "Age",
+      "poids": 1.0,
+      "special": false,
+      "prix_exemple": 22
+    },
+    "cc": {
+      "code": "cc",
+      "nom": "% Coups Critiques",
+      "display": "Cri",
+      "poids": 10.0,
+      "special": false,
+      "prix_exemple": 130
+    },
+    "ch": {
+      "code": "ch",
+      "nom": "Chance",
+      "display": "Cha",
+      "poids": 1.0,
+      "special": false,
+      "prix_exemple": 35
+    },
+    "chs": {
+      "code": "chs",
+      "nom": "Chasse",
+      "display": "Chs",
+      "poids": 3.0,
+      "special": false,
+      "prix_exemple": null
+    },
+    "daf": {
+      "code": "daf",
+      "nom": "Dommages Air",
+      "display": "Do Air",
+      "poids": 5.0,
+      "special": false,
+      "prix_exemple": 450
+    },
+    "dc": {
+      "code": "dc",
+      "nom": "Dommages Critiques",
+      "display": "Do Cri",
+      "poids": 5.0,
+      "special": false,
+      "prix_exemple": 1100
+    },
+    "def": {
+      "code": "def",
+      "nom": "Dommages Eau",
+      "display": "Do Eau",
+      "poids": 5.0,
+      "special": false,
+      "prix_exemple": 300
+    },
+    "dff": {
+      "code": "dff",
+      "nom": "Dommages Feu",
+      "display": "Do Feu",
+      "poids": 5.0,
+      "special": false,
+      "prix_exemple": 70
+    },
+    "dmg": {
+      "code": "dmg",
+      "nom": "Dommages",
+      "display": "Do",
+      "poids": 20.0,
+      "special": false,
+      "prix_exemple": 110
+    },
+    "dp": {
+      "code": "dp",
+      "nom": "Dommages Poussée",
+      "display": "Do Pou",
+      "poids": 5.0,
+      "special": false,
+      "prix_exemple": 500
+    },
+    "dtf": {
+      "code": "dtf",
+      "nom": "Dommages Terre",
+      "display": "Do Terre",
+      "poids": 5.0,
+      "special": false,
+      "prix_exemple": 400
+    },
+    "epa": {
+      "code": "epa",
+      "nom": "Esquive PA",
+      "display": "Ré PA",
+      "poids": 7.0,
+      "special": false,
+      "prix_exemple": 1700
+    },
+    "epm": {
+      "code": "epm",
+      "nom": "Esquive PM",
+      "display": "Ré PM",
+      "poids": 7.0,
+      "special": false,
+      "prix_exemple": 850
+    },
+    "fo": {
+      "code": "fo",
+      "nom": "Force",
+      "display": "Fo",
+      "poids": 1.0,
+      "special": false,
+      "prix_exemple": 100
+    },
+    "fu": {
+      "code": "fu",
+      "nom": "Fuite",
+      "display": "Fui",
+      "poids": 4.0,
+      "special": false,
+      "prix_exemple": 200
+    },
+    "ic": {
+      "code": "ic",
+      "nom": "Invocations",
+      "display": "Invo",
+      "poids": 30.0,
+      "special": false,
+      "prix_exemple": 600
+    },
+    "ii": {
+      "code": "ii",
+      "nom": "Initiative",
+      "display": "Ini",
+      "poids": 0.1,
+      "special": true,
+      "prix_exemple": 80
+    },
+    "in": {
+      "code": "in",
+      "nom": "Intelligence",
+      "display": "Ine",
+      "poids": 1.0,
+      "special": false,
+      "prix_exemple": 18
+    },
+    "pa": {
+      "code": "pa",
+      "nom": "PA",
+      "display": "Ga PA",
+      "poids": 100.0,
+      "special": false,
+      "prix_exemple": 90000
+    },
+    "pm": {
+      "code": "pm",
+      "nom": "PM",
+      "display": "Ga PM",
+      "poids": 90.0,
+      "special": false,
+      "prix_exemple": 70000
+    },
+    "po": {
+      "code": "po",
+      "nom": "Portée",
+      "display": "PO",
+      "poids": 51.0,
+      "special": false,
+      "prix_exemple": 5500
+    },
+    "pod": {
+      "code": "pod",
+      "nom": "Pods",
+      "display": "Pod",
+      "poids": 0.25,
+      "special": true,
+      "prix_exemple": null
+    },
+    "pp": {
+      "code": "pp",
+      "nom": "Prospection",
+      "display": "Prospe",
+      "poids": 3.0,
+      "special": false,
+      "prix_exemple": 18
+    },
+    "pu": {
+      "code": "pu",
+      "nom": "Puissance",
+      "display": "Pui",
+      "poids": 2.0,
+      "special": false,
+      "prix_exemple": 100
+    },
+    "ra": {
+      "code": "ra",
+      "nom": "Résistance Air",
+      "display": "Ré Air",
+      "poids": 2.0,
+      "special": false,
+      "prix_exemple": 20
+    },
+    "rap": {
+      "code": "rap",
+      "nom": "% Résistance Air",
+      "display": "Re Per Air",
+      "poids": 6.0,
+      "special": false,
+      "prix_exemple": 1500
+    },
+    "rc": {
+      "code": "rc",
+      "nom": "Résistance Critiques",
+      "display": "Ré Cri",
+      "poids": 2.0,
+      "special": false,
+      "prix_exemple": 900
+    },
+    "re": {
+      "code": "re",
+      "nom": "Résistance Eau",
+      "display": "Ré Eau",
+      "poids": 2.0,
+      "special": false,
+      "prix_exemple": 60
+    },
+    "rep": {
+      "code": "rep",
+      "nom": "% Résistance Eau",
+      "display": "Re Per Eau",
+      "poids": 6.0,
+      "special": false,
+      "prix_exemple": 1200
+    },
+    "rf": {
+      "code": "rf",
+      "nom": "Résistance Feu",
+      "display": "Ré Feu",
+      "poids": 2.0,
+      "special": false,
+      "prix_exemple": 20
+    },
+    "rfp": {
+      "code": "rfp",
+      "nom": "% Résistance Feu",
+      "display": "Re Per Feu",
+      "poids": 6.0,
+      "special": false,
+      "prix_exemple": 900
+    },
+    "rn": {
+      "code": "rn",
+      "nom": "Résistance Neutre",
+      "display": "Ré Neutre",
+      "poids": 2.0,
+      "special": false,
+      "prix_exemple": 60
+    },
+    "rnp": {
+      "code": "rnp",
+      "nom": "% Résistance Neutre",
+      "display": "Re Per Neutre",
+      "poids": 6.0,
+      "special": false,
+      "prix_exemple": 1300
+    },
+    "rp": {
+      "code": "rp",
+      "nom": "Résistance Poussée",
+      "display": "Ré Pou",
+      "poids": 2.0,
+      "special": false,
+      "prix_exemple": 100
+    },
+    "rpa": {
+      "code": "rpa",
+      "nom": "Retrait PA",
+      "display": "Ret PA",
+      "poids": 7.0,
+      "special": false,
+      "prix_exemple": 100
+    },
+    "rpm": {
+      "code": "rpm",
+      "nom": "Retrait PM",
+      "display": "Ret PM",
+      "poids": 7.0,
+      "special": false,
+      "prix_exemple": 32
+    },
+    "rt": {
+      "code": "rt",
+      "nom": "Résistance Terre",
+      "display": "Ré Terre",
+      "poids": 2.0,
+      "special": false,
+      "prix_exemple": 600
+    },
+    "rtp": {
+      "code": "rtp",
+      "nom": "% Résistance Terre",
+      "display": "Re Per Terre",
+      "poids": 6.0,
+      "special": false,
+      "prix_exemple": 2500
+    },
+    "sa": {
+      "code": "sa",
+      "nom": "Sagesse",
+      "display": "Sa",
+      "poids": 1.0,
+      "special": false,
+      "prix_exemple": 22
+    },
+    "so": {
+      "code": "so",
+      "nom": "Soins",
+      "display": "So",
+      "poids": 10.0,
+      "special": false,
+      "prix_exemple": 50
+    },
+    "ta": {
+      "code": "ta",
+      "nom": "Tacle",
+      "display": "Tac",
+      "poids": 4.0,
+      "special": false,
+      "prix_exemple": 1100
+    },
+    "vi": {
+      "code": "vi",
+      "nom": "Vitalité",
+      "display": "Vi",
+      "poids": 0.2,
+      "special": true,
+      "prix_exemple": 28
+    }
+  },
+  "effet_vers_code": {
+    "Agilité": "ag",
+    "% Coups Critiques": "cc",
+    "Chance": "ch",
+    "Chasse": "chs",
+    "Dommages Air": "daf",
+    "Dommages Critiques": "dc",
+    "Dommages Eau": "def",
+    "Dommages Feu": "dff",
+    "Dommages": "dmg",
+    "Dommages Poussée": "dp",
+    "Dommages Terre": "dtf",
+    "Esquive PA": "epa",
+    "Esquive PM": "epm",
+    "Force": "fo",
+    "Fuite": "fu",
+    "Invocations": "ic",
+    "Initiative": "ii",
+    "Intelligence": "in",
+    "PA": "pa",
+    "PM": "pm",
+    "Portée": "po",
+    "Pods": "pod",
+    "Prospection": "pp",
+    "Puissance": "pu",
+    "Résistance Air": "ra",
+    "% Résistance Air": "rap",
+    "Résistance Critiques": "rc",
+    "Résistance Eau": "re",
+    "% Résistance Eau": "rep",
+    "Résistance Feu": "rf",
+    "% Résistance Feu": "rfp",
+    "Résistance Neutre": "rn",
+    "% Résistance Neutre": "rnp",
+    "Résistance Poussée": "rp",
+    "Retrait PA": "rpa",
+    "Retrait PM": "rpm",
+    "Résistance Terre": "rt",
+    "% Résistance Terre": "rtp",
+    "Sagesse": "sa",
+    "Soins": "so",
+    "Tacle": "ta",
+    "Vitalité": "vi",
+    "Dommages Neutre": "dtf",
+    "Coups Critiques": "cc",
+    "PO": "po"
+  },
+  "_doc": {
+    "formule": "par ligne d effet (rune R, valeur moyenne V, niveau Niv, poids P): si R dans {vi,ii,pod}: qty=(Niv/100)*V*P+1 ; sinon: qty=((Niv/100)*V*P+1)/P",
+    "source": "poids_runes.xlsx + objets_runes_formule_modele.xlsx (RuneMaster), mapping validé par croisement avec equipements_dofus_touch_full.xlsx",
+    "note_prix": "prix_exemple = snapshot manuel RuneMaster, à remplacer par prix HDV live",
+    "special": "vi=Vitalité, ii=Initiative, pod=Pods : poids <1, pas de division (sinon comptes gonflés)"
+  }
+}

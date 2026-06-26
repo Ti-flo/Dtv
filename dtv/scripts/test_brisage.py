@@ -1,0 +1,99 @@
+"""
+Test de non-régression du moteur de brisage (dtv/collector/brisage.py).
+
+Vérifie :
+  - la formule reproduit objets_runes_formule_modele.xlsx (RuneMaster) au centième
+  - le parsing des effets (ranges, %, négatifs, conditions, lignes d'arme)
+  - la déduplication des lignes d'effet identiques (catalogue non nettoyé)
+  - le calcul de rentabilité
+
+Lancer : python -m dtv.scripts.test_brisage
+"""
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+
+from dtv.collector import brisage as b
+
+
+def test_formule():
+    # (code, valeur, niveau, runes attendues) — extraits du modèle RuneMaster
+    cases = [
+        ("in", 8, 2, 1.16),
+        ("vi", 5, 2, 1.02),       # rune spéciale (pas de division)
+        ("pm", 1, 50, 0.5111),
+        ("sa", 40.5, 200, 82.0),
+        ("ta", 16, 150, 24.25),
+        ("pu", 63, 200, 126.5),
+        ("ch", 18, 50, 10.0),
+        ("vi", 75.5, 100, 16.1),  # spéciale
+        ("pod", 1, 200, 1.5),     # spéciale : (200/100)*1*0.25+1
+    ]
+    for code, v, niv, expected in cases:
+        got = b.rune_yield(code, v, niv)
+        assert abs(got - expected) < 0.01, f"{code} V={v} niv={niv}: {got} != {expected}"
+    # valeur négative ou nulle → aucune rune
+    assert b.rune_yield("fo", -5, 200) == 0.0
+    assert b.rune_yield("fo", 0, 200) == 0.0
+    print("✅ formule (9 points + bornes) OK")
+
+
+def test_parsing():
+    eff = ("351 à 400 Vitalité | 1 PA | 16 à 20 Prospection | "
+           "-16 à 20 Dommages Critiques | PA < 12")
+    lines = b.parse_effects(eff)
+    by = {l["label"]: l for l in lines}
+    assert by["Vitalité"]["valeur"] == 375.5 and by["Vitalité"]["code"] == "vi"
+    assert by["PA"]["code"] == "pa"           # « PA » seul → rune pa
+    assert by["Prospection"]["code"] == "pp"
+    assert by["Dommages Critiques"]["valeur"] == 2.0   # (-16+20)/2
+    # « PA < 12 » = condition (pas de nombre en tête) → ignorée
+    assert "PA < 12" not in by
+    # % vs fixe : « % Résistance Eau » → rep, distinct de « Résistance Eau » → re
+    perc = b.parse_effects("6 à 8 % Résistance Eau")[0]
+    fixe = b.parse_effects("6 à 8 Résistance Eau")[0]
+    assert perc["code"] == "rep" and fixe["code"] == "re"
+    # % collé au nombre : « 4 à 6% Coups Critiques » → cc
+    assert b.parse_effects("4 à 6% Coups Critiques")[0]["code"] == "cc"
+    # ligne d'attaque d'arme « (dommages Air) » → non brisable
+    assert b.parse_effects("5 à 10 (dommages Air)")[0]["code"] is None
+    print("✅ parsing (ranges, %, négatifs, condition, arme) OK")
+
+
+def test_dedup():
+    # catalogue non nettoyé : bloc d'effets dupliqué → ne doit pas compter ×2
+    eff_simple = "351 à 400 Vitalité | 1 PA"
+    eff_double = "351 à 400 Vitalité | 1 PA | 351 à 400 Vitalité | 1 PA"
+    assert len(b.parse_effects(eff_double)) == 2
+    assert b.brisage_revenue(eff_simple, 200) == b.brisage_revenue(eff_double, 200)
+    print("✅ déduplication lignes identiques OK")
+
+
+def test_rentabilite():
+    eff = "351 à 400 Vitalité | 1 PA"
+    res = b.profitability(eff, 200, cout=100000)
+    assert res["revenu"] > 0
+    assert res["benefice"] == round(res["revenu"] - 100000, 2)
+    assert abs(res["rentabilite"] - res["revenu"] / 100000) < 1e-4  # arrondi 4 déc.
+    # coût inconnu → bénéfice/rentabilité None mais revenu calculé
+    res2 = b.profitability(eff, 200, cout=None)
+    assert res2["benefice"] is None and res2["revenu"] > 0
+    print("✅ rentabilité (revenu/coût/bénéfice) OK")
+
+
+def test_reference_data():
+    assert len(b.RUNES) == 42, f"attendu 42 runes, trouvé {len(b.RUNES)}"
+    for special in ("vi", "ii", "pod"):
+        assert b.RUNES[special]["special"], f"{special} doit être spéciale"
+    assert b.RUNES["pa"]["poids"] == 100.0
+    print(f"✅ données de référence ({len(b.RUNES)} runes, mapping {len(b.EFFET_VERS_CODE)}) OK")
+
+
+if __name__ == "__main__":
+    test_reference_data()
+    test_formule()
+    test_parsing()
+    test_dedup()
+    test_rentabilite()
+    print("\n🏁 Tous les tests brisage passent.")
