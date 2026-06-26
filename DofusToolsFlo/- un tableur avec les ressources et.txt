@@ -1,0 +1,13 @@
+- un tableur avec les ressources et leur coût, constitué comme ceci :
+Date, Type (étoffe, cuir, minerai, alliage, etc..), Nom de la ressource, Prix bas, Prix haut, Prix moyen, Prix par 1, Prix par 10, Prix par 100, Prix par 1000, Coût minimum du craft (si disponible, pour les ressources craftables uniquement).
+Le but étant de créer un ou deux tableurs de ce type par jour pour mesurer les prix en continu.
+Peux tu te servir de ce tableau qu'on vient de créer pour produire le tableau que je viens de décrire ?
+
+
+
+
+Tout d'abord il va falloir filtrer dans la liste complète des ressources, les ressources dont on va se servir pour crafter les équipements, et les ressources pour crafter les ressources nécéssaires aux équipements.
+Par exemple certains équipements n'auront besoin que d'objets dropables sur les monstres ou farmable dans la nature (bois, minerais, etc..), mais d'autres vont nécessiter par exemple des planches ou des alliages, lesquels peuvent se crafter.
+Comme ça on saura les prix de quelles ressources on va devoir regarder.
+Normalement en recoupant correctement notre tableau avec l'intégralité des équipements et armes et notre tout nouveau tableaux des ressources, ça devrait le faire !
+
