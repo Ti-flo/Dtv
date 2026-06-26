@@ -246,9 +246,9 @@ def scrape_detail(item: dict) -> dict:
         **item,
         "Effets":         " | ".join(effets_clean),
         "Conditions":     " | ".join(dict.fromkeys(conditions)),
-        "Recette":        ", ".join(recette),
-        "Utilise_dans":   ", ".join(utilise_dans),
-        "Drops_monstres": " | ".join(drops),
+        "Recette":        ", ".join(dict.fromkeys(recette)),
+        "Utilise_dans":   ", ".join(dict.fromkeys(utilise_dans)),
+        "Drops_monstres": " | ".join(dict.fromkeys(drops)),
     }
 
 

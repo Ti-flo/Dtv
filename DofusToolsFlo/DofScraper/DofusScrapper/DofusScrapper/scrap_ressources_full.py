@@ -211,11 +211,13 @@ def scrape_detail(item: dict) -> dict:
                         entry += f" ({rate_txt})"
                     drops.append(entry)
 
+    # dict.fromkeys = dédup défensive en préservant l'ordre (dofus-touch.com peut
+    # servir 2 panels identiques, comme les 2 panels « Effets » des équipements)
     return {
         **item,
-        "Recette":        ", ".join(recette),
-        "Utilise_dans":   ", ".join(utilise_dans),
-        "Drops_monstres": " | ".join(drops),
+        "Recette":        ", ".join(dict.fromkeys(recette)),
+        "Utilise_dans":   ", ".join(dict.fromkeys(utilise_dans)),
+        "Drops_monstres": " | ".join(dict.fromkeys(drops)),
     }
 
 
