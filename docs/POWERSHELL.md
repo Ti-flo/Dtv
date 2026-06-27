@@ -104,6 +104,20 @@ cd "C:\Users\GAMING3\Desktop\dtv"
 python -m dtv.scripts.capture_phone --no-adb --port 9222 --account jetable
 ```
 
+### Capturer le protocole de BRISAGE (dump brut)
+
+Pour rétro-ingénier le Concasseur (coefficient + runes obtenues), ajouter
+`--dump-raw` : ça enregistre TOUTES les frames de jeu dans
+`data\raw\ws_raw_<jour>.jsonl` et affiche chaque nouveau type de message vu.
+Lancer la capture, **briser quelques items**, puis Ctrl+C. Le message clé est
+`ExchangeCraftInformationObjectMessage` (et le résultat avec les runes).
+
+```powershell
+python -m dtv.scripts.capture_phone --no-adb --port 9222 --account jetable --dump-raw
+# → puis va au Concasseur, brise 2-3 items, Ctrl+C
+# → m'envoyer data\raw\ws_raw_<jour>.jsonl (ou les lignes "Exchange...")
+```
+
 ---
 
 ## Diagnostics prix moyens

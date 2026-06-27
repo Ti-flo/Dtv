@@ -147,6 +147,10 @@ def main():
                         help="host:port to `adb connect` first (wireless ADB over WireGuard)")
     parser.add_argument("--no-adb", action="store_true",
                         help="Skip adb connect/forward — assume the port is already forwarded")
+    parser.add_argument("--dump-raw", action="store_true",
+                        help="Enregistre TOUTES les frames de jeu décodées dans data/raw/ws_raw_<jour>.jsonl "
+                             "(pour rétro-ingénier un flux inconnu, ex : le brisage/Concasseur). "
+                             "Affiche chaque NOUVEAU type de message vu.")
     args = parser.parse_args()
 
     if not args.no_adb:
@@ -160,7 +164,7 @@ def main():
             log.error("Fix the ADB/forward step, or pass --no-adb if you forwarded it yourself.")
             sys.exit(1)
 
-    collector = PassiveCollector(account=args.account)
+    collector = PassiveCollector(account=args.account, dump_raw=args.dump_raw)
     client = CDPClient(port=args.port, target_filter=args.target_filter)
     client.on_frame(collector.handle_frame)
 

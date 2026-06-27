@@ -182,6 +182,13 @@ Passé via `--observations`, le CLI :
 > passive des prix), `coefficient_reel` + `dernier_brisage` + runes réelles se
 > rempliront seuls **et** valideront la formule. Voir TODO dans KNOWLEDGE.md. Pour
 > l'instant rempli à la main.
+>
+> **Indice protocole (HAR du 27/06)** : le brisage passe par la machinerie d'échange
+> « craft ». La télémétrie a fait fuiter `lastReceivedMessage: ExchangeCraftInformationObjectMessage`
+> → c'est le message reçu pendant un brisage. ⚠️ Un export HAR de DevTools **ne contient
+> PAS les frames WebSocket** : pour capter le payload (coeff + runes) il faut le **CDP**
+> (`capture_phone.py --dump-raw`, qui lit les frames WS en JSON), pas un HAR. Le dump
+> brut va dans `data/raw/ws_raw_<jour>.jsonl`.
 
 ---
 

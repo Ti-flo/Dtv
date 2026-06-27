@@ -76,7 +76,7 @@ class PassiveCollector:
     """
 
     def __init__(self, account: str = "main", data_dir: Optional[Path] = None,
-                 scraper_dir: Optional[Path] = None):
+                 scraper_dir: Optional[Path] = None, dump_raw: bool = False):
         self._account = account
         self._data_dir = data_dir or DATA_DIR
         self._data_dir.mkdir(parents=True, exist_ok=True)
@@ -96,6 +96,13 @@ class PassiveCollector:
         self._hdv_csv_path: Optional[Path] = None
         self._lock = threading.Lock()
 
+        # Optional raw frame dump: writes EVERY decoded game message to a JSONL.
+        # Used to reverse-engineer unknown flows (ex : brisage / Concasseur) —
+        # on rejoue le dump ensuite pour identifier le message + ses champs.
+        self._dump_raw = dump_raw
+        self._raw_path: Optional[Path] = None
+        self._raw_seen_types: set = set()
+
     # ------------------------------------------------------------------ #
     # Frame entry point                                                  #
     # ------------------------------------------------------------------ #
@@ -110,10 +117,31 @@ class PassiveCollector:
         if not isinstance(msg, dict):
             return
 
+        if self._dump_raw:
+            self._dump_frame(direction, msg)
+
         if direction == "sent":
             self._on_sent(msg)
         else:
             self._on_recv(msg)
+
+    def _dump_frame(self, direction: str, msg: dict):
+        """Append one decoded game message to the daily raw JSONL (debug/RE)."""
+        # Identifie le type : envoi = {call:sendMessage,data:{type}}, réception = {_messageType}
+        if direction == "sent" and msg.get("call") == "sendMessage":
+            mtype = (msg.get("data") or {}).get("type")
+        else:
+            mtype = msg.get("_messageType")
+        day = datetime.now().strftime("%Y%m%d")
+        path = self._data_dir / f"ws_raw_{day}.jsonl"
+        with self._lock:
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(json.dumps({"dir": direction, "type": mtype, "msg": msg},
+                                   ensure_ascii=False) + "\n")
+            self._raw_path = path
+            if mtype and mtype not in self._raw_seen_types:
+                self._raw_seen_types.add(mtype)
+                log.info("RAW nouveau message [%s] %s", direction, mtype)
 
     # ------------------------------------------------------------------ #
     # Outgoing frames (what the player asked for)                        #
