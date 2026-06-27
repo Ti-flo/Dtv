@@ -46,28 +46,33 @@ Exemples vérifiés :
 | ta | 16 | 150 | 4 | 24.25 |
 | pu | 63 | 200 | 2 | 126.5 |
 
-### Validation contre les données de jeu réelles (capture de brisage Flo)
+### Validation contre des brisages Dofus Touch réels (captures Flo)
 
-La formule a été confrontée à une **capture in-game réelle** (panneau de brisage,
-coefficients + runes obtenues affichés) :
+Confrontée à de **vraies captures du Concasseur Dofus Touch** (coefficient + runes
+obtenues affichés par item). **Dofus Touch affiche les runes en unités SIMPLES**
+(grandes quantités, ex 99, 837, 1211) → la formule s'applique **directement, sans
+conversion de palier** :
 
-- **Rendement** : pour « Bottes du Meulou » (niv 131, coeff 179 %), la formule prédit
-  pod≈149, fo≈97, sa≈56, vi≈47, ii≈37 en **rune simple**. Le jeu affiche 16, 11, 6,
-  5, 4 — soit exactement **les prédictions ÷ 9** : le jeu montre les stats primaires
-  en palier **Ra** (×9), la formule donne l'équivalent simple. Concordance nette.
-- **Magnitude de valeur** : 5 items de la capture valorisés avec les prix exemple
-  donnent ~173 K/item ; le jeu estime ~211 K/item. Même ordre de grandeur (les prix
-  exemple sont périmés) → la **valorisation est cohérente** (prix exemple bien en
-  équivalent rune simple, pas Ra, sinon ×9 trop haut).
-- **Cas malus** : « Bottes de Satisfaction » (effets tous négatifs) → formule ≈ 0
-  rune, conforme au jeu.
+| Item (non magé) | Niv | Coeff | Prédit (runes simples) | Observé |
+|---|---|---|---|---|
+| Hache du Mulou | 55 | 439 % | 90, 36, 31, 15, 15 | 99, 36, 30, 18, 15 |
+| Hache de Brèche | 54 | 593 % | 88, 88, 16, 12, 12 | 83, 76, 17, 14, 11 |
 
-→ Formule **et** valorisation confirmées sur données réelles.
+→ **Concordance directe** (les écarts sont dans la randomness du brisage : chaque
+cast tire les stats dans leur fourchette ; cf. Cerberus brisé 8× → rune verte de 34
+à 63). Formule confirmée sur données réelles Dofus Touch.
 
-> ⚠️ La formule renvoie les quantités en **rune simple** ; le jeu/marché les manipule
-> en paliers (Ra ×9, Pa ×3). La valorisation reste juste tant que les prix sont en
-> équivalent simple. La valuation par palier (vendre en Ra/Pa) viendra avec les prix
-> par palier — cf. § Paliers.
+⚠️ **Forgemagie** : un item **magé** rend **plus** de runes que la prédiction (ses
+stats réelles dépassent la fourchette de base du catalogue). Ex Amulette Héroclite
+(magée) : observé ≈ 3× le prédit sur les stats majeures (vi/fo/sa surmagées). Notre
+calcul = **cas de base (non magé)** → conservateur. Affiner avec les stats réelles
+= piste (cf. observations).
+
+> Note paliers : le brisage Dofus Touch rend des **runes simples** (= sortie de la
+> formule). On les **concasse soi-même** ensuite (3→1) en Pa/Ra. La valorisation
+> utilise donc le prix de la rune simple ; vendre en palier supérieur = optimisation
+> future (cf. § Paliers). ⚠️ Le 1ᵉʳ screenshot (Dofus 3 PC, runes pré-agrégées en
+> Ra → ÷9) ne s'applique PAS à Dofus Touch.
 
 ---
 

@@ -598,12 +598,14 @@ tokens partagée → risque d'invalidation mutuelle si le refresh_token venait �
 - [ ] **Tableau "meilleurs items à farmer"** : croiser prix HDV (CSV `capture_phone`) × drops monstres (maintenant dispo dans `ressources_dofus_touch_full.xlsx` colonne `Drops_monstres` avec GID monstre + taux %)
 - [x] ~~**Porter RuneMaster dans DTV** : moteur de brisage~~ ✅ **S10-11 : `dtv/collector/brisage.py` + CLI + tests** (formule + coefficient + paliers, voir [`BRISAGE.md`](BRISAGE.md))
 - [ ] ⭐ **IMPORTANT (Flo) — Auto-collecte du coefficient de brisage via CDP au moment du brisage** :
-  - **Confirmé (capture in-game)** : le coefficient n'est affiché qu'**APRÈS** brisage,
-    par item, dans le panneau de brisage (ex : Bottes du Meulou 179 %, Bloptes Reinette
-    Royales 526 %, Bottes Animales 590 %, certains au plancher 50 %).
+  - **Confirmé (captures Concasseur Dofus Touch)** : le coefficient n'est affiché qu'**APRÈS**
+    brisage, par item (ex : Hache du Mulou 439 %, Roncier 727 %, Cerberus ~130 %). Les runes
+    sont en **unités SIMPLES** (grandes quantités : 99, 837, 1211…), pas en paliers Ra.
   - **Bonne nouvelle** : le jeu affiche « Valeur estimée des objets détruits » +
     « Valeur estimée des runes obtenues » → le client **reçoit déjà** un message avec,
     par item : **coefficient + liste (rune, quantité)**. C'est la cible de capture.
+  - **Formule validée** sur ces captures (Hache du Mulou/Brèche non magées : prédit ≈ observé
+    direct). Caveat : items **magés** rendent plus (stats réelles > base catalogue).
   - **Plan** : DevTools/CDP ouvert pendant un brisage réel (comme la capture passive des
     prix) → identifier le message (`*BreakMessage` / `*RunesMessage` ?) dans les frames WS.
     Une fois trouvé : `coefficient_reel` + `dernier_brisage` + runes réelles se remplissent
