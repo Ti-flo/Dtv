@@ -28,18 +28,13 @@ from pathlib import Path
 from typing import Optional
 
 from .hdv import _aggregate_offers, _get_session_name, QUANTITY_TIERS, DATA_DIR
+from .. import config
 
 log = logging.getLogger(__name__)
 
-_SCRAPER_DIR = (
-    Path(__file__).parent.parent.parent
-    / "DofusToolsFlo" / "DofScraper" / "DofusScrapper" / "DofusScrapper"
-)
-_CATALOG_FILES = [
-    "equipements_dofus_touch_full.json",
-    "ressources_dofus_touch_full.json",
-    "consommables_dofus_touch_full.json",
-]
+# Dossier des catalogues résolu par la config centrale (DTV_SCRAPER_DIR / SDK / repo).
+_SCRAPER_DIR = config.scraper_dir()
+_CATALOG_FILES = list(config.CATALOG_FILES.values())
 
 
 def _load_name_map(scraper_dir: Path = _SCRAPER_DIR) -> dict[int, str]:
@@ -65,7 +60,7 @@ def _load_name_map(scraper_dir: Path = _SCRAPER_DIR) -> dict[int, str]:
     return names
 
 
-_RUNE_GIDS_PATH = Path(__file__).parent.parent / "data" / "rune_gids.json"
+_RUNE_GIDS_PATH = config.rune_gids_path()
 
 
 def _load_rune_gid_to_code(path: Path = _RUNE_GIDS_PATH) -> dict[int, str]:

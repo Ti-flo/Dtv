@@ -84,17 +84,44 @@ try:
 except ImportError:
     pass
 
+from dtv import config
 from dtv.collector.cdp_client import CDPClient
 from dtv.collector.passive_capture import PassiveCollector
 
 
 def _adb(args: list[str], serial: str = None) -> str:
-    """Run an adb command and return stdout (raises on non-zero exit)."""
-    cmd = ["adb"] + (["-s", serial] if serial else []) + args
+    """Run an adb command and return stdout (raises on non-zero exit).
+
+    L'exécutable adb est résolu via dtv.config (PATH ou SDK Android connu), donc
+    plus besoin d'avoir adb dans le PATH ni de faire `--no-adb` à la main.
+    """
+    cmd = [config.adb_path()] + (["-s", serial] if serial else []) + args
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
     if result.returncode != 0:
         raise RuntimeError(f"adb {' '.join(args)} failed: {result.stderr.strip()}")
     return result.stdout
+
+
+def _discover_serial() -> str | None:
+    """
+    Renvoie le serial de l'unique appareil connecté (ou None si 0 / ambigu).
+
+    `adb devices` → on prend le seul appareil « device ». S'il y en a plusieurs,
+    on laisse adb choisir le défaut (None) en avertissant.
+    """
+    out = _adb(["devices"])
+    devices = []
+    for line in out.splitlines()[1:]:           # 1re ligne = en-tête
+        parts = line.split()
+        if len(parts) >= 2 and parts[1] == "device":
+            devices.append(parts[0])
+    if not devices:
+        return None
+    if len(devices) > 1:
+        log.warning("Plusieurs appareils %s — adb utilisera le défaut. "
+                    "Précise --adb-serial si besoin.", devices)
+        return None
+    return devices[0]
 
 
 def _discover_webview_socket(serial: str = None) -> str:
@@ -154,14 +181,24 @@ def main():
     args = parser.parse_args()
 
     if not args.no_adb:
+        log.info("adb: %s", config.adb_path())
         try:
             if args.adb_connect:
                 log.info("adb connect %s", args.adb_connect)
                 log.info(_adb(["connect", args.adb_connect]).strip())
-            _setup_forward(args.port, args.adb_serial)
+            # Serial : explicite, sinon auto-détection de l'unique appareil.
+            serial = args.adb_serial or _discover_serial()
+            if serial:
+                log.info("Appareil : %s", serial)
+            _setup_forward(args.port, serial)
         except (RuntimeError, FileNotFoundError, subprocess.SubprocessError) as e:
-            log.error("ADB setup failed: %s", e)
-            log.error("Fix the ADB/forward step, or pass --no-adb if you forwarded it yourself.")
+            log.error("Échec setup ADB : %s", e)
+            if not config.adb_available():
+                log.error("adb introuvable. Installe les platform-tools, ou définis "
+                          "DTV_ADB=chemin\\vers\\adb.exe, ou ajoute-le au PATH.")
+            else:
+                log.error("Vérifie : émulateur lancé + Dofus Touch ouvert (WebView debuggable). "
+                          "Ou pré-forward toi-même puis relance avec --no-adb.")
             sys.exit(1)
 
     collector = PassiveCollector(account=args.account, dump_raw=args.dump_raw)

@@ -24,98 +24,47 @@ git pull origin claude/dtv-project-assessment-7t8m3u
 
 ---
 
-## Capture passive — guide complet (émulateur)
+## Capture passive — UNE commande (auto)
 
-> **Résultat obtenu :** `avgprices_<timestamp>.csv` (~4906 items) dans `data\raw\`
-> + `hdv_passive_<date>.csv` (chaque item HDV ouvert).
+> **Résultat :** `avgprices_<timestamp>.csv` (~4906 items) + `hdv_passive_<date>.csv`
+> + `brisage_observations.csv` (si tu brises), tous dans `data\raw\`.
 
-### Étape 0 — Prérequis une seule fois
+Depuis la v config, **plus besoin de trouver le PID du socket ni de forwarder à la
+main** : le script localise `adb.exe` (SDK Android), détecte l'émulateur, découvre
+le socket WebView et forwarde tout seul.
 
-`adb.exe` n'est PAS dans le PATH → toutes les commandes adb se font depuis
-`C:\Users\GAMING3\AppData\Local\Android\Sdk\platform-tools`.
+### Procédure
 
-### Étape 1 — Ouvrir l'émulateur + Dofus Touch
-
-Lance l'émulateur Android Studio, ouvre Dofus Touch.
-**Reste sur l'écran de login — ne te connecte pas encore.**
-
-### Étape 2 — Trouver le nom du socket WebView
-
-```powershell
-cd "C:\Users\GAMING3\AppData\Local\Android\Sdk\platform-tools"
-.\adb.exe shell cat /proc/net/unix | findstr devtools
-```
-
-Résultat typique (le PID change à chaque lancement) :
-```
-... @webview_devtools_remote_7403
-```
-Note le nom complet après le `@` : `webview_devtools_remote_7403`
-
-### Étape 3 — Forwarder le socket
-
-```powershell
-# Remplace 7403 par le PID trouvé à l'étape 2
-.\adb.exe forward tcp:9222 localabstract:webview_devtools_remote_7403
-# doit retourner : 9222
-```
-
-### Étape 4 — Lancer la capture
+1. Lance l'émulateur + Dofus Touch (**reste sur l'écran de login**).
+2. Une seule commande :
 
 ```powershell
 cd "C:\Users\GAMING3\Desktop\dtv"
-python -m dtv.scripts.capture_phone --no-adb --port 9222 --account jetable
+python -m dtv.scripts.capture_phone --account jetable
 ```
 
-Attendre :
-```
-INFO cdp_client — Attaching to WebView: title='Dofus Touch' ...
-INFO cdp_client — CDP attached — Network domain enabled, streaming frames
-```
+3. Quand tu vois `CDP attached — streaming frames`, **connecte-toi en jeu**.
+   Le snapshot de prix part automatiquement au login. **Ctrl+C** pour arrêter.
 
-### Étape 5 — Se connecter en jeu
+> Si `adb` est introuvable, définir le chemin une fois :
+> `setx DTV_ADB "C:\Users\GAMING3\AppData\Local\Android\Sdk\platform-tools\adb.exe"`
+> (rouvrir PowerShell ensuite). Diagnostic complet : `python -m dtv.scripts.dtv doctor`.
 
-Connecte-toi sur le compte jetable dans Dofus Touch.
-Au login le snapshot part automatiquement :
-```
-INFO — average-price snapshot saved: ~4906 items → avgprices_<timestamp>.csv
-```
+### Briser des items (auto-collecte coeff + runes)
 
-**Ctrl+C** pour arrêter la capture quand tu as fini.
+Brise normalement au Concasseur pendant la capture : chaque brisage écrit une ligne
+dans `data\raw\brisage_observations.csv` (coeff réel + runes obtenues). Aucun flag
+spécial requis. Pour un dump brut de debug (rétro-ingénierie), ajouter `--dump-raw`.
 
----
-
-### Résumé en 3 blocs copier-coller
+### Repli manuel (si l'auto échoue)
 
 ```powershell
-# BLOC 1 — socket (à faire à chaque lancement, le PID change)
+# socket (le PID change à chaque lancement de l'émulateur)
 cd "C:\Users\GAMING3\AppData\Local\Android\Sdk\platform-tools"
 .\adb.exe shell cat /proc/net/unix | findstr devtools
-```
-
-```powershell
-# BLOC 2 — forward (remplacer 7403 par le PID du bloc 1)
-.\adb.exe forward tcp:9222 localabstract:webview_devtools_remote_7403
-```
-
-```powershell
-# BLOC 3 — capture (depuis dtv, AVANT de se connecter en jeu)
+.\adb.exe forward tcp:9222 localabstract:webview_devtools_remote_<pid>
 cd "C:\Users\GAMING3\Desktop\dtv"
 python -m dtv.scripts.capture_phone --no-adb --port 9222 --account jetable
-```
-
-### Capturer le protocole de BRISAGE (dump brut)
-
-Pour rétro-ingénier le Concasseur (coefficient + runes obtenues), ajouter
-`--dump-raw` : ça enregistre TOUTES les frames de jeu dans
-`data\raw\ws_raw_<jour>.jsonl` et affiche chaque nouveau type de message vu.
-Lancer la capture, **briser quelques items**, puis Ctrl+C. Le message clé est
-`ExchangeCraftInformationObjectMessage` (et le résultat avec les runes).
-
-```powershell
-python -m dtv.scripts.capture_phone --no-adb --port 9222 --account jetable --dump-raw
-# → puis va au Concasseur, brise 2-3 items, Ctrl+C
-# → m'envoyer data\raw\ws_raw_<jour>.jsonl (ou les lignes "Exchange...")
 ```
 
 ---
