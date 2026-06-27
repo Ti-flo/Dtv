@@ -1,4 +1,4 @@
-"""
+r"""
 Passive HDV capture from a real phone running the official Dofus Touch client.
 
 This is the production collection path — no bot, no synthetic traffic. You play
