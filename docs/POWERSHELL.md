@@ -24,48 +24,84 @@ git pull origin claude/dtv-project-assessment-7t8m3u
 
 ---
 
-## ADB / Émulateur
+## Capture passive — guide complet (émulateur)
+
+> **Résultat obtenu :** `avgprices_<timestamp>.csv` (~4906 items) dans `data\raw\`
+> + `hdv_passive_<date>.csv` (chaque item HDV ouvert).
+
+### Étape 0 — Prérequis une seule fois
+
+`adb.exe` n'est PAS dans le PATH → toutes les commandes adb se font depuis
+`C:\Users\GAMING3\AppData\Local\Android\Sdk\platform-tools`.
+
+### Étape 1 — Ouvrir l'émulateur + Dofus Touch
+
+Lance l'émulateur Android Studio, ouvre Dofus Touch.
+**Reste sur l'écran de login — ne te connecte pas encore.**
+
+### Étape 2 — Trouver le nom du socket WebView
 
 ```powershell
-# Voir les devices connectés
 cd "C:\Users\GAMING3\AppData\Local\Android\Sdk\platform-tools"
-.\adb.exe devices
-
-# Vérifier que la WebView du jeu est visible (lancer après avoir ouvert Dofus Touch)
 .\adb.exe shell cat /proc/net/unix | findstr devtools
-
-# Forward manuel (si WebView = chrome_devtools_remote)
-.\adb.exe forward tcp:9222 localabstract:chrome_devtools_remote
-
-# Forward manuel (si WebView = webview_devtools_remote_<pid>)
-.\adb.exe forward tcp:9222 localabstract:webview_devtools_remote_<pid>
-
-# Vérifier que le forward marche (doit retourner un JSON avec les targets)
-curl http://localhost:9222/json
 ```
 
----
+Résultat typique (le PID change à chaque lancement) :
+```
+... @webview_devtools_remote_7403
+```
+Note le nom complet après le `@` : `webview_devtools_remote_7403`
 
-## Capture passive (capture_phone)
+### Étape 3 — Forwarder le socket
 
-> **Ordre impératif** : ouvrir Dofus Touch → écran launcher/login → lancer la capture → PUIS se connecter.
+```powershell
+# Remplace 7403 par le PID trouvé à l'étape 2
+.\adb.exe forward tcp:9222 localabstract:webview_devtools_remote_7403
+# doit retourner : 9222
+```
+
+### Étape 4 — Lancer la capture
 
 ```powershell
 cd "C:\Users\GAMING3\Desktop\dtv"
-
-# Capture avec forward ADB automatique (cas normal émulateur USB/local)
-python -m dtv.scripts.capture_phone --account jetable
-
-# Si ADB déjà forwardé manuellement (ou si l'auto-détection rate)
 python -m dtv.scripts.capture_phone --no-adb --port 9222 --account jetable
+```
 
-# Avec filtre si plusieurs WebViews debuggables
-python -m dtv.scripts.capture_phone --target-filter dofus --account jetable
+Attendre :
+```
+INFO cdp_client — Attaching to WebView: title='Dofus Touch' ...
+INFO cdp_client — CDP attached — Network domain enabled, streaming frames
+```
 
-# Résultat attendu au login :
-#   "✓ average-price snapshot saved: ~4906 items → avgprices_<timestamp>.csv"
-# Résultat à chaque item HDV ouvert :
-#   "✓ recorded item GID=<N> (X offers) — prix_x1=<kamas>"
+### Étape 5 — Se connecter en jeu
+
+Connecte-toi sur le compte jetable dans Dofus Touch.
+Au login le snapshot part automatiquement :
+```
+INFO — average-price snapshot saved: ~4906 items → avgprices_<timestamp>.csv
+```
+
+**Ctrl+C** pour arrêter la capture quand tu as fini.
+
+---
+
+### Résumé en 3 blocs copier-coller
+
+```powershell
+# BLOC 1 — socket (à faire à chaque lancement, le PID change)
+cd "C:\Users\GAMING3\AppData\Local\Android\Sdk\platform-tools"
+.\adb.exe shell cat /proc/net/unix | findstr devtools
+```
+
+```powershell
+# BLOC 2 — forward (remplacer 7403 par le PID du bloc 1)
+.\adb.exe forward tcp:9222 localabstract:webview_devtools_remote_7403
+```
+
+```powershell
+# BLOC 3 — capture (depuis dtv, AVANT de se connecter en jeu)
+cd "C:\Users\GAMING3\Desktop\dtv"
+python -m dtv.scripts.capture_phone --no-adb --port 9222 --account jetable
 ```
 
 ---
