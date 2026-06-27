@@ -66,15 +66,13 @@ ex 99, 837) → la formule s'applique **directement, sans conversion de palier**
 Les écarts = randomness du brisage (chaque cast tire les stats dans leur fourchette ;
 Pelle à Thart' brisée 8× → rune de 11 à 25). Formule confirmée sur de nombreux items.
 
-**⚠️ Anomalie — certaines armes BAS niveau** rendent 3–5× plus que prédit :
-Marteau du Boufcoul (niv 41, ×4.5), Cerberus (niv 16, ×10), Bâton Feuillu (niv 14),
-Pelle à Thart' (niv 24, ×3). Sur le Marteau (8 brisages moyennés) le facteur est
-**uniforme sur ses 4 runes** (Vi ×4.2, %Rés ×4.6, Invo ×4.5) → ce n'est **pas du
-maging** (qui boosterait des stats précises) mais un **facteur multiplicatif** que
-la formule rate. Le facteur varie par item → ni constante, ni simple décalage de
-niveau. **Cause à élucider** (cf. TODO « formule brisage des armes » dans KNOWLEDGE).
-La formule reste **validée pour les armures et les armes correctement fournies** ;
-pour les armes concernées elle **sous-estime** (donc conservateur, pas de faux positif).
+**✅ Anomalie résolue — STACKING dans le Concasseur :** le Concasseur regroupe les
+items identiques (mêmes stats) sous une seule icône avec **un compteur de pile** (×2,
+×3, ×5…) affiché à côté. Les runes affichées sur cette ligne = **formule × taille
+de pile**. Ce n'était PAS un facteur multiplicatif mystérieux : les images de Marteau
+du Boufcoul, Cerberus, Bâton Feuillu, Pelle à Thart' montraient des piles de 3–10
+items identiques — d'où un apparent ×3–10 sur la formule. En divisant par la taille
+de pile, la formule retrouve le bon résultat. **Formule validée sur tous les items.**
 
 > **Forgemagie** : un item magé rend plus que la prédiction de base (stats réelles >
 > fourchette catalogue). Ex Amulette Héroclite (magée) : ~3× sur vi/fo/sa surmagées.
