@@ -151,13 +151,21 @@ def rune_price(code: str, prices: Optional[dict[str, float]] = None) -> float:
 
 
 def brisage_revenue(effets: str, niveau: float,
-                    prices: Optional[dict[str, float]] = None) -> float:
-    """Valeur totale en kamas des runes obtenues en brisant l'item."""
-    return sum(q * rune_price(code, prices) for code, q in breakdown(effets, niveau).items())
+                    prices: Optional[dict[str, float]] = None,
+                    coeff: float = 100.0) -> float:
+    """
+    Valeur en kamas des runes obtenues en brisant l'item.
+
+    coeff = coefficient de brisage du serveur (en %). La formule de base est à
+    100 % ; le revenu réel est proportionnel : revenu = base × coeff/100.
+    """
+    base = sum(q * rune_price(code, prices) for code, q in breakdown(effets, niveau).items())
+    return base * coeff / 100.0
 
 
 def profitability(effets: str, niveau: float, cout: Optional[float],
-                  prices: Optional[dict[str, float]] = None) -> dict:
+                  prices: Optional[dict[str, float]] = None,
+                  coeff: float = 100.0) -> dict:
     """
     Bilan de brisage d'un item.
 
@@ -166,15 +174,29 @@ def profitability(effets: str, niveau: float, cout: Optional[float],
         niveau : niveau de l'item
         cout   : prix d'achat HDV (ou coût de craft) ; None si inconnu
         prices : {code rune → prix} (HDV live) ; sinon prix exemple
+        coeff  : coefficient de brisage du serveur en % (1 à 4000). On ne le
+                 connaît qu'APRÈS avoir brisé l'item ; il tend vers 1 % à mesure
+                 qu'un item est brisé. Par défaut 100 % (base de la formule).
 
-    Retourne : revenu, cout, benefice, rentabilite (revenu/cout), detail runes.
+    Le revenu réel = revenu_base × coeff/100. La métrique de décision est
+    `coeff_min` = coefficient minimal pour être rentable (revenu_base = coût) :
+    on ne connaît pas le coeff réel, mais on sait qu'il faut au moins coeff_min %.
+    Plus `coeff_min` est bas, plus l'item est un pari sûr à briser.
+
+    Retourne : revenu (au coeff donné), revenu_coeff100 (base), coeff, coeff_min,
+    cout, benefice, rentabilite, detail runes.
     """
     detail = breakdown(effets, niveau)
-    revenu = sum(q * rune_price(code, prices) for code, q in detail.items())
+    base = sum(q * rune_price(code, prices) for code, q in detail.items())
+    revenu = base * coeff / 100.0
     benefice = (revenu - cout) if cout is not None else None
     rentabilite = (revenu / cout) if (cout not in (None, 0)) else None
+    coeff_min = (cout / base * 100.0) if (cout is not None and base > 0) else None
     return {
         "revenu": round(revenu, 2),
+        "revenu_coeff100": round(base, 2),
+        "coeff": coeff,
+        "coeff_min": round(coeff_min, 2) if coeff_min is not None else None,
         "cout": cout,
         "benefice": round(benefice, 2) if benefice is not None else None,
         "rentabilite": round(rentabilite, 4) if rentabilite is not None else None,

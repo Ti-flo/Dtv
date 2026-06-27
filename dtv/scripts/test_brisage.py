@@ -82,6 +82,24 @@ def test_rentabilite():
     print("✅ rentabilité (revenu/coût/bénéfice) OK")
 
 
+def test_coefficient():
+    eff = "351 à 400 Vitalité | 1 PA"
+    base = b.profitability(eff, 200, cout=None)["revenu_coeff100"]
+    # le revenu scale linéairement avec le coeff
+    r200 = b.profitability(eff, 200, cout=None, coeff=200)
+    assert abs(r200["revenu"] - base * 2) < 0.01
+    r50 = b.profitability(eff, 200, cout=None, coeff=50)
+    assert abs(r50["revenu"] - base * 0.5) < 0.01
+    # coeff_min = coût/base × 100 (break-even, indépendant du coeff demandé)
+    cout = base * 1.5            # il faut coeff 150% pour rentrer dans ses frais
+    res = b.profitability(eff, 200, cout=cout, coeff=100)
+    assert abs(res["coeff_min"] - 150.0) < 0.1
+    # au coeff_min exact, bénéfice ≈ 0
+    at_min = b.profitability(eff, 200, cout=cout, coeff=res["coeff_min"])
+    assert abs(at_min["benefice"]) < 1.0
+    print("✅ coefficient de brisage + coeff_min (break-even) OK")
+
+
 def test_reference_data():
     assert len(b.RUNES) == 42, f"attendu 42 runes, trouvé {len(b.RUNES)}"
     for special in ("vi", "ii", "pod"):
@@ -96,4 +114,5 @@ if __name__ == "__main__":
     test_parsing()
     test_dedup()
     test_rentabilite()
+    test_coefficient()
     print("\n🏁 Tous les tests brisage passent.")

@@ -48,6 +48,53 @@ Exemples vérifiés :
 
 ---
 
+## Coefficient de brisage (taux serveur)
+
+La formule ci-dessus donne le rendement **à coefficient 100 %** (la « base »). Sur
+le serveur, chaque item a un **coefficient de brisage dynamique** (de **1 % à
+4000 %**) qui **tend vers 1 %** à mesure que l'item est brisé. **On ne connaît le
+coefficient qu'APRÈS avoir brisé l'item.**
+
+```
+revenu_réel = revenu_base × (coeff / 100)
+```
+
+Vérifié sur `Tableau_Brisage` : Anneau Bouftou base=13005, à Coeff 120 % →
+Revenu 15606 = 13005 × 1.2 ✓.
+
+### Coeff Min = la métrique de décision
+Comme le coefficient réel est inconnu d'avance, on calcule le **coefficient
+minimal pour être rentable** (revenu_base = coût) :
+
+```
+coeff_min = coût / revenu_base × 100
+```
+
+→ « il faut au moins coeff_min % de coefficient pour rentrer dans mes frais ».
+**Plus coeff_min est bas, plus l'item est un pari sûr.** (Vérifié : Anneau Bouftou
+coeff_min=215.3 = 28000/13005×100 ✓.) C'est le tri par défaut du CLI quand le coût
+est connu.
+
+---
+
+## Paliers de runes (Ra → Pa → Ga)
+
+Les runes existent en **3 paliers**, obtenus par **concassage** :
+```
+3 runes Ra (base)  →  1 rune Pa     |     3 runes Pa  →  1 rune Ga
+```
+La formule donne la quantité en **Ra (base)**. Vendre en palier supérieur peut
+rapporter plus **si** `prix_Pa > 3 × prix_Ra` (optimisation de vente — nécessite
+les prix par palier, **étape future**). Le modèle actuel value chaque rune à un
+prix unique (comme RuneMaster).
+
+⚠️ **Exception `giant_only`** (`runes.json`) : **`pa` (Ga PA)** et **`pm` (Ga PM)**
+n'existent **qu'en géant** — pas de Ra/Pa, donc pas de concassage possible. Leur
+quantité est déjà en Ga et leur prix est celui du Ga. (Confirmé : « ça marche pour
+fo/vi mais pas pour Ga PA / Ga PM ».)
+
+---
+
 ## Données de référence — `dtv/data/runes.json`
 
 42 runes. Pour chaque code : `nom` (effet canonique), `display` (nom RuneMaster),
@@ -100,10 +147,18 @@ python -m dtv.scripts.build_rune_gids --catalog ressources_dofus_touch_full.xlsx
 python -m dtv.scripts.brisage --catalog equipements_dofus_touch_full.xlsx \
     --avg-prices data/raw/avgprices_20260626.csv --rune-gids dtv/data/rune_gids.json \
     --top 100 --out top_brisage.xlsx
+
+# Bénéfice à un coefficient supposé (ex 250 %), trié par bénéfice
+python -m dtv.scripts.brisage --catalog equipements_dofus_touch_full.xlsx \
+    --avg-prices data/raw/avgprices_20260626.csv --rune-gids dtv/data/rune_gids.json \
+    --coeff 250 --sort benefice
 ```
 
-Sortie : `GID | Nom | Type | Niveau | Revenu_brisage | Cout_HDV | Benefice | Rentabilite | Runes`.
-Tri par bénéfice si le coût HDV est connu, sinon par revenu brut.
+Sortie : `GID | Nom | Type | Niveau | Revenu_coeff100 | Revenu_brisage | Cout_HDV |
+Coeff_Min | Benefice | Rentabilite | Runes`.
+Tri par défaut (coût connu) = **Coeff Min croissant** (pari le plus sûr) ;
+`--sort benefice|revenu` au choix. `--coeff` fixe le coefficient supposé pour les
+colonnes Revenu/Bénéfice (def 100 %).
 
 ---
 
@@ -123,7 +178,10 @@ DTV automatise **les deux** :
 ### Limites / pistes
 - `prix_exemple` = snapshot RuneMaster figé → à remplacer par le HDV live (objet du
   `build_rune_gids` + `--rune-gids`).
-- La formule est en **focalisation 100 %** (meilleur cas) ; le brisage réel dépend
-  du taux de focalisation de l'atelier. C'est le modèle que RuneMaster utilisait.
+- **Coefficient** : géré via `--coeff` + `Coeff_Min` (break-even). Le coeff réel
+  reste inconnu d'avance ; piste = relever le coeff observé en jeu par item pour
+  affiner (le serveur le fait varier 1 %–4000 %).
+- **Paliers de runes** : valuation par palier (vendre en Pa/Ga si plus rentable)
+  pas encore faite — nécessite les prix Ra/Pa/Ga par stat. `giant_only` déjà marqué.
 - Le coût « craft » (fabriquer puis briser) n'est pas encore croisé — possible via
   la colonne `Recette` + prix des ingrédients (prochaine étape).

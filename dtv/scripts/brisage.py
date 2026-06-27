@@ -111,6 +111,11 @@ def main():
     ap.add_argument("--avg-prices", type=Path, help="avgprices_*.csv (coût des items)")
     ap.add_argument("--rune-prices", type=Path, help="CSV « code,prix » (prix runes)")
     ap.add_argument("--rune-gids", type=Path, help="JSON {code: gid} pour prix runes via --avg-prices")
+    ap.add_argument("--coeff", type=float, default=100.0,
+                    help="coefficient de brisage serveur en %% (def 100 = base). "
+                         "Le revenu réel = revenu_base × coeff/100. Inconnu avant brisage.")
+    ap.add_argument("--sort", choices=("coeff-min", "benefice", "revenu"), default="coeff-min",
+                    help="tri quand le coût est connu (def coeff-min = pari le plus sûr)")
     ap.add_argument("--top", type=int, default=50, help="nombre de lignes affichées (def 50)")
     ap.add_argument("--min-rentabilite", type=float, default=0.0,
                     help="filtre : rentabilité revenu/coût minimale")
@@ -146,43 +151,57 @@ def main():
         niveau = _to_level(it.get("Niveau"))
         gid = it.get("GID")
         cout = item_prices.get(int(gid)) if (gid and item_prices) else None
-        res = br.profitability(effets, niveau, cout, rune_prices)
-        if res["revenu"] <= 0:
+        res = br.profitability(effets, niveau, cout, rune_prices, coeff=args.coeff)
+        if res["revenu_coeff100"] <= 0:
             continue
         rows.append({
             "GID": gid,
             "Nom": it.get("Nom_FR", ""),
             "Type": it.get("Type", ""),
             "Niveau": int(niveau),
-            "Revenu_brisage": res["revenu"],
+            "Revenu_coeff100": res["revenu_coeff100"],
+            "Revenu_brisage": res["revenu"],     # au coeff demandé
             "Cout_HDV": res["cout"],
+            "Coeff_Min": res["coeff_min"],       # coeff % minimal pour être rentable
             "Benefice": res["benefice"],
             "Rentabilite": res["rentabilite"],
             "Runes": ", ".join(f"{c}×{q:g}" for c, q in res["runes"].items()),
         })
 
-    # Tri : par bénéfice si coût connu, sinon par revenu
-    has_cost = any(r["Benefice"] is not None for r in rows)
+    # Tri : si coût connu → par Coeff_Min croissant (pari le plus sûr d'abord),
+    # car le coeff réel est inconnu. Sinon → par revenu de brisage.
+    has_cost = any(r["Coeff_Min"] is not None for r in rows)
     if has_cost:
-        rows = [r for r in rows if r["Benefice"] is not None]
+        rows = [r for r in rows if r["Coeff_Min"] is not None]
         if args.min_rentabilite:
             rows = [r for r in rows if (r["Rentabilite"] or 0) >= args.min_rentabilite]
-        rows.sort(key=lambda r: r["Benefice"], reverse=True)
-        sort_label = "bénéfice (revenu − coût HDV)"
+        if args.sort == "benefice":
+            rows.sort(key=lambda r: r["Benefice"], reverse=True)
+            sort_label = f"bénéfice (au coeff {args.coeff:g}%)"
+        elif args.sort == "revenu":
+            rows.sort(key=lambda r: r["Revenu_coeff100"], reverse=True)
+            sort_label = "revenu de brisage (coeff 100%)"
+        else:  # coeff-min (défaut)
+            rows.sort(key=lambda r: r["Coeff_Min"])
+            sort_label = "Coeff Min croissant (pari le plus sûr — coeff réel inconnu)"
     else:
-        rows.sort(key=lambda r: r["Revenu_brisage"], reverse=True)
-        sort_label = "revenu de brisage (coût HDV inconnu)"
+        rows.sort(key=lambda r: r["Revenu_coeff100"], reverse=True)
+        sort_label = "revenu de brisage coeff 100% (coût HDV inconnu)"
 
     # Affichage
-    print(f"\n🏆 Top {min(args.top, len(rows))} / {len(rows)} items — trié par {sort_label}\n")
-    print(f"  {'Nom':28s} {'Niv':>3s} {'Revenu':>10s} {'Coût':>10s} {'Bénéf':>11s} {'Rent':>6s}")
-    print("  " + "─" * 78)
+    print(f"\n🏆 Top {min(args.top, len(rows))} / {len(rows)} items — trié par {sort_label}")
+    print(f"   (Coeff Min = coefficient serveur minimal pour rentrer dans ses frais ; "
+          f"plus bas = plus sûr)\n")
+    print(f"  {'Nom':26s} {'Niv':>3s} {'Rev@100%':>10s} {'Coût':>10s} "
+          f"{'CoeffMin':>9s} {'Bénéf':>11s} {'Rent':>6s}")
+    print("  " + "─" * 84)
     for r in rows[:args.top]:
         cout = f"{r['Cout_HDV']:,.0f}" if r["Cout_HDV"] is not None else "—"
+        cmin = f"{r['Coeff_Min']:,.0f}%" if r["Coeff_Min"] is not None else "—"
         benef = f"{r['Benefice']:,.0f}" if r["Benefice"] is not None else "—"
         rent = f"{r['Rentabilite']:.2f}" if r["Rentabilite"] is not None else "—"
-        print(f"  {r['Nom'][:28]:28s} {r['Niveau']:3d} {r['Revenu_brisage']:10,.0f} "
-              f"{cout:>10s} {benef:>11s} {rent:>6s}")
+        print(f"  {r['Nom'][:26]:26s} {r['Niveau']:3d} {r['Revenu_coeff100']:10,.0f} "
+              f"{cout:>10s} {cmin:>9s} {benef:>11s} {rent:>6s}")
 
     # Export
     if args.out:
