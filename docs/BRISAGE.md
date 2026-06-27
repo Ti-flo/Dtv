@@ -77,21 +77,52 @@ est connu.
 
 ---
 
-## Paliers de runes (Ra → Pa → Ga)
+## Paliers de runes (simple → Pa → Ra)
 
-Les runes existent en **3 paliers**, obtenus par **concassage** :
+Les runes se **concassent** en paliers supérieurs (noms exacts en jeu confirmés
+par Flo) :
 ```
-3 runes Ra (base)  →  1 rune Pa     |     3 runes Pa  →  1 rune Ga
+3 runes simples  →  1 rune Pa (×3)     |     3 runes Pa  →  1 rune Ra (×9 simples)
 ```
-La formule donne la quantité en **Ra (base)**. Vendre en palier supérieur peut
-rapporter plus **si** `prix_Pa > 3 × prix_Ra` (optimisation de vente — nécessite
-les prix par palier, **étape future**). Le modèle actuel value chaque rune à un
+
+Le nombre de paliers **dépend de la stat** (champ `tiers` dans `runes.json`,
+avec le nom exact en jeu et `mult_base` en unités de rune simple) :
+
+| Paliers | Stats | Ex. noms en jeu |
+|---|---|---|
+| **3** (simple/Pa/Ra) | 9 stats primaires : Vi, Sa, Fo, Ine, Cha, Age, Pui, Pod, Ini | Rune Fo, Rune Pa Fo, Rune Ra Fo |
+| **2** (simple/Pa) | Tac, Fui, So, Prospe, Do élém + Do Pou/Cri, Ré fixes + Ré Pou/Cri, Ret/Ré Pa/Pme | Rune Tac, Rune Pa Tac |
+| **1** (simple) | Do, Cri, Po, Invo, % Ré Per (Air/Eau/Feu/Terre/Neutre), Chasse | Rune Do, Rune Cri |
+| **géant only** | PA (`pa`), PM (`pm`) | Rune Ga Pa, Rune Ga Pme |
+
+La formule donne la quantité en **rune simple**. Vendre en palier supérieur peut
+rapporter plus **si** `prix_Pa > 3 × prix_simple` — **optimisation de vente, étape
+future** (nécessite les prix par palier). Le modèle actuel value chaque rune à un
 prix unique (comme RuneMaster).
 
-⚠️ **Exception `giant_only`** (`runes.json`) : **`pa` (Ga PA)** et **`pm` (Ga PM)**
-n'existent **qu'en géant** — pas de Ra/Pa, donc pas de concassage possible. Leur
-quantité est déjà en Ga et leur prix est celui du Ga. (Confirmé : « ça marche pour
-fo/vi mais pas pour Ga PA / Ga PM ».)
+⚠️ **`giant_only`** (`pa`, `pm`) : n'existent qu'en Ga, **pas de concassage**. La
+quantité de la formule est déjà en Ga, le prix est celui du Ga.
+
+---
+
+## Observations (coefficient réel + dernier brisage)
+
+Le **coefficient réel** d'un item ne se connaît qu'**en jeu, après l'avoir brisé**.
+On le relève dans `brisage_observations.csv` (séparé du catalogue, qui se régénère
+par scraping) :
+
+```
+GID,coefficient_reel,dernier_brisage
+2424,280,2026-06-27
+```
+
+Passé via `--observations`, le CLI :
+- affiche les colonnes **Coeff Réel** + **Dernier Brisage** ;
+- **utilise le coeff réel par item** (au lieu de `--coeff`) pour Revenu/Bénéfice ;
+- la **date** dit si le coeff est encore fiable (le coeff dérive à chaque brisage).
+
+> 🔜 **À terme, relevé automatiquement depuis le serveur** (comme les prix) — voir
+> la TODO « auto-collecte coeff » dans KNOWLEDGE.md. Pour l'instant rempli à la main.
 
 ---
 
@@ -152,10 +183,15 @@ python -m dtv.scripts.brisage --catalog equipements_dofus_touch_full.xlsx \
 python -m dtv.scripts.brisage --catalog equipements_dofus_touch_full.xlsx \
     --avg-prices data/raw/avgprices_20260626.csv --rune-gids dtv/data/rune_gids.json \
     --coeff 250 --sort benefice
+
+# Avec les coeffs réels observés en jeu (par item)
+python -m dtv.scripts.brisage --catalog equipements_dofus_touch_full.xlsx \
+    --avg-prices data/raw/avgprices_20260626.csv --rune-gids dtv/data/rune_gids.json \
+    --observations brisage_observations.csv
 ```
 
 Sortie : `GID | Nom | Type | Niveau | Revenu_coeff100 | Revenu_brisage | Cout_HDV |
-Coeff_Min | Benefice | Rentabilite | Runes`.
+Coeff_Min | Coeff_Reel | Dernier_Brisage | Benefice | Rentabilite | Runes`.
 Tri par défaut (coût connu) = **Coeff Min croissant** (pari le plus sûr) ;
 `--sort benefice|revenu` au choix. `--coeff` fixe le coefficient supposé pour les
 colonnes Revenu/Bénéfice (def 100 %).

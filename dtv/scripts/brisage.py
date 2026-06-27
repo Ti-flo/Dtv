@@ -103,6 +103,29 @@ def rune_prices_from_avg(avg: dict[int, float], rune_gids_path: Path) -> dict[st
     return out
 
 
+def load_observations(path: Path) -> dict[int, dict]:
+    """
+    brisage_observations.csv (GID,coefficient_reel,dernier_brisage) → {gid: {...}}.
+
+    Données OBSERVÉES en jeu (le coeff réel n'est connu qu'après brisage). Stockées
+    à part du catalogue (qui se régénère par scraping). Rempli à la main pour
+    l'instant ; à terme relevé auto depuis le serveur (cf. TODO KNOWLEDGE.md).
+    """
+    obs = {}
+    with open(path, encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            try:
+                gid = int(row["GID"])
+            except (ValueError, KeyError):
+                continue
+            coeff = row.get("coefficient_reel", "").strip()
+            obs[gid] = {
+                "coeff": float(coeff) if coeff else None,
+                "date": row.get("dernier_brisage", "").strip() or None,
+            }
+    return obs
+
+
 # ── Main ────────────────────────────────────────────────────────────────────
 def main():
     ap = argparse.ArgumentParser(description="Classement rentabilité de brisage")
@@ -111,6 +134,9 @@ def main():
     ap.add_argument("--avg-prices", type=Path, help="avgprices_*.csv (coût des items)")
     ap.add_argument("--rune-prices", type=Path, help="CSV « code,prix » (prix runes)")
     ap.add_argument("--rune-gids", type=Path, help="JSON {code: gid} pour prix runes via --avg-prices")
+    ap.add_argument("--observations", type=Path,
+                    help="brisage_observations.csv (GID,coefficient_reel,dernier_brisage) — "
+                         "coeff réel observé en jeu, utilisé par item s'il est présent")
     ap.add_argument("--coeff", type=float, default=100.0,
                     help="coefficient de brisage serveur en %% (def 100 = base). "
                          "Le revenu réel = revenu_base × coeff/100. Inconnu avant brisage.")
@@ -142,6 +168,12 @@ def main():
     else:
         print("🪙 prix de runes : valeurs exemple (runes.json) — fournir --rune-prices pour du live")
 
+    # Observations (coeff réel + date dernier brisage, par item)
+    observations = {}
+    if args.observations and args.observations.exists():
+        observations = load_observations(args.observations)
+        print(f"📝 {len(observations)} observations de brisage chargées (coeff réel par item)")
+
     # Calcul
     rows = []
     for it in catalog:
@@ -151,7 +183,10 @@ def main():
         niveau = _to_level(it.get("Niveau"))
         gid = it.get("GID")
         cout = item_prices.get(int(gid)) if (gid and item_prices) else None
-        res = br.profitability(effets, niveau, cout, rune_prices, coeff=args.coeff)
+        obs = observations.get(int(gid)) if (gid and observations) else None
+        # coeff réel observé par item s'il existe, sinon le coeff global (--coeff)
+        coeff_item = obs["coeff"] if (obs and obs["coeff"]) else args.coeff
+        res = br.profitability(effets, niveau, cout, rune_prices, coeff=coeff_item)
         if res["revenu_coeff100"] <= 0:
             continue
         rows.append({
@@ -160,9 +195,11 @@ def main():
             "Type": it.get("Type", ""),
             "Niveau": int(niveau),
             "Revenu_coeff100": res["revenu_coeff100"],
-            "Revenu_brisage": res["revenu"],     # au coeff demandé
+            "Revenu_brisage": res["revenu"],     # au coeff appliqué (réel ou --coeff)
             "Cout_HDV": res["cout"],
             "Coeff_Min": res["coeff_min"],       # coeff % minimal pour être rentable
+            "Coeff_Reel": obs["coeff"] if obs else None,        # observé en jeu
+            "Dernier_Brisage": obs["date"] if obs else None,    # date observation
             "Benefice": res["benefice"],
             "Rentabilite": res["rentabilite"],
             "Runes": ", ".join(f"{c}×{q:g}" for c, q in res["runes"].items()),
@@ -189,19 +226,28 @@ def main():
         sort_label = "revenu de brisage coeff 100% (coût HDV inconnu)"
 
     # Affichage
+    show_obs = bool(observations)
     print(f"\n🏆 Top {min(args.top, len(rows))} / {len(rows)} items — trié par {sort_label}")
     print(f"   (Coeff Min = coefficient serveur minimal pour rentrer dans ses frais ; "
           f"plus bas = plus sûr)\n")
-    print(f"  {'Nom':26s} {'Niv':>3s} {'Rev@100%':>10s} {'Coût':>10s} "
-          f"{'CoeffMin':>9s} {'Bénéf':>11s} {'Rent':>6s}")
-    print("  " + "─" * 84)
+    header = (f"  {'Nom':26s} {'Niv':>3s} {'Rev@100%':>10s} {'Coût':>10s} "
+              f"{'CoeffMin':>9s} {'Bénéf':>11s} {'Rent':>6s}")
+    if show_obs:
+        header += f" {'CoeffRéel':>9s} {'DernBris':>10s}"
+    print(header)
+    print("  " + "─" * (84 + (21 if show_obs else 0)))
     for r in rows[:args.top]:
         cout = f"{r['Cout_HDV']:,.0f}" if r["Cout_HDV"] is not None else "—"
         cmin = f"{r['Coeff_Min']:,.0f}%" if r["Coeff_Min"] is not None else "—"
         benef = f"{r['Benefice']:,.0f}" if r["Benefice"] is not None else "—"
         rent = f"{r['Rentabilite']:.2f}" if r["Rentabilite"] is not None else "—"
-        print(f"  {r['Nom'][:26]:26s} {r['Niveau']:3d} {r['Revenu_coeff100']:10,.0f} "
-              f"{cout:>10s} {cmin:>9s} {benef:>11s} {rent:>6s}")
+        line = (f"  {r['Nom'][:26]:26s} {r['Niveau']:3d} {r['Revenu_coeff100']:10,.0f} "
+                f"{cout:>10s} {cmin:>9s} {benef:>11s} {rent:>6s}")
+        if show_obs:
+            creel = f"{r['Coeff_Reel']:,.0f}%" if r["Coeff_Reel"] is not None else "—"
+            dbris = r["Dernier_Brisage"] or "—"
+            line += f" {creel:>9s} {dbris:>10s}"
+        print(line)
 
     # Export
     if args.out:

@@ -61,18 +61,26 @@ def main():
 
     print(f"🔎 {len(rune_items)} items « Rune » trouvés dans le catalogue")
 
-    # Index par nom normalisé du SUFFIXE après « Rune »
+    # Index par nom complet normalisé (« Rune Fo », « Rune Ga Pa »…)
+    by_name = {}
+    for gid, nom in rune_items:
+        by_name.setdefault(_norm(nom), (gid, nom))
+
+    # Appariement code → GID via le nom EXACT en jeu (champ nom_rune, fourni par Flo)
+    # priorité au nom_rune, repli sur display/code/nom et sur le suffixe.
     by_suffix = {}
     for gid, nom in rune_items:
         suf = _norm(re.sub(r"^\s*rune\s+", "", nom, flags=re.I))
         by_suffix.setdefault(suf, (gid, nom))
 
-    # Appariement code → GID via le display / nom de la rune
     code2gid = {}
     matched_names = set()
     for code, info in br.RUNES.items():
-        candidates = {_norm(info["display"]), _norm(code), _norm(info["nom"])}
-        hit = next((by_suffix[c] for c in candidates if c in by_suffix), None)
+        nom_rune = info.get("nom_rune", "")
+        hit = by_name.get(_norm(nom_rune)) if nom_rune else None
+        if not hit:
+            candidates = {_norm(info["display"]), _norm(code), _norm(info["nom"])}
+            hit = next((by_suffix[c] for c in candidates if c in by_suffix), None)
         if hit:
             code2gid[code] = hit[0]
             matched_names.add(hit[1])

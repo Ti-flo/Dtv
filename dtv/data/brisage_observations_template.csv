@@ -1,0 +1,9 @@
+GID,coefficient_reel,dernier_brisage
+# Observations de brisage relevées EN JEU (le coeff réel n'est connu qu'après brisage).
+# Une ligne par item observé. Copie ce template en brisage_observations.csv et remplis-le.
+#   GID               : GID de l'item (colonne GID du catalogue scrapé)
+#   coefficient_reel  : coefficient de brisage observé en jeu, en %% (ex 280 pour 280%%)
+#   dernier_brisage   : date de l'observation (AAAA-MM-JJ) — plus c'est récent, plus le coeff est fiable
+# Exemple (à supprimer) :
+# 2424,280,2026-06-27
+# 2425,45,2026-06-20

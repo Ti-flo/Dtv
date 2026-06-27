@@ -174,6 +174,13 @@ python -m dtv.scripts.build_rune_gids --catalog "DofusToolsFlo\DofScraper\DofusS
 
 # 2) classement avec prix HDV live (coût items + prix runes via GID) + export
 python -m dtv.scripts.brisage --catalog "DofusToolsFlo\DofScraper\DofusScrapper\DofusScrapper\equipements_dofus_touch_full.xlsx" --avg-prices data\raw\avgprices_AAAAMMJJ.csv --rune-gids dtv\data\rune_gids.json --top 100 --out top_brisage.xlsx
+
+# 3) avec coeff supposé (ex 250%) trié par bénéfice
+python -m dtv.scripts.brisage --catalog "...\equipements_dofus_touch_full.xlsx" --avg-prices data\raw\avgprices_AAAAMMJJ.csv --rune-gids dtv\data\rune_gids.json --coeff 250 --sort benefice
+
+# 4) avec les coeffs réels observés en jeu (colonnes Coeff Réel + Dernier Brisage)
+#    copier dtv\data\brisage_observations_template.csv -> brisage_observations.csv et remplir
+python -m dtv.scripts.brisage --catalog "...\equipements_dofus_touch_full.xlsx" --avg-prices data\raw\avgprices_AAAAMMJJ.csv --rune-gids dtv\data\rune_gids.json --observations brisage_observations.csv
 ```
 
 ---
