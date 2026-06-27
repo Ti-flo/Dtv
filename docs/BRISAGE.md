@@ -48,31 +48,41 @@ Exemples vérifiés :
 
 ### Validation contre des brisages Dofus Touch réels (captures Flo)
 
-Confrontée à de **vraies captures du Concasseur Dofus Touch** (coefficient + runes
-obtenues affichés par item). **Dofus Touch affiche les runes en unités SIMPLES**
-(grandes quantités, ex 99, 837, 1211) → la formule s'applique **directement, sans
-conversion de palier** :
+Confrontée à ~20 **vraies captures du Concasseur Dofus Touch** (coefficient + runes
+par item). **Dofus Touch affiche les runes en unités SIMPLES** (grandes quantités,
+ex 99, 837) → la formule s'applique **directement, sans conversion de palier**.
 
-| Item (non magé) | Niv | Coeff | Prédit (runes simples) | Observé |
+**✅ Concordance nette** (armures + armes bien fournies en stats) :
+
+| Item | Niv | Coeff | Prédit (simple) | Observé |
 |---|---|---|---|---|
+| Geta Terrdala | 76 | 97 % | 19.8, 6.2, 3.5, 3.5 | 23, 7, 3, 3 |
+| Tongues Wabbits | 60 | 95 % | 24, 6.1, 4.2, 4.2, 2.4 | 22, 7, 5, 4, 3 |
+| Pelle Sécutrice | 60 | 39 % | 12.2, 2.8 | 12.6, 3.2 |
+| Baguette des Cieux | 51 | 66 % | 12.6, 4.1 | 13, 5 |
 | Hache du Mulou | 55 | 439 % | 90, 36, 31, 15, 15 | 99, 36, 30, 18, 15 |
 | Hache de Brèche | 54 | 593 % | 88, 88, 16, 12, 12 | 83, 76, 17, 14, 11 |
 
-→ **Concordance directe** (les écarts sont dans la randomness du brisage : chaque
-cast tire les stats dans leur fourchette ; cf. Cerberus brisé 8× → rune verte de 34
-à 63). Formule confirmée sur données réelles Dofus Touch.
+Les écarts = randomness du brisage (chaque cast tire les stats dans leur fourchette ;
+Pelle à Thart' brisée 8× → rune de 11 à 25). Formule confirmée sur de nombreux items.
 
-⚠️ **Forgemagie** : un item **magé** rend **plus** de runes que la prédiction (ses
-stats réelles dépassent la fourchette de base du catalogue). Ex Amulette Héroclite
-(magée) : observé ≈ 3× le prédit sur les stats majeures (vi/fo/sa surmagées). Notre
-calcul = **cas de base (non magé)** → conservateur. Affiner avec les stats réelles
-= piste (cf. observations).
+**⚠️ Anomalie — certaines armes BAS niveau** rendent 3–5× plus que prédit :
+Marteau du Boufcoul (niv 41, ×4.5), Cerberus (niv 16, ×10), Bâton Feuillu (niv 14),
+Pelle à Thart' (niv 24, ×3). Sur le Marteau (8 brisages moyennés) le facteur est
+**uniforme sur ses 4 runes** (Vi ×4.2, %Rés ×4.6, Invo ×4.5) → ce n'est **pas du
+maging** (qui boosterait des stats précises) mais un **facteur multiplicatif** que
+la formule rate. Le facteur varie par item → ni constante, ni simple décalage de
+niveau. **Cause à élucider** (cf. TODO « formule brisage des armes » dans KNOWLEDGE).
+La formule reste **validée pour les armures et les armes correctement fournies** ;
+pour les armes concernées elle **sous-estime** (donc conservateur, pas de faux positif).
 
-> Note paliers : le brisage Dofus Touch rend des **runes simples** (= sortie de la
-> formule). On les **concasse soi-même** ensuite (3→1) en Pa/Ra. La valorisation
-> utilise donc le prix de la rune simple ; vendre en palier supérieur = optimisation
-> future (cf. § Paliers). ⚠️ Le 1ᵉʳ screenshot (Dofus 3 PC, runes pré-agrégées en
-> Ra → ÷9) ne s'applique PAS à Dofus Touch.
+> **Forgemagie** : un item magé rend plus que la prédiction de base (stats réelles >
+> fourchette catalogue). Ex Amulette Héroclite (magée) : ~3× sur vi/fo/sa surmagées.
+> Notre calcul = cas de base → conservateur.
+
+> Note paliers : Dofus Touch rend des **runes simples** (= sortie de la formule) ;
+> on les concasse soi-même (3→1) en Pa/Ra. ⚠️ Le 1ᵉʳ screenshot (Dofus 3 PC, runes
+> agrégées en Ra → ÷9) ne s'applique PAS à Dofus Touch.
 
 ---
 
