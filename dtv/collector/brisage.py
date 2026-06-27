@@ -31,6 +31,7 @@ est dans dtv/scripts/brisage.py.
 """
 import json
 import re
+import unicodedata
 from pathlib import Path
 from typing import Optional
 
@@ -117,6 +118,78 @@ def parse_effects(effets: str) -> list[dict]:
             "brisable": bool(code) and valeur > 0,
         })
     return out
+
+
+# ── Recette de craft → coût ─────────────────────────────────────────────────
+# Une entrée de recette = « 2 Frêne » | « x2 Bois de Frêne » | « 10 Fleur de Lin ».
+# La quantité est en tête (parfois préfixée/suffixée de « x ») ; le reste = nom.
+_RECIPE_ITEM_RE = re.compile(r"^\s*(?:x\s*)?(\d+)\s*(?:x\s*)?(.+?)\s*$", re.I)
+
+
+def normalize_name(s: str) -> str:
+    """Nom d'item canonique pour l'appariement : sans accents, minuscule, espaces collapsés."""
+    s = unicodedata.normalize("NFKD", str(s)).encode("ascii", "ignore").decode()
+    return re.sub(r"\s+", " ", s).strip().lower()
+
+
+def parse_recipe(recette: str) -> list[tuple[int, str]]:
+    """
+    « 2 Frêne, 1 Bois de Frêne » → [(2, 'Frêne'), (1, 'Bois de Frêne')].
+
+    Les ingrédients sont séparés par des virgules ; chaque entrée commence par
+    la quantité. Retourne [] si pas de recette (item non craftable).
+    """
+    out = []
+    if not recette or not isinstance(recette, str):
+        return out
+    for raw in recette.split(","):
+        raw = raw.strip()
+        if not raw:
+            continue
+        m = _RECIPE_ITEM_RE.match(raw)
+        if not m:
+            continue
+        qty = int(m.group(1))
+        name = m.group(2).strip()
+        if name:
+            out.append((qty, name))
+    return out
+
+
+def craft_cost(recette: str, name_prices: dict[str, float]) -> Optional[dict]:
+    """
+    Coût de craft d'un item = Σ(quantité × prix moyen de l'ingrédient).
+
+    Args:
+        recette     : chaîne « 2 Frêne, 1 Bois … » du catalogue scrapé
+        name_prices : {nom normalisé d'ingrédient → prix moyen}
+
+    Retourne None si l'item n'a pas de recette. Sinon un dict :
+        cost      : coût total des ingrédients trouvés
+        complete  : True si TOUS les ingrédients ont un prix (coût fiable)
+        missing   : noms des ingrédients sans prix (coût sous-estimé si présents)
+        detail    : [(qty, nom, prix_unitaire ou None), …]
+    """
+    items = parse_recipe(recette)
+    if not items:
+        return None
+    total = 0.0
+    missing = []
+    detail = []
+    for qty, name in items:
+        price = name_prices.get(normalize_name(name))
+        if price is None:
+            missing.append(name)
+            detail.append((qty, name, None))
+        else:
+            total += qty * float(price)
+            detail.append((qty, name, float(price)))
+    return {
+        "cost": total,
+        "complete": not missing,
+        "missing": missing,
+        "detail": detail,
+    }
 
 
 # ── Formule de brisage ──────────────────────────────────────────────────────

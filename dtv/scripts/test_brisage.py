@@ -70,6 +70,25 @@ def test_dedup():
     print("✅ déduplication lignes identiques OK")
 
 
+def test_recette_craft():
+    # parsing recette : « qté nom », séparées par virgules, avec/sans préfixe « x »
+    assert b.parse_recipe("2 Frêne, 1 Bois de Frêne, 10 Fleur de Lin") == [
+        (2, "Frêne"), (1, "Bois de Frêne"), (10, "Fleur de Lin")]
+    assert b.parse_recipe("x2 Frêne, 3x Sel") == [(2, "Frêne"), (3, "Sel")]
+    assert b.parse_recipe("") == []
+    assert b.parse_recipe(None) == []
+    # coût de craft = Σ(qté × prix), insensible aux accents/casse
+    np = {b.normalize_name("Frêne"): 5000, b.normalize_name("BOIS DE FRENE"): 20000}
+    cc = b.craft_cost("2 frene, 1 Bois de Frêne", np)
+    assert cc["cost"] == 2 * 5000 + 1 * 20000 and cc["complete"]
+    # ingrédient sans prix → coût partiel + signalé incomplet
+    cc2 = b.craft_cost("2 Frêne, 1 Truc Inconnu", np)
+    assert cc2["cost"] == 10000 and not cc2["complete"] and cc2["missing"] == ["Truc Inconnu"]
+    # pas de recette → None (item non craftable)
+    assert b.craft_cost("", np) is None
+    print("✅ recette + coût de craft (parsing, accents, manquants) OK")
+
+
 def test_rentabilite():
     eff = "351 à 400 Vitalité | 1 PA"
     res = b.profitability(eff, 200, cout=100000)
@@ -132,6 +151,7 @@ if __name__ == "__main__":
     test_formule()
     test_parsing()
     test_dedup()
+    test_recette_craft()
     test_rentabilite()
     test_coefficient()
     test_robustesse_cli()

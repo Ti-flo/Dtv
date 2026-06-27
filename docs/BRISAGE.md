@@ -14,7 +14,26 @@ Briser un item le transforme en **runes** selon ses **effets**. Chaque effet
 - le **niveau** de l'item
 - le **poids** de la rune (les runes lourdes — PA, Tacle — sont rares/chères)
 
-Rentabilité = `Σ(quantité_rune × prix_rune) − prix_achat_item`.
+Rentabilité = `Σ(quantité_rune × prix_rune) − coût_acquisition_item`.
+
+### ⚠️ Le coût d'acquisition = COÛT DE CRAFT, pas le prix moyen HDV
+
+Le `avg_price_x1` du serveur (ObjectAveragePrices) est une **moyenne pondérée des
+ventes récentes**, pas le coût réel pour se procurer l'item. Pour un item bas
+niveau peu tradé, cette moyenne est **périmée et fausse** (ex : Bâton de Boisaille
+avg=10 kamas, mais **craft = 75 kamas**). Utiliser l'avgprice comme coût gonfle
+artificiellement le haut du classement de faux positifs (items niv 2-8 « rentables »
+à 13×).
+
+Le vrai coût pour « **fabriquer puis briser** » = **somme des ingrédients de la
+recette × leur prix moyen** :
+```
+coût_craft = Σ (quantité_ingrédient × prix_moyen_ingrédient)
+```
+- Recette = colonne `Recette` du catalogue scrapé (« 2 Frêne, 1 Bois de Frêne… »).
+- Prix ingrédient = avgprice du GID de l'ingrédient (nom → GID via catalogues).
+- CLI : `--craft` bascule le coût sur le craft ; `--explain "<nom>"` détaille le calcul.
+- Items sans recette → non craftables → exclus du classement par coût.
 
 ---
 
@@ -260,5 +279,9 @@ DTV automatise **les deux** :
   affiner (le serveur le fait varier 1 %–4000 %).
 - **Paliers de runes** : valuation par palier (vendre en Pa/Ga si plus rentable)
   pas encore faite — nécessite les prix Ra/Pa/Ga par stat. `giant_only` déjà marqué.
-- Le coût « craft » (fabriquer puis briser) n'est pas encore croisé — possible via
-  la colonne `Recette` + prix des ingrédients (prochaine étape).
+- ✅ Le coût « craft » (fabriquer puis briser) est branché : `--craft` calcule
+  `Σ(ingrédient × prix moyen)` depuis la colonne `Recette` + l'avgprice des
+  ingrédients. `--explain "<nom>"` détaille le calcul item par item. C'est le
+  **bon coût d'acquisition** (l'avgprice de l'item fini est périmé/faux pour le bas
+  niveau). Limite : recettes à un niveau (un ingrédient lui-même craftable est
+  valué à son avgprice, pas à son sous-craft).

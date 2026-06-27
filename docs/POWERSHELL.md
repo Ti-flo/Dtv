@@ -212,6 +212,13 @@ python -m dtv.scripts.build_rune_gids --catalog "DofusToolsFlo\DofScraper\DofusS
 # 2) classement avec prix HDV live (coût items + prix runes via GID) + export
 python -m dtv.scripts.brisage --catalog "DofusToolsFlo\DofScraper\DofusScrapper\DofusScrapper\equipements_dofus_touch_full.xlsx" --avg-prices data\raw\avgprices_AAAAMMJJ.csv --rune-gids dtv\data\rune_gids.json --top 100 --out top_brisage.xlsx
 
+# 2-bis) COÛT DE CRAFT (recommandé) : coût = Σ ingrédients × prix moyen, pas le
+#        prix HDV de l'item fini. C'est le vrai coût pour « fabriquer puis briser ».
+python -m dtv.scripts.brisage --catalog "DofusToolsFlo\DofScraper\DofusScrapper\DofusScrapper\equipements_dofus_touch_full.xlsx" --avg-prices data\raw\avgprices_AAAAMMJJ.csv --rune-gids dtv\data\rune_gids.json --craft --top 100 --out top_brisage_craft.xlsx
+
+# 2-ter) DIAGNOSTIC coût de craft d'un item (détail ingrédient par ingrédient)
+python -m dtv.scripts.brisage --catalog "DofusToolsFlo\DofScraper\DofusScrapper\DofusScrapper\equipements_dofus_touch_full.xlsx" --avg-prices data\raw\avgprices_AAAAMMJJ.csv --explain "Bâton de Boisaille"
+
 # 3) avec coeff supposé (ex 250%) trié par bénéfice
 python -m dtv.scripts.brisage --catalog "...\equipements_dofus_touch_full.xlsx" --avg-prices data\raw\avgprices_AAAAMMJJ.csv --rune-gids dtv\data\rune_gids.json --coeff 250 --sort benefice
 

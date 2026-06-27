@@ -115,6 +115,68 @@ def rune_prices_from_avg(avg: dict[int, float], rune_gids_path: Path) -> dict[st
     return out
 
 
+# Catalogues d'où viennent les noms d'ingrédients (à côté du catalogue principal).
+_INGREDIENT_CATALOGS = (
+    "ressources_dofus_touch_full.json",
+    "consommables_dofus_touch_full.json",
+    "equipements_dofus_touch_full.json",
+)
+
+
+def build_name_prices(item_prices: dict[int, float], catalog_dir: Path) -> dict[str, float]:
+    """
+    {nom d'ingrédient normalisé → prix moyen} pour chiffrer les recettes de craft.
+
+    Croise les catalogues scrapers (Nom_FR → GID) avec l'avgprices (GID → prix).
+    Indépendant de la colonne `nom` de l'avgprices → marche aussi sur les anciens
+    snapshots. Les catalogues sont cherchés à côté du catalogue principal.
+    """
+    name_prices: dict[str, float] = {}
+    for fname in _INGREDIENT_CATALOGS:
+        path = catalog_dir / fname
+        if not path.exists():
+            continue
+        try:
+            with open(path, encoding="utf-8") as f:
+                items = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            continue
+        for it in items:
+            gid = _to_gid(it.get("GID"))
+            nom = it.get("Nom_FR")
+            if gid is None or not nom or gid not in item_prices:
+                continue
+            name_prices.setdefault(br.normalize_name(nom), item_prices[gid])
+    return name_prices
+
+
+def explain_craft(catalog: list[dict], name_prices: dict[str, float], query: str):
+    """Affiche le détail du coût de craft d'un item (recherche par nom)."""
+    q = br.normalize_name(query)
+    matches = [it for it in catalog
+               if q in br.normalize_name(it.get("Nom_FR", ""))]
+    if not matches:
+        print(f"Aucun item ne correspond à « {query} »")
+        return
+    exact = [it for it in matches if br.normalize_name(it.get("Nom_FR", "")) == q]
+    shown = exact or matches[:5]
+    for it in shown:
+        nom = it.get("Nom_FR", "?")
+        recette = it.get("Recette") or ""
+        cc = br.craft_cost(recette, name_prices)
+        print(f"\n{nom}  (GID {it.get('GID')}, niv {it.get('Niveau')})")
+        if cc is None:
+            print("  pas de recette (item non craftable)")
+            continue
+        for qty, ing, prix in cc["detail"]:
+            if prix is None:
+                print(f"  {qty:>3} x {ing:30s}  prix INCONNU")
+            else:
+                print(f"  {qty:>3} x {ing:30s}  {prix:>10,.0f}  = {qty * prix:>12,.0f}")
+        flag = "" if cc["complete"] else f"  /!\\ {len(cc['missing'])} ingredient(s) sans prix"
+        print(f"  {'COUT CRAFT TOTAL':>36s}  = {cc['cost']:>12,.0f}{flag}")
+
+
 def load_observations(path: Path) -> dict[int, dict]:
     """
     brisage_observations.csv (GID,coefficient_reel,dernier_brisage) → {gid: {...}}.
@@ -157,6 +219,13 @@ def main():
     ap.add_argument("--top", type=int, default=50, help="nombre de lignes affichées (def 50)")
     ap.add_argument("--min-rentabilite", type=float, default=0.0,
                     help="filtre : rentabilité revenu/coût minimale")
+    ap.add_argument("--craft", action="store_true",
+                    help="coût = COÛT DE CRAFT (Σ ingrédients × prix moyen) au lieu du prix "
+                         "HDV de l'item. C'est le vrai coût pour 'fabriquer puis briser'. "
+                         "Nécessite --avg-prices (prix des ingrédients).")
+    ap.add_argument("--explain", metavar="NOM",
+                    help="diagnostic : affiche le détail du coût de craft d'un item (par nom) "
+                         "puis quitte. Ex : --explain \"Bâton de Boisaille\"")
     ap.add_argument("--out", type=Path, help="export CSV ou XLSX du classement complet")
     args = ap.parse_args()
 
@@ -168,6 +237,20 @@ def main():
     if args.avg_prices:
         item_prices = load_avg_prices(args.avg_prices)
         print(f"💰 {len(item_prices)} prix HDV chargés (coût des items)")
+
+    # Prix des ingrédients (par nom) pour le coût de craft
+    name_prices = {}
+    if args.craft or args.explain:
+        if not item_prices:
+            print("⚠️  --craft/--explain nécessite --avg-prices (prix des ingrédients). Abandon.")
+            sys.exit(1)
+        name_prices = build_name_prices(item_prices, args.catalog.parent)
+        print(f"🔨 {len(name_prices)} prix d'ingrédients chargés (pour le coût de craft)")
+
+    # Diagnostic coût de craft d'un item → affiche et quitte
+    if args.explain:
+        explain_craft(catalog, name_prices, args.explain)
+        return
 
     # Prix des runes (revenu)
     rune_prices = None
@@ -194,7 +277,17 @@ def main():
             continue
         niveau = _to_level(it.get("Niveau"))
         gid = _to_gid(it.get("GID"))
-        cout = item_prices.get(gid) if (gid is not None and item_prices) else None
+        # Coût : craft (Σ ingrédients) si --craft, sinon prix HDV de l'item
+        craft_missing = None
+        if args.craft:
+            cc = br.craft_cost(it.get("Recette") or "", name_prices)
+            if cc is None:
+                cout = None                 # pas de recette → item non craftable
+            else:
+                cout = cc["cost"]
+                craft_missing = len(cc["missing"])
+        else:
+            cout = item_prices.get(gid) if (gid is not None and item_prices) else None
         obs = observations.get(gid) if (gid is not None and observations) else None
         # coeff réel observé par item s'il existe, sinon le coeff global (--coeff)
         coeff_item = obs["coeff"] if (obs and obs["coeff"]) else args.coeff
@@ -208,7 +301,8 @@ def main():
             "Niveau": int(niveau),
             "Revenu_coeff100": res["revenu_coeff100"],
             "Revenu_brisage": res["revenu"],     # au coeff appliqué (réel ou --coeff)
-            "Cout_HDV": res["cout"],
+            "Cout_HDV": res["cout"],             # = coût de craft si --craft
+            "Craft_Manquants": craft_missing,    # nb d'ingrédients sans prix (None hors --craft)
             "Coeff_Min": res["coeff_min"],       # coeff % minimal pour être rentable
             "Coeff_Reel": obs["coeff"] if obs else None,        # observé en jeu
             "Dernier_Brisage": obs["date"] if obs else None,    # date observation
@@ -242,7 +336,8 @@ def main():
     print(f"\n🏆 Top {min(args.top, len(rows))} / {len(rows)} items — trié par {sort_label}")
     print(f"   (Coeff Min = coefficient serveur minimal pour rentrer dans ses frais ; "
           f"plus bas = plus sûr)\n")
-    header = (f"  {'Nom':26s} {'Niv':>3s} {'Rev@100%':>10s} {'Coût':>10s} "
+    cost_label = "Craft" if args.craft else "Coût"
+    header = (f"  {'Nom':26s} {'Niv':>3s} {'Rev@100%':>10s} {cost_label:>10s} "
               f"{'CoeffMin':>9s} {'Bénéf':>11s} {'Rent':>6s}")
     if show_obs:
         header += f" {'CoeffRéel':>9s} {'DernBris':>10s}"
