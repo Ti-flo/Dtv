@@ -17,22 +17,16 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-SCRAPER_DIR = (
-    Path(__file__).parent.parent.parent
-    / "DofusToolsFlo" / "DofScraper" / "DofusScrapper" / "DofusScrapper"
-)
-CATALOG_NAMES = [
-    "equipements_dofus_touch_full.json",
-    "ressources_dofus_touch_full.json",
-    "consommables_dofus_touch_full.json",
-]
+from dtv import config
+
+CATALOG_NAMES = list(config.CATALOG_FILES.values())
 
 
-def _build_name_map() -> dict[int, tuple[str, str]]:
+def _build_name_map(scraper_dir: Path) -> dict[int, tuple[str, str]]:
     """GID -> (Nom_FR, Type) depuis les 3 catalogues."""
     name_map: dict[int, tuple[str, str]] = {}
     for fname in CATALOG_NAMES:
-        path = SCRAPER_DIR / fname
+        path = scraper_dir / fname
         if not path.exists():
             print(f"  [!] catalogue absent : {path.name}")
             continue
@@ -57,12 +51,9 @@ def main():
                     help="avgprices_*.csv (timestamp,item_gid,avg_price_x1,...)")
     ap.add_argument("--out", type=Path,
                     help="Fichier de sortie .xlsx ou .csv (défaut : même dossier, _named.xlsx)")
-    ap.add_argument("--scraper-dir", type=Path, default=SCRAPER_DIR,
+    ap.add_argument("--scraper-dir", type=Path, default=config.scraper_dir(),
                     help="Dossier contenant les catalogues JSON des scrapers")
     args = ap.parse_args()
-
-    global SCRAPER_DIR
-    SCRAPER_DIR = args.scraper_dir
 
     if not args.avgprices.exists():
         print(f"Fichier introuvable : {args.avgprices}")
@@ -72,8 +63,8 @@ def main():
         args.avgprices.stem + "_named.xlsx"
     )
 
-    print(f"Chargement des catalogues depuis {SCRAPER_DIR}...")
-    name_map = _build_name_map()
+    print(f"Chargement des catalogues depuis {args.scraper_dir}...")
+    name_map = _build_name_map(args.scraper_dir)
     print(f"  {len(name_map)} items connus")
 
     rows = []
