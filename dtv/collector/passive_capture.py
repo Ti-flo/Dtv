@@ -101,7 +101,7 @@ class PassiveCollector:
             if gid is not None:
                 with self._lock:
                     self._pending_gids.append(gid)
-                log.info("→ you opened item GID=%s (type=%s)", gid, self._current_type)
+                log.info(">> you opened item GID=%s (type=%s)", gid, self._current_type)
 
     # ------------------------------------------------------------------ #
     # Incoming frames (the data)                                         #
@@ -158,7 +158,7 @@ class PassiveCollector:
 
         self._append_hdv_row(record)
         self.items_captured += 1
-        log.info("✓ recorded item GID=%s (%d offers) — prix_x1=%s",
+        log.info("OK recorded item GID=%s (%d offers) - prix_x1=%s",
                  gid, len(offers), record.get("prix_x1"))
 
     # ------------------------------------------------------------------ #
@@ -200,4 +200,4 @@ class PassiveCollector:
             for gid, price in zip(ids, prices):
                 writer.writerow([now, gid, price, self._account])
         self.snapshots_captured += 1
-        log.info("✓ average-price snapshot saved: %d items → %s", len(ids), path.name)
+        log.info("OK average-price snapshot saved: %d items -> %s", len(ids), path.name)
