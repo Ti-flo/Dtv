@@ -111,14 +111,15 @@ python -m dtv.scripts.capture_phone --no-adb --port 9222 --account jetable
 ```powershell
 cd "C:\Users\GAMING3\Desktop\dtv"
 
-# Lister les fichiers de prix
+# Lister les fichiers de prix capturés
 ls data\raw\avgprices_*.csv
 
-# Diagnostic : combien de prix > 1 kama ?
-python -c "import csv; rows=list(csv.DictReader(open('data/raw/avgprices_XXXXXX.csv'))); v=[int(r['avg_price_x1']) for r in rows]; print('total', len(v), '| >1:', sum(x>1 for x in v), '| max', max(v), '| GID468=', next((r['avg_price_x1'] for r in rows if r['item_gid']=='468'), 'absent'))"
+# Enrichir un snapshot avec les noms d'items -> XLSX lisible (Nom + Type + Prix)
+python -m dtv.scripts.enrich_avgprices --avgprices data\raw\avgprices_XXXXXX.csv
+# Produit : data\raw\avgprices_XXXXXX_named.xlsx  (trié par prix décroissant)
 
-# Voir les prix dans le dashboard
-python -m dtv.scripts.analyze --avg
+# Avec chemin de sortie explicite
+python -m dtv.scripts.enrich_avgprices --avgprices data\raw\avgprices_XXXXXX.csv --out data\raw\prix_nommes.xlsx
 ```
 
 ---
