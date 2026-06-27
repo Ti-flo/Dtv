@@ -121,8 +121,12 @@ Passé via `--observations`, le CLI :
 - **utilise le coeff réel par item** (au lieu de `--coeff`) pour Revenu/Bénéfice ;
 - la **date** dit si le coeff est encore fiable (le coeff dérive à chaque brisage).
 
-> 🔜 **À terme, relevé automatiquement depuis le serveur** (comme les prix) — voir
-> la TODO « auto-collecte coeff » dans KNOWLEDGE.md. Pour l'instant rempli à la main.
+> 🔜 **À terme, relevé automatiquement via CDP au moment du brisage** : le panneau de
+> brisage affiche, par item, le coefficient + les runes obtenues + une « valeur estimée »
+> → le client reçoit déjà tout ça dans un message WS. En le captant (comme la capture
+> passive des prix), `coefficient_reel` + `dernier_brisage` + runes réelles se
+> rempliront seuls **et** valideront la formule. Voir TODO dans KNOWLEDGE.md. Pour
+> l'instant rempli à la main.
 
 ---
 
