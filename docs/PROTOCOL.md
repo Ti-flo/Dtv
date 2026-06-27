@@ -293,6 +293,64 @@ N types interrogés.
 
 ---
 
+## 5-bis. Brisage (Concasseur — recyclage runique) ⭐ CONFIRMÉ (dump CDP 27/06)
+
+Le brisage passe par la **machinerie d'échange « craft »** (`skillId 181` = recyclage
+runique). Séquence confirmée sur un dump `ws_raw` réel (brisage d'un arc à coeff 8 %) :
+
+```
+→ sendMessage:NpcGenericActionRequestMessage           (parler au PNJ Concasseur)
+← ExchangeStartOkCraftWithInformationMessage   {nbCase:8, skillId:181}   ← PAS de coeff ici
+→ sendMessage:ExchangeObjectMoveMessage   {objectUID:<uid>, quantity:1}  ← poser l'item
+← ExchangeObjectAddedMessage   {object:{objectGID:<gid>, effects:[…], objectUID:<uid>}}
+→ sendMessage:ExchangeReadyMessage   {ready:true, step:2}                ← valider le brisage
+← ExchangeObjectRemovedMessage   {objectUID:<uid>}                        ← item consommé
+← ExchangeCraftResultRunicRecyclingMessage   {…}                         ← ⭐ LE RÉSULTAT
+```
+
+### `ExchangeCraftResultRunicRecyclingMessage` — le message clé
+
+```json
+{
+  "_messageType": "ExchangeCraftResultRunicRecyclingMessage",
+  "craftResult": 1,
+  "recyclingResults": [
+    {
+      "_type": "ObjectRuneRecyclingResult",
+      "objectUID": 316860449,
+      "objectGID": 829,            // ← item brisé (GID)
+      "quantity": 1,
+      "resultObjects": [],         // ← runes obtenues (ObjectItem: objectGID rune + quantity) ; [] = aucune
+      "frequencyBonus": 8          // ← ⭐ LE COEFFICIENT DE BRISAGE RÉEL (en %)
+    }
+  ]
+}
+```
+
+- **`frequencyBonus` = le coefficient de brisage** (confirmé : Flo a vu « 8 % » en jeu,
+  le message porte `frequencyBonus: 8`). On ne le connaît bien qu'**après** le cast — le
+  message d'ouverture (`ExchangeStartOk…`) ne le contient pas.
+- **`resultObjects`** = les runes obtenues. **Vide** quand le coeff est trop bas pour
+  produire une rune (cas observé : arc bas niveau à 8 % → 0 rune). Sinon liste d'ObjectItem
+  `{objectGID: <GID rune>, quantity: N}` → traduits en code rune via `rune_gids.json`.
+- **`objectGID`** = l'item brisé → permet de remplir `coefficient_reel` par item.
+
+### Bruit autour de l'atelier (à ignorer)
+
+- `ExchangeCraftInformationObjectMessage` (vu 63×) = **brisages des AUTRES joueurs**
+  autour du Concasseur (`{craftResult, objectGenericId, playerId}` — pas de coeff, pas de
+  rune pour nous). À ne PAS confondre avec notre résultat.
+- `ChatServerWithObjectMessage` = liens d'items dans le chat (pubs d'autres joueurs).
+
+### Auto-collecte (implémentée)
+
+`PassiveCollector` parse `ExchangeCraftResultRunicRecyclingMessage` et écrit
+`data/raw/brisage_observations.csv` (`GID, coefficient_reel, dernier_brisage,
+runes_obtenues, nom, timestamp, compte`) → compatible `brisage.py --observations`.
+Le coeff réel + les runes obtenues se remplissent seuls et **valident la formule**.
+
+---
+
 ## 6. Types d'objets — ressources (superTypeId = 9)
 
 `window.gui.databases.ItemTypes` (console DevTools) → **64 types** de superType 9.

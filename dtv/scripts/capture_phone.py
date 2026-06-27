@@ -176,8 +176,9 @@ def main():
         log.info("Interrupted by user")
     finally:
         client.stop()
-        log.info("=== Capture ended: %d items, %d price snapshots captured ===",
-                 collector.items_captured, collector.snapshots_captured)
+        log.info("=== Capture ended: %d items, %d price snapshots, %d brisages captured ===",
+                 collector.items_captured, collector.snapshots_captured,
+                 collector.brisages_captured)
 
 
 if __name__ == "__main__":

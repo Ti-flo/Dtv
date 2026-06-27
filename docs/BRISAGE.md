@@ -183,12 +183,17 @@ Passé via `--observations`, le CLI :
 > rempliront seuls **et** valideront la formule. Voir TODO dans KNOWLEDGE.md. Pour
 > l'instant rempli à la main.
 >
-> **Indice protocole (HAR du 27/06)** : le brisage passe par la machinerie d'échange
-> « craft ». La télémétrie a fait fuiter `lastReceivedMessage: ExchangeCraftInformationObjectMessage`
-> → c'est le message reçu pendant un brisage. ⚠️ Un export HAR de DevTools **ne contient
-> PAS les frames WebSocket** : pour capter le payload (coeff + runes) il faut le **CDP**
-> (`capture_phone.py --dump-raw`, qui lit les frames WS en JSON), pas un HAR. Le dump
-> brut va dans `data/raw/ws_raw_<jour>.jsonl`.
+> **✅ Protocole RÉSOLU (dump CDP 27/06)** — le message résultat est
+> **`ExchangeCraftResultRunicRecyclingMessage`** :
+> - `frequencyBonus` = **coefficient de brisage réel** (confirmé : 8 % en jeu = `frequencyBonus:8`)
+> - `resultObjects` = runes obtenues (`{objectGID rune, quantity}` ; **vide** si coeff trop bas)
+> - `objectGID` = item brisé
+>
+> `PassiveCollector` le parse automatiquement et remplit `data/raw/brisage_observations.csv`
+> (`GID, coefficient_reel, dernier_brisage, runes_obtenues, nom, …`) → directement
+> exploitable par `brisage.py --observations`. Détail wire-level : `PROTOCOL.md` §5-bis.
+> ⚠️ Un export HAR DevTools ne capte PAS le WebSocket — c'est le dump CDP `--dump-raw`
+> qui a révélé le protocole.
 
 ---
 

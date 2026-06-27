@@ -65,6 +65,28 @@ def _load_name_map(scraper_dir: Path = _SCRAPER_DIR) -> dict[int, str]:
     return names
 
 
+_RUNE_GIDS_PATH = Path(__file__).parent.parent / "data" / "rune_gids.json"
+
+
+def _load_rune_gid_to_code(path: Path = _RUNE_GIDS_PATH) -> dict[int, str]:
+    """GID de rune -> code rune, en inversant rune_gids.json (code -> gid)."""
+    if not path.exists():
+        return {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            code2gid = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    out = {}
+    for code, gid in code2gid.items():
+        if gid is not None:
+            try:
+                out[int(gid)] = code
+            except (ValueError, TypeError):
+                continue
+    return out
+
+
 class PassiveCollector:
     """
     Feed it WebSocket frames via handle_frame(); it writes CSVs as data arrives.
@@ -81,6 +103,7 @@ class PassiveCollector:
         self._data_dir = data_dir or DATA_DIR
         self._data_dir.mkdir(parents=True, exist_ok=True)
         self._names = _load_name_map(scraper_dir or _SCRAPER_DIR)
+        self._rune_codes = _load_rune_gid_to_code()   # GID rune -> code (vi, fo, …)
 
         # HDV state, learned passively as the player interacts.
         self._quantities: list[int] = list(QUANTITY_TIERS)
@@ -91,6 +114,7 @@ class PassiveCollector:
         # Stats for the operator.
         self.items_captured = 0
         self.snapshots_captured = 0
+        self.brisages_captured = 0
 
         # One HDV CSV per day, appended to. Path + writer created lazily.
         self._hdv_csv_path: Optional[Path] = None
@@ -194,6 +218,11 @@ class PassiveCollector:
         elif mtype == "ExchangeTypesItemsExchangerDescriptionForUserMessage":
             self._record_item_offers(msg)
 
+        elif mtype == "ExchangeCraftResultRunicRecyclingMessage":
+            # Brisage : LE message résultat. frequencyBonus = coefficient réel,
+            # resultObjects = runes obtenues, objectGID = item brisé.
+            self._record_brisage(msg)
+
         elif mtype == "ExchangeLeaveMessage":
             log.debug("HDV closed (passive)")
 
@@ -224,6 +253,62 @@ class PassiveCollector:
         self.items_captured += 1
         log.info("OK recorded item GID=%s (%d offers) - prix_x1=%s",
                  gid, len(offers), record.get("prix_x1"))
+
+    def _record_brisage(self, msg: dict):
+        """
+        Auto-collecte du brisage depuis ExchangeCraftResultRunicRecyclingMessage.
+
+        Pour chaque item brisé :
+          - objectGID      = item brisé
+          - frequencyBonus = coefficient de brisage RÉEL (en %, ex 8) au moment du cast
+          - resultObjects  = runes obtenues (liste d'ObjectItem : objectGID rune + quantity)
+
+        Écrit dans data/raw/brisage_observations.csv (colonnes GID, coefficient_reel,
+        dernier_brisage compatibles avec brisage.py --observations ; + runes_obtenues
+        et nom pour valider la formule). resultObjects vide = aucune rune (coeff bas).
+        """
+        results = msg.get("recyclingResults") or []
+        if not results:
+            return
+        day = datetime.now().strftime("%Y-%m-%d")
+        ts = datetime.now().isoformat()
+        for r in results:
+            gid = r.get("objectGID")
+            coeff = r.get("frequencyBonus")
+            # Runes obtenues : code rune (via rune_gids) × quantité ; sinon GID brut.
+            runes = []
+            for ro in r.get("resultObjects") or []:
+                rgid = ro.get("objectGID")
+                qty = ro.get("quantity", 1)
+                code = self._rune_codes.get(rgid, f"gid{rgid}")
+                runes.append(f"{code}×{qty}")
+            runes_str = ", ".join(runes)
+            row = {
+                "GID": gid,
+                "coefficient_reel": coeff,
+                "dernier_brisage": day,
+                "runes_obtenues": runes_str,
+                "nom": self._names.get(gid, ""),
+                "timestamp": ts,
+                "compte_collecteur": self._account,
+            }
+            self._append_brisage_row(row)
+            self.brisages_captured += 1
+            log.info("BRISAGE GID=%s coeff=%s%% runes=[%s] (%s)",
+                     gid, coeff, runes_str or "aucune", row["nom"])
+
+    def _append_brisage_row(self, row: dict):
+        """Append une observation de brisage (header écrit une fois)."""
+        path = self._data_dir / "brisage_observations.csv"
+        fields = ["GID", "coefficient_reel", "dernier_brisage", "runes_obtenues",
+                  "nom", "timestamp", "compte_collecteur"]
+        is_new = not path.exists()
+        with self._lock:
+            with open(path, "a", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
+                if is_new:
+                    writer.writeheader()
+                writer.writerow(row)
 
     # ------------------------------------------------------------------ #
     # CSV writers                                                        #
