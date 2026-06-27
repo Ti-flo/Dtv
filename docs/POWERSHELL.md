@@ -24,6 +24,30 @@ git pull origin claude/dtv-project-assessment-7t8m3u
 
 ---
 
+## ⭐ Commande unique `dtv` (DofusTradingView)
+
+> Une seule surface pour tout. Tous les chemins (adb, catalogues, base) sont
+> résolus automatiquement. Architecture : `docs/ARCHITECTURE.md`.
+
+```powershell
+cd "C:\Users\GAMING3\Desktop\dtv"
+
+python -m dtv.scripts.dtv doctor                 # état config (adb/catalogues) + base
+python -m dtv.scripts.dtv capture --account jetable   # capture passive AUTO (adb+socket)
+python -m dtv.scripts.dtv ingest                 # historise les CSV dans la base SQLite
+python -m dtv.scripts.dtv prices "Frêne"         # dernier prix moyen des items « Frêne »
+python -m dtv.scripts.dtv history "Frêne"        # tendance du prix dans le temps
+python -m dtv.scripts.dtv movers --top 30        # plus fortes variations (2 derniers snapshots)
+python -m dtv.scripts.dtv brisage --craft --top 50    # classement brisage (avg-prices auto)
+python -m dtv.scripts.dtv craft "Bâton de Boisaille"  # détail coût de craft d'un item
+```
+
+> `dtv brisage` / `dtv craft` piochent tout seuls le dernier `avgprices_*.csv`,
+> le catalogue équipements et `rune_gids.json`. Ajoute des flags pour surcharger
+> (ex `--coeff 250 --sort benefice`).
+
+---
+
 ## Capture passive — UNE commande (auto)
 
 > **Résultat :** `avgprices_<timestamp>.csv` (~4906 items) + `hdv_passive_<date>.csv`

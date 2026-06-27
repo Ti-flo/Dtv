@@ -146,24 +146,36 @@ def cmd_capture(args):
     _delegate(capture_phone.main, ["capture_phone"] + args.rest)
 
 
-def cmd_brisage(args):
-    from dtv.scripts import brisage
-    argv = ["brisage"]
-    # Catalogue par défaut = équipements (résolu par config) si non fourni.
-    if "--catalog" not in args.rest:
+def _latest_avgprices() -> Path | None:
+    """Le snapshot avgprices le plus récent de data/raw (pour les prix HDV/runes)."""
+    files = sorted(Path(config.RAW_DIR).glob("avgprices_*.csv"))
+    return files[-1] if files else None
+
+
+def _brisage_autoargs(rest: list) -> list:
+    """Complète les args brisage manquants depuis la config (avg-prices, rune-gids)."""
+    argv = []
+    if "--catalog" not in rest:
         cat = config.catalog("equipements")
         if cat:
             argv += ["--catalog", str(cat)]
-    _delegate(brisage.main, argv + args.rest)
+    if "--avg-prices" not in rest:
+        avg = _latest_avgprices()
+        if avg:
+            argv += ["--avg-prices", str(avg)]
+    if "--rune-gids" not in rest and config.rune_gids_path().exists():
+        argv += ["--rune-gids", str(config.rune_gids_path())]
+    return argv
+
+
+def cmd_brisage(args):
+    from dtv.scripts import brisage
+    _delegate(brisage.main, ["brisage"] + _brisage_autoargs(args.rest) + args.rest)
 
 
 def cmd_craft(args):
     from dtv.scripts import brisage
-    cat = config.catalog("equipements")
-    argv = ["brisage", "--explain", args.item]
-    if cat:
-        argv += ["--catalog", str(cat)]
-    argv += args.rest
+    argv = ["brisage"] + _brisage_autoargs(args.rest) + ["--explain", args.item] + args.rest
     _delegate(brisage.main, argv)
 
 

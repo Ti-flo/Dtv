@@ -3,6 +3,7 @@
 > Fichier de référence à compléter au fil des sessions.
 > Toutes les découvertes confirmées par captures réseau, analyse de code ou tests.
 >
+> 🏛️ **Architecture d'ensemble (4 couches, commande unique `dtv`) : [`ARCHITECTURE.md`](ARCHITECTURE.md)**
 > 📖 **Référence wire-level complète du protocole : [`PROTOCOL.md`](PROTOCOL.md)**
 > (séquences exactes confirmées sur 3 captures HAR, catalogue des messages, formats).
 > 🛠️ **Exploitation (maintenance, MAJ, bans, codes de sortie) : [`OPERATIONS.md`](OPERATIONS.md)**
