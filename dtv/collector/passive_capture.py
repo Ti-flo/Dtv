@@ -31,6 +31,39 @@ from .hdv import _aggregate_offers, _get_session_name, QUANTITY_TIERS, DATA_DIR
 
 log = logging.getLogger(__name__)
 
+_SCRAPER_DIR = (
+    Path(__file__).parent.parent.parent
+    / "DofusToolsFlo" / "DofScraper" / "DofusScrapper" / "DofusScrapper"
+)
+_CATALOG_FILES = [
+    "equipements_dofus_touch_full.json",
+    "ressources_dofus_touch_full.json",
+    "consommables_dofus_touch_full.json",
+]
+
+
+def _load_name_map(scraper_dir: Path = _SCRAPER_DIR) -> dict[int, str]:
+    """GID -> Nom_FR depuis les 3 catalogues scrapers. Silencieux si absent."""
+    names: dict[int, str] = {}
+    for fname in _CATALOG_FILES:
+        path = scraper_dir / fname
+        if not path.exists():
+            continue
+        try:
+            with open(path, encoding="utf-8") as f:
+                items = json.load(f)
+            for it in items:
+                try:
+                    gid = int(float(it.get("GID") or 0))
+                except (ValueError, TypeError):
+                    continue
+                if gid and gid not in names:
+                    names[gid] = str(it.get("Nom_FR") or "")
+        except Exception as e:
+            log.debug("Catalogue %s non chargeable : %s", fname, e)
+    log.info("Noms charges : %d items depuis les catalogues", len(names))
+    return names
+
 
 class PassiveCollector:
     """
@@ -42,10 +75,12 @@ class PassiveCollector:
         cdp.run_forever()
     """
 
-    def __init__(self, account: str = "main", data_dir: Optional[Path] = None):
+    def __init__(self, account: str = "main", data_dir: Optional[Path] = None,
+                 scraper_dir: Optional[Path] = None):
         self._account = account
         self._data_dir = data_dir or DATA_DIR
         self._data_dir.mkdir(parents=True, exist_ok=True)
+        self._names = _load_name_map(scraper_dir or _SCRAPER_DIR)
 
         # HDV state, learned passively as the player interacts.
         self._quantities: list[int] = list(QUANTITY_TIERS)
@@ -155,6 +190,7 @@ class PassiveCollector:
         # category the player was browsing when we know it.
         if self._current_type is not None:
             record["hdv_type"] = self._current_type
+        record["nom"] = self._names.get(gid, "") if gid is not None else ""
 
         self._append_hdv_row(record)
         self.items_captured += 1
@@ -168,7 +204,7 @@ class PassiveCollector:
     def _hdv_fieldnames(self) -> list[str]:
         price_cols = [f"prix_x{q}" for q in self._quantities]
         return (
-            ["timestamp", "session", "item_gid", "hdv_type"]
+            ["timestamp", "session", "item_gid", "nom", "hdv_type"]
             + price_cols
             + ["nb_offres", "all_prices_x1", "compte_collecteur"]
         )
@@ -196,8 +232,8 @@ class PassiveCollector:
         now = datetime.now().isoformat()
         with open(path, "w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
-            writer.writerow(["timestamp", "item_gid", "avg_price_x1", "compte_collecteur"])
+            writer.writerow(["timestamp", "item_gid", "nom", "avg_price_x1", "compte_collecteur"])
             for gid, price in zip(ids, prices):
-                writer.writerow([now, gid, price, self._account])
+                writer.writerow([now, gid, self._names.get(gid, ""), price, self._account])
         self.snapshots_captured += 1
         log.info("OK average-price snapshot saved: %d items -> %s", len(ids), path.name)
