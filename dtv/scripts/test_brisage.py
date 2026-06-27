@@ -100,11 +100,30 @@ def test_coefficient():
     print("✅ coefficient de brisage + coeff_min (break-even) OK")
 
 
+def test_robustesse_cli():
+    # le CLI lit des xlsx arbitraires → pandas met NaN pour les cellules vides
+    from dtv.scripts import brisage as cli
+    nan = float("nan")
+    assert cli._to_level(nan) == 0.0          # niveau vide → 0, pas de NaN propagé
+    assert cli._to_level("Niv. 200") == 200.0
+    assert cli._to_level("") == 0.0
+    assert cli._to_gid(nan) is None           # GID vide → None, pas de crash int(NaN)
+    assert cli._to_gid(None) is None
+    assert cli._to_gid(16186.0) == 16186      # GID float pandas → int
+    assert cli._to_gid("123") == 123
+    print("✅ robustesse CLI (NaN niveau/GID, xlsx vides) OK")
+
+
 def test_reference_data():
-    assert len(b.RUNES) == 42, f"attendu 42 runes, trouvé {len(b.RUNES)}"
+    assert len(b.RUNES) == 43, f"attendu 43 runes, trouvé {len(b.RUNES)}"
     for special in ("vi", "ii", "pod"):
         assert b.RUNES[special]["special"], f"{special} doit être spéciale"
     assert b.RUNES["pa"]["poids"] == 100.0
+    # Dommages Neutre et Terre = runes distinctes en jeu (Do Neutre ≠ Do Terre)
+    assert b.effect_to_rune("Dommages Neutre") == "dnf"
+    assert b.effect_to_rune("Dommages Terre") == "dtf"
+    # PA/PM = géant uniquement
+    assert b.RUNES["pa"]["giant_only"] and b.RUNES["pm"]["giant_only"]
     print(f"✅ données de référence ({len(b.RUNES)} runes, mapping {len(b.EFFET_VERS_CODE)}) OK")
 
 
@@ -115,4 +134,5 @@ if __name__ == "__main__":
     test_dedup()
     test_rentabilite()
     test_coefficient()
+    test_robustesse_cli()
     print("\n🏁 Tous les tests brisage passent.")

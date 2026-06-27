@@ -950,6 +950,29 @@
           "mult_base": 9
         }
       ]
+    },
+    "dnf": {
+      "code": "dnf",
+      "nom": "Dommages Neutre",
+      "display": "Do Neutre",
+      "poids": 5.0,
+      "special": false,
+      "prix_exemple": 200,
+      "giant_only": false,
+      "concassable": true,
+      "nom_rune": "Rune Do Neutre",
+      "tiers": [
+        {
+          "tier": "simple",
+          "nom": "Rune Do Neutre",
+          "mult_base": 1
+        },
+        {
+          "tier": "pa",
+          "nom": "Rune Pa Do Neutre",
+          "mult_base": 3
+        }
+      ]
     }
   },
   "effet_vers_code": {
@@ -995,7 +1018,7 @@
     "Soins": "so",
     "Tacle": "ta",
     "Vitalité": "vi",
-    "Dommages Neutre": "dtf",
+    "Dommages Neutre": "dnf",
     "Coups Critiques": "cc",
     "PO": "po"
   },

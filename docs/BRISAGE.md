@@ -46,6 +46,29 @@ Exemples vérifiés :
 | ta | 16 | 150 | 4 | 24.25 |
 | pu | 63 | 200 | 2 | 126.5 |
 
+### Validation contre les données de jeu réelles (capture de brisage Flo)
+
+La formule a été confrontée à une **capture in-game réelle** (panneau de brisage,
+coefficients + runes obtenues affichés) :
+
+- **Rendement** : pour « Bottes du Meulou » (niv 131, coeff 179 %), la formule prédit
+  pod≈149, fo≈97, sa≈56, vi≈47, ii≈37 en **rune simple**. Le jeu affiche 16, 11, 6,
+  5, 4 — soit exactement **les prédictions ÷ 9** : le jeu montre les stats primaires
+  en palier **Ra** (×9), la formule donne l'équivalent simple. Concordance nette.
+- **Magnitude de valeur** : 5 items de la capture valorisés avec les prix exemple
+  donnent ~173 K/item ; le jeu estime ~211 K/item. Même ordre de grandeur (les prix
+  exemple sont périmés) → la **valorisation est cohérente** (prix exemple bien en
+  équivalent rune simple, pas Ra, sinon ×9 trop haut).
+- **Cas malus** : « Bottes de Satisfaction » (effets tous négatifs) → formule ≈ 0
+  rune, conforme au jeu.
+
+→ Formule **et** valorisation confirmées sur données réelles.
+
+> ⚠️ La formule renvoie les quantités en **rune simple** ; le jeu/marché les manipule
+> en paliers (Ra ×9, Pa ×3). La valorisation reste juste tant que les prix sont en
+> équivalent simple. La valuation par palier (vendre en Ra/Pa) viendra avec les prix
+> par palier — cf. § Paliers.
+
 ---
 
 ## Coefficient de brisage (taux serveur)
@@ -132,7 +155,7 @@ Passé via `--observations`, le CLI :
 
 ## Données de référence — `dtv/data/runes.json`
 
-42 runes. Pour chaque code : `nom` (effet canonique), `display` (nom RuneMaster),
+43 runes (les 42 de poids_runes + Do Neutre, distinct de Do Terre en jeu). Pour chaque code : `nom` (effet canonique), `display` (nom RuneMaster),
 `poids`, `special` (bool), `prix_exemple` (snapshot manuel RuneMaster).
 
 Plus `effet_vers_code` : mapping **nom d'effet → code rune**, dérivé en croisant
@@ -144,8 +167,9 @@ Codes notables : `vi`=Vitalité, `sa`=Sagesse, `fo`=Force, `in`=Intelligence,
 `ch`=Chance, `ag`=Agilité, `pu`=Puissance, `pp`=Prospection, `ii`=Initiative,
 `pa`=PA (Ga PA), `pm`=PM (Ga PM), `po`=Portée, `ta`=Tacle, `fu`=Fuite,
 `cc`=% Coups Critiques, `dmg`=Dommages, `so`=Soins, `ic`=Invocations.
-Dommages élém : `daf`/`def`/`dff`/`dtf` (Air/Eau/Feu/Terre, Neutre→dtf),
-`dc`=Do Critiques, `dp`=Do Poussée. Résistances % : `rap`/`rep`/`rfp`/`rtp`/`rnp`,
+Dommages élém : `daf`/`def`/`dff`/`dtf`/`dnf` (Air/Eau/Feu/Terre/Neutre — Do Neutre
+est une rune distincte de Do Terre en jeu), `dc`=Do Critiques, `dp`=Do Poussée.
+Résistances % : `rap`/`rep`/`rfp`/`rtp`/`rnp`,
 fixes : `ra`/`re`/`rf`/`rt`/`rn`, `rc`=Ré Cri, `rp`=Ré Pou.
 
 ---
@@ -154,7 +178,7 @@ fixes : `ra`/`re`/`rf`/`rt`/`rn`, `rc`=Ré Cri, `rp`=Ré Pou.
 
 | Fichier | Rôle |
 |---|---|
-| `dtv/data/runes.json` | 42 runes + mapping effet→code |
+| `dtv/data/runes.json` | 43 runes + mapping effet→code |
 | `dtv/collector/brisage.py` | moteur (parse effets, formule, rentabilité) — stdlib pur |
 | `dtv/scripts/brisage.py` | CLI : croise catalogue + prix → classement |
 | `dtv/scripts/build_rune_gids.py` | mappe code rune → GID (pour prix HDV live) |

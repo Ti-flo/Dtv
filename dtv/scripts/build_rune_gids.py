@@ -7,7 +7,7 @@ brisage utilise les vrais prix de runes du marché plutôt que les prix exemple.
 
 Les runes sont des ressources : leur fiche existe dans le catalogue
 ressources_dofus_touch_full. Ce script les y cherche (Type == « Rune » ou nom
-commençant par « Rune ») et tente de les apparier aux 42 codes via le nom.
+commençant par « Rune ») et tente de les apparier aux codes via le nom exact.
 
 Comme les noms d'items runes en jeu peuvent différer des libellés, le script :
   - écrit les correspondances trouvées
@@ -92,7 +92,7 @@ def main():
     with open(OUT_PATH, "w", encoding="utf-8") as f:
         json.dump(code2gid, f, ensure_ascii=False, indent=2)
 
-    print(f"✅ {n_ok}/42 runes appariées → {OUT_PATH}")
+    print(f"✅ {n_ok}/{len(br.RUNES)} runes appariées → {OUT_PATH}")
     missing = [c for c, v in code2gid.items() if v is None]
     if missing:
         print(f"\n⚠️  {len(missing)} runes NON appariées (à compléter à la main) :")

@@ -57,9 +57,21 @@ def load_catalog(path: Path) -> list[dict]:
 
 def _to_level(v) -> float:
     try:
-        return float(str(v).replace("Niv.", "").strip())
+        lvl = float(str(v).replace("Niv.", "").strip())
+        return 0.0 if lvl != lvl else lvl   # NaN (cellule xlsx vide) → 0
     except (ValueError, AttributeError):
         return 0.0
+
+
+def _to_gid(v):
+    """GID en int, ou None si absent/NaN (pandas met NaN pour les cellules vides)."""
+    if v is None:
+        return None
+    try:
+        g = int(float(v))
+        return g if g == g else None   # garde anti-NaN
+    except (ValueError, TypeError):
+        return None
 
 
 # ── Chargement des prix ─────────────────────────────────────────────────────
@@ -181,9 +193,9 @@ def main():
         if not isinstance(effets, str) or not effets.strip():
             continue
         niveau = _to_level(it.get("Niveau"))
-        gid = it.get("GID")
-        cout = item_prices.get(int(gid)) if (gid and item_prices) else None
-        obs = observations.get(int(gid)) if (gid and observations) else None
+        gid = _to_gid(it.get("GID"))
+        cout = item_prices.get(gid) if (gid is not None and item_prices) else None
+        obs = observations.get(gid) if (gid is not None and observations) else None
         # coeff réel observé par item s'il existe, sinon le coeff global (--coeff)
         coeff_item = obs["coeff"] if (obs and obs["coeff"]) else args.coeff
         res = br.profitability(effets, niveau, cout, rune_prices, coeff=coeff_item)
