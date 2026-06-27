@@ -18,6 +18,12 @@ secrets.py
 data/raw/*.csv
 data/processed/
 
+# SQLite warehouse (reconstructible via `dtv ingest`)
+data/dtv.db
+*.db
+*.sqlite
+*.sqlite3
+
 # IDE
 .vscode/
 .idea/
