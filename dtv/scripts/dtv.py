@@ -247,14 +247,27 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main():
-    parser = build_parser()
-    args, unknown = parser.parse_known_args()
-    # Subcommands with a `rest` field (brisage, craft) are passthroughs:
-    # unknown args (--craft, --top, etc.) belong to the delegate script.
-    if hasattr(args, "rest") and unknown:
-        args.rest = (args.rest or []) + unknown
-    elif unknown:
-        parser.error(f"unrecognized arguments: {' '.join(unknown)}")
+    # Passthrough subcommands bypass argparse entirely: everything after the
+    # subcommand name is forwarded verbatim to the delegate (brisage.main, etc.).
+    # parse_known_args() can't be used because it splits "--top 50" into two
+    # separate tokens landing in different buckets (unknown vs REMAINDER).
+    if len(sys.argv) >= 2 and sys.argv[1] in ("brisage", "craft"):
+        cmd, rest = sys.argv[1], sys.argv[2:]
+        if cmd == "brisage":
+            class _A:
+                pass
+            a = _A(); a.rest = rest
+            cmd_brisage(a)
+        else:  # craft
+            if not rest or rest[0].startswith("-"):
+                build_parser().parse_args([cmd, "--help"])
+            else:
+                class _A:
+                    pass
+                a = _A(); a.item = rest[0]; a.rest = rest[1:]
+                cmd_craft(a)
+        return
+    args = build_parser().parse_args()
     args.func(args)
 
 
