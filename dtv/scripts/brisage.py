@@ -42,7 +42,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
+from dtv import config
 from dtv.collector import brisage as br
+from dtv.collector import craft, store
 
 
 # ── Chargement du catalogue ─────────────────────────────────────────────────
@@ -121,6 +123,26 @@ _INGREDIENT_CATALOGS = (
     "consommables_dofus_touch_full.json",
     "equipements_dofus_touch_full.json",
 )
+
+
+def build_name_to_gid(catalog_dir: Path) -> dict:
+    """{nom normalisé → GID} depuis les 3 catalogues d'ingrédients."""
+    out: dict[str, int] = {}
+    for fname in _INGREDIENT_CATALOGS:
+        path = catalog_dir / fname
+        if not path.exists():
+            continue
+        try:
+            with open(path, encoding="utf-8") as f:
+                items = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            continue
+        for it in items:
+            nom = it.get("Nom_FR")
+            gid = _to_gid(it.get("GID"))
+            if nom and gid:
+                out.setdefault(br.normalize_name(nom), gid)
+    return out
 
 
 def build_name_prices(item_prices: dict[int, float], catalog_dir: Path) -> dict[str, float]:
@@ -219,10 +241,11 @@ def main():
     ap.add_argument("--top", type=int, default=50, help="nombre de lignes affichées (def 50)")
     ap.add_argument("--min-rentabilite", type=float, default=0.0,
                     help="filtre : rentabilité revenu/coût minimale")
+    ap.add_argument("--days", type=int, default=7,
+                    help="fenêtre prix HDV tiers en jours pour le coût de craft (def 7)")
     ap.add_argument("--craft", action="store_true",
-                    help="coût = COÛT DE CRAFT (Σ ingrédients × prix moyen) au lieu du prix "
-                         "HDV de l'item. C'est le vrai coût pour 'fabriquer puis briser'. "
-                         "Nécessite --avg-prices (prix des ingrédients).")
+                    help="coût = COÛT DE CRAFT optimisé (tiers HDV depuis la base SQLite). "
+                         "Repli sur avg_prices si la base est vide.")
     ap.add_argument("--explain", metavar="NOM",
                     help="diagnostic : affiche le détail du coût de craft d'un item (par nom) "
                          "puis quitte. Ex : --explain \"Bâton de Boisaille\"")
@@ -238,14 +261,34 @@ def main():
         item_prices = load_avg_prices(args.avg_prices)
         print(f"💰 {len(item_prices)} prix HDV chargés (coût des items)")
 
-    # Prix des ingrédients (par nom) pour le coût de craft
-    name_prices = {}
+    # Prix des ingrédients pour le coût de craft.
+    # Priorité : prix HDV tiers depuis la base SQLite (optimisation de lot).
+    # Repli : avg_prices x1 (si DB vide ou pour --explain).
+    name_prices: dict[str, float] = {}       # avg_prices fallback
+    ing_tier_prices: dict[str, dict] = {}    # {nom → {1:p, 10:p, 100:p, 1000:p}}
+    use_db_craft = False
+
     if args.craft or args.explain:
-        if not item_prices:
-            print("⚠️  --craft/--explain nécessite --avg-prices (prix des ingrédients). Abandon.")
-            sys.exit(1)
-        name_prices = build_name_prices(item_prices, args.catalog.parent)
-        print(f"🔨 {len(name_prices)} prix d'ingrédients chargés (pour le coût de craft)")
+        name2gid = build_name_to_gid(args.catalog.parent)
+        if name2gid:
+            try:
+                conn_db = store.connect()
+                all_gids = [g for g in name2gid.values() if g]
+                tp = store.tier_prices_for_gids(conn_db, all_gids, days=args.days)
+                ing_tier_prices = {nom: tp[gid] for nom, gid in name2gid.items() if gid in tp}
+                use_db_craft = bool(ing_tier_prices)
+            except Exception:
+                pass
+
+        if use_db_craft and args.craft:
+            print(f"🔨 {len(ing_tier_prices)} ingrédients — prix HDV tiers depuis la base ({args.days} j)")
+        else:
+            if not item_prices:
+                print("⚠️  --craft/--explain : base SQLite vide et pas de --avg-prices. Abandon.")
+                sys.exit(1)
+            name_prices = build_name_prices(item_prices, args.catalog.parent)
+            suffix = " (avg_prices — sans optimisation tiers)" if args.craft else ""
+            print(f"🔨 {len(name_prices)} prix d'ingrédients chargés{suffix}")
 
     # Diagnostic coût de craft d'un item → affiche et quitte
     if args.explain:
@@ -277,15 +320,23 @@ def main():
             continue
         niveau = _to_level(it.get("Niveau"))
         gid = _to_gid(it.get("GID"))
-        # Coût : craft (Σ ingrédients) si --craft, sinon prix HDV de l'item
+        # Coût : craft (tiers optimisés ou avg_prices) si --craft, sinon prix HDV de l'item
         craft_missing = None
         if args.craft:
-            cc = br.craft_cost(it.get("Recette") or "", name_prices)
-            if cc is None:
-                cout = None                 # pas de recette → item non craftable
+            if use_db_craft:
+                recipe_raw = br.parse_recipe(it.get("Recette") or "")
+                if not recipe_raw:
+                    cout = None
+                else:
+                    recipe_items = [(qty, br.normalize_name(ing)) for qty, ing in recipe_raw]
+                    ing_p = {n: ing_tier_prices[n] for _, n in recipe_items if n in ing_tier_prices}
+                    plan = craft.craft_plan(recipe_items, ing_p)
+                    cout = plan["cost_per_craft"] if plan else None
+                    craft_missing = len(plan["missing"]) if plan else None
             else:
-                cout = cc["cost"]
-                craft_missing = len(cc["missing"])
+                cc = br.craft_cost(it.get("Recette") or "", name_prices)
+                cout = cc["cost"] if cc else None
+                craft_missing = len(cc["missing"]) if cc else None
         else:
             cout = item_prices.get(gid) if (gid is not None and item_prices) else None
         obs = observations.get(gid) if (gid is not None and observations) else None
