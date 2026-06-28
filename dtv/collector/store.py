@@ -260,10 +260,12 @@ def tier_prices_for_gids(conn: sqlite3.Connection, gids: list,
     """
     Prix de lot réels (x1/x10/x100/x1000) par GID, pour chiffrer les ingrédients.
 
-    Source de vérité = `hdv_offers` (vraies offres relevées dans l'HDV), prix
-    PLANCHER = MIN sur les `days` derniers jours (un 0 = pas de stock à ce tier,
-    ignoré via NULLIF). Repli sur le dernier `avg_prices` (placé au tier x1) pour
-    les GID sans offre HDV récente — moins fiable mais mieux que rien.
+    Logique :
+      1. Pour chaque GID, on prend le DERNIER snapshot HDV (la visite la plus
+         récente de l'item dans l'HDV). Un 0 = aucun vendeur à ce tier → None.
+      2. Si ce dernier snapshot est plus vieux que `days` jours (donnée périmée),
+         on ignore les prix HDV et on replie sur le dernier `avg_prices` (tier x1).
+      3. GID sans aucun snapshot HDV → repli avgprices directement.
 
     Retourne {gid: {1: prix_lot_x1, 10: …, 100: …, 1000: …}} (tier absent = None).
     """
@@ -274,25 +276,31 @@ def tier_prices_for_gids(conn: sqlite3.Connection, gids: list,
 
     cutoff = (datetime.now() - timedelta(days=days)).isoformat()
     ph = ",".join("?" * len(gids))
+
+    # Dernier snapshot HDV par GID (sous-requête MAX(ts)).
     rows = conn.execute(
         f"""
-        SELECT gid,
-               MIN(NULLIF(prix_x1, 0))    AS x1,
-               MIN(NULLIF(prix_x10, 0))   AS x10,
-               MIN(NULLIF(prix_x100, 0))  AS x100,
-               MIN(NULLIF(prix_x1000, 0)) AS x1000
-        FROM hdv_offers
-        WHERE gid IN ({ph}) AND ts >= ?
-        GROUP BY gid
+        SELECT h.gid,
+               h.ts,
+               NULLIF(h.prix_x1, 0)    AS x1,
+               NULLIF(h.prix_x10, 0)   AS x10,
+               NULLIF(h.prix_x100, 0)  AS x100,
+               NULLIF(h.prix_x1000, 0) AS x1000
+        FROM hdv_offers h
+        WHERE h.gid IN ({ph})
+          AND h.ts = (SELECT MAX(ts) FROM hdv_offers h2 WHERE h2.gid = h.gid)
         """,
-        (*gids, cutoff),
+        tuple(gids),
     ).fetchall()
+
     for r in rows:
+        if r["ts"] < cutoff:
+            continue  # snapshot trop vieux → repli avgprices ci-dessous
         tiers = {1: r["x1"], 10: r["x10"], 100: r["x100"], 1000: r["x1000"]}
         if any(tiers.values()):
             out[r["gid"]] = tiers
 
-    # Repli avgprices (prix moyen serveur) pour les GID sans offre HDV utilisable.
+    # Repli avgprices pour les GID sans snapshot HDV récent (absent ou périmé).
     missing = [g for g in gids if g not in out]
     if missing:
         ph2 = ",".join("?" * len(missing))
@@ -306,7 +314,6 @@ def tier_prices_for_gids(conn: sqlite3.Connection, gids: list,
         ).fetchall()
         for r in arows:
             if r["price"]:
-                # avgprice = prix unitaire → tier x1 (lot de 1 = ce prix).
                 out[r["gid"]] = {1: r["price"], 10: None, 100: None, 1000: None}
     return out
 

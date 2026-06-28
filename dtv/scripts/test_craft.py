@@ -111,28 +111,41 @@ def test_store_tier_prices():
     conn = store.connect(db)
     now = datetime.now()
     recent = (now - timedelta(days=2)).isoformat()
+    yesterday = (now - timedelta(days=1)).isoformat()
     old = (now - timedelta(days=30)).isoformat()
 
-    # GID 100 : 2 offres récentes (MIN par tier, un 0 ignoré) + 1 vieille hors fenêtre
+    # GID 100 : 2 snapshots récents → on prend le DERNIER (yesterday), pas le MIN
+    #   recent   : x1=12 x10=95  x100=900 x1000=0    (plus vieux)
+    #   yesterday: x1=10 x10=99  x100=850 x1000=8000  (plus récent → utilisé)
     conn.execute("INSERT INTO hdv_offers(ts,gid,nom,prix_x1,prix_x10,prix_x100,prix_x1000,nb_offres,account)"
                  " VALUES (?,?,?,?,?,?,?,?,?)", (recent, 100, "Frene", 12, 95, 900, 0, 3, "j"))
     conn.execute("INSERT INTO hdv_offers(ts,gid,nom,prix_x1,prix_x10,prix_x100,prix_x1000,nb_offres,account)"
-                 " VALUES (?,?,?,?,?,?,?,?,?)",
-                 ((now - timedelta(days=1)).isoformat(), 100, "Frene", 10, 99, 850, 8000, 2, "j"))
+                 " VALUES (?,?,?,?,?,?,?,?,?)", (yesterday, 100, "Frene", 10, 99, 850, 8000, 2, "j"))
+    # GID 100 aussi : snapshot périmé (>7j) → ignoré même s'il est plus récent que rien
     conn.execute("INSERT INTO hdv_offers(ts,gid,nom,prix_x1,prix_x10,prix_x100,prix_x1000,nb_offres,account)"
                  " VALUES (?,?,?,?,?,?,?,?,?)", (old, 100, "Frene", 1, 1, 1, 1, 1, "j"))
-    # GID 200 : aucune offre HDV → repli avgprice (tier x1)
+    # GID 200 : aucun snapshot HDV → repli avgprice (tier x1 uniquement)
     conn.execute("INSERT INTO avg_prices(snapshot,ts,gid,nom,price,account) VALUES (?,?,?,?,?,?)",
                  ("s1", recent, 200, "Bois", 555, "j"))
+    # GID 300 : seul snapshot périmé → repli avgprice
+    conn.execute("INSERT INTO hdv_offers(ts,gid,nom,prix_x1,prix_x10,prix_x100,prix_x1000,nb_offres,account)"
+                 " VALUES (?,?,?,?,?,?,?,?,?)", (old, 300, "Vieux", 5, 45, 400, 0, 1, "j"))
+    conn.execute("INSERT INTO avg_prices(snapshot,ts,gid,nom,price,account) VALUES (?,?,?,?,?,?)",
+                 ("s1", recent, 300, "Vieux", 7, "j"))
     conn.commit()
 
-    res = store.tier_prices_for_gids(conn, [100, 200, 999], days=7)
-    assert res[100] == {1: 10, 10: 95, 100: 850, 1000: 8000}, res[100]
+    res = store.tier_prices_for_gids(conn, [100, 200, 300, 999], days=7)
+    # GID 100 : dernier snapshot (yesterday) — x10=99 et x1000=8000, pas MIN
+    assert res[100] == {1: 10, 10: 99, 100: 850, 1000: 8000}, res[100]
+    # GID 200 : pas de HDV → avgprice au tier x1
     assert res[200] == {1: 555, 10: None, 100: None, 1000: None}, res[200]
+    # GID 300 : seul snapshot périmé → repli avgprice
+    assert res[300] == {1: 7, 10: None, 100: None, 1000: None}, res[300]
+    # GID 999 : absent partout
     assert 999 not in res
     conn.close()
     os.unlink(db)
-    print("✅ store.tier_prices_for_gids (MIN/NULLIF/fenêtre 7j/repli avgprice) OK")
+    print("✅ store.tier_prices_for_gids (dernier snapshot / repli avgprice si >7j) OK")
 
 
 if __name__ == "__main__":
