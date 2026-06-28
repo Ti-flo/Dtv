@@ -17,6 +17,8 @@ secrets.py
 # Data output (generated)
 data/raw/*.csv
 data/processed/
+data/report.html
+data/*.report.html
 
 # SQLite warehouse (reconstructible via `dtv ingest`)
 data/dtv.db

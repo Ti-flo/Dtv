@@ -12,6 +12,7 @@ tendances, la rentabilité de brisage/craft. Sous-commandes :
   dtv movers [--top N]       plus fortes variations entre les 2 derniers snapshots
   dtv brisage [...]          classement rentabilité de brisage (passe les args)
   dtv craft <nom>            détail du coût de craft d'un item
+  dtv report [--open]        génère le rapport HTML interactif (autonome)
 
 Tout chemin (adb, catalogues, base) est résolu par dtv/config.py — zéro saisie.
 Exemples :
@@ -141,6 +142,22 @@ def _delegate(main_fn, argv):
         sys.argv = old
 
 
+def cmd_report(args):
+    import webbrowser
+    from dtv.collector import report
+    if not Path(config.DB_PATH).exists():
+        print("Base vide — lance d'abord une capture puis `dtv ingest`.")
+        return
+    conn = store.connect()
+    out = report.generate(conn, Path(args.out) if args.out else None)
+    st = store.stats(conn)
+    print(f"Rapport écrit : {out}")
+    print(f"  {st['avg_items']} items, {st['avg_snapshots']} snapshots, "
+          f"{st['hdv_rows']} relevés HDV")
+    if args.open:
+        webbrowser.open(out.resolve().as_uri())
+
+
 def cmd_capture(args):
     from dtv.scripts import capture_phone
     argv = ["capture_phone", "--account", args.account, "--port", str(args.port)]
@@ -225,6 +242,11 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--adb-serial", help="serial adb si plusieurs devices")
     sp.add_argument("rest", nargs=argparse.REMAINDER, help="args supplémentaires")
     sp.set_defaults(func=cmd_capture)
+
+    sp = sub.add_parser("report", help="génère le rapport HTML interactif (autonome)")
+    sp.add_argument("--out", help="chemin du .html (défaut data/report.html)")
+    sp.add_argument("--open", action="store_true", help="ouvre le rapport dans le navigateur")
+    sp.set_defaults(func=cmd_report)
 
     sp = sub.add_parser("brisage", help="classement rentabilité de brisage")
     sp.add_argument("rest", nargs=argparse.REMAINDER, help="args passés à brisage")
