@@ -61,29 +61,45 @@ def _best_unit_price(tier_prices: dict) -> Optional[float]:
     return min(units) if units else None
 
 
-def best_tier(tier_prices: dict, total_needed: int) -> Optional[tuple]:
+MAX_PURCHASES = 20  # seuil de praticabilité : au-delà c'est trop de clics HDV
+
+
+def best_tier(tier_prices: dict, total_needed: int,
+              max_purchases: int = MAX_PURCHASES) -> Optional[tuple]:
     """
-    Choisit le tier d'achat le moins cher À L'UNITÉ parmi ceux dont le lot ne
-    dépasse pas le besoin (pour ne pas immobiliser de capital), avec repli sur
-    le plus petit lot disponible si le besoin est inférieur au plus petit lot.
+    Choisit le tier d'achat optimal en deux temps :
+      1. Praticabilité d'abord : seuls les tiers qui donnent ≤ max_purchases
+         transactions sont candidats (ceil(total_needed / tier) ≤ max_purchases).
+      2. Parmi ces candidats, on prend le meilleur prix à l'unité.
+
+    Si aucun tier n'atteint le seuil de praticabilité, on prend le plus grand
+    tier disponible (minimum de transactions même si > max_purchases).
+    Si le besoin est inférieur au plus petit lot disponible, on prend ce lot.
 
     tier_prices : {1: prix_lot_x1, 10: prix_lot_x10, 100: …, 1000: …}
-        Le prix est celui du LOT entier (pas unitaire). 0/None = pas de stock.
-    total_needed : quantité totale d'ingrédient à acheter (qty_recette × n_crafts).
-
-    Retourne (tier, prix_unitaire) ou None si aucun prix disponible.
+        Prix du LOT entier. 0/None = pas de stock.
+    total_needed : qty_recette × n_crafts.
     """
     avail = {t: p for t, p in tier_prices.items() if p and p > 0}
     if not avail:
         return None
-    # Tiers dont le lot ne dépasse pas le besoin total.
+
+    # Tiers ≤ total_needed (ne pas acheter plus que le besoin en un seul lot).
     usable = {t: p for t, p in avail.items() if t <= total_needed}
     if not usable:
-        # Besoin plus petit que le plus petit lot vendu → on prend ce lot.
+        # Besoin plus petit que le plus petit lot → on achète ce lot (1 transaction).
         t = min(avail)
         return (t, avail[t] / t)
-    # Parmi les tiers utilisables, celui au meilleur prix unitaire.
-    t = min(usable, key=lambda t: usable[t] / t)
+
+    # Praticables : ≤ max_purchases transactions.
+    practical = {t: p for t, p in usable.items()
+                 if math.ceil(total_needed / t) <= max_purchases}
+    if practical:
+        t = min(practical, key=lambda t: practical[t] / t)
+        return (t, practical[t] / t)
+
+    # Aucun tier assez grand → on prend le plus grand disponible (minimise les achats).
+    t = max(usable)
     return (t, usable[t] / t)
 
 

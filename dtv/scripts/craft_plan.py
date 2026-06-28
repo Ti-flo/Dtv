@@ -148,21 +148,13 @@ def main():
     print(f"  {'COÛT TOTAL pour ' + str(plan['n_crafts']) + ' crafts':>50s}  "
           f"= {_fmt(plan['cost_total'])} kamas")
     if warnings:
-        print(f"\n  /!\\ Ingrédients avec trop de transactions (lot trop petit) :")
+        print(f"\n  /!\\ Aucun lot assez grand pour rester sous 20 achats :")
         for nom, tier, np_, needed, avail in warnings:
-            larger = {t: p for t, p in avail.items() if t > tier}
-            if larger:
-                # Données x100/x1000 existent mais plus chères à l'unité → conseil pratique
-                best_large = min(larger, key=lambda t: larger[t] / t)
-                pu_large = larger[best_large] / best_large
-                np_large = math.ceil(needed / best_large)
-                print(f"       {nom}: x{tier} moins cher/u mais {np_} achats"
-                      f" -> x{best_large} ({pu_large:.0f} kamas/u) = {np_large} achats seulement")
-            else:
-                # Pas de données pour les lots plus grands → capturer
-                next_tier = next((t for t in (10, 100, 1000) if t > tier), None)
-                hint = f"  -> ouvre-le à x{next_tier} dans l'HDV pendant la prochaine capture" if next_tier else ""
-                print(f"       {nom}: {needed} unités par lot x{tier} = {np_} achats !{hint}")
+            # Tier le plus grand disponible (déjà choisi) — données manquantes pour mieux
+            next_tier = next((t for t in (10, 100, 1000) if t > tier), None)
+            hint = (f" -> capture x{next_tier} dans l'HDV pour réduire"
+                    if next_tier else "")
+            print(f"       {nom}: x{tier} max disponible → {np_} achats{hint}")
     if not plan["complete"]:
         print(f"\n  Ingrédients sans prix HDV ni moyen : "
               f"{', '.join(display_names.get(m, m) for m in plan['missing'])}")

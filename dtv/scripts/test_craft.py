@@ -37,16 +37,23 @@ def test_echelle_n_crafts():
 
 def test_best_tier():
     tp = {1: 10, 10: 95, 100: 900, 1000: 8000}   # PU : 10 / 9.5 / 9 / 8
-    assert craft.best_tier(tp, 5000) == (1000, 8.0)   # besoin large → plus gros lot
-    assert craft.best_tier(tp, 50) == (10, 9.5)       # 100 et 1000 > besoin → x10
-    assert craft.best_tier(tp, 1) == (1, 10.0)        # besoin 1 → x1
-    # repli : pas de x1, besoin < plus petit lot → ce lot quand même
+    # besoin 5000 → x1000 seul pratique (ceil(5000/1000)=5 ≤ 20) et meilleur PU
+    assert craft.best_tier(tp, 5000) == (1000, 8.0)
+    # besoin 50 → x10 seul ≤ 50 ET pratique (ceil(50/10)=5) ; x1 donne 50 achats > 20
+    assert craft.best_tier(tp, 50) == (10, 9.5)
+    # besoin 1 → seul x1 ≤ 1, pratique (1 achat)
+    assert craft.best_tier(tp, 1) == (1, 10.0)
+    # besoin 1000 → x100 (10 achats) et x1000 (1 achat) pratiques ; meilleur PU = x1000
+    assert craft.best_tier(tp, 1000) == (1000, 8.0)
+    # repli : besoin < plus petit lot disponible → ce lot (1 transaction)
     assert craft.best_tier({1: None, 10: 95}, 3) == (10, 9.5)
-    # meilleur PU même si petit lot (vendeur irrationnel sur les gros lots)
-    assert craft.best_tier({1: 5, 10: 95, 100: 900, 1000: 8000}, 5000) == (1, 5.0)
+    # aucun tier pratique (seul x10 dispo, besoin 3000 → 300 achats) → plus grand usable
+    assert craft.best_tier({1: None, 10: 95, 100: None, 1000: None}, 3000) == (10, 9.5)
+    # vendeur irrationnel sur gros lots : x1 moins cher/u mais 5000 achats → x1000 (pratique)
+    assert craft.best_tier({1: 5, 10: 95, 100: 900, 1000: 8000}, 5000) == (1000, 8.0)
     # aucun prix → None
     assert craft.best_tier({1: None, 10: 0}, 100) is None
-    print("✅ best_tier (lot ≤ besoin, meilleur PU, repli, 0 ignoré) OK")
+    print("✅ best_tier (praticabilite ≤20 achats d'abord, meilleur PU ensuite) OK")
 
 
 def test_plan_bon_marche():
