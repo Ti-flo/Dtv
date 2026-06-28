@@ -146,15 +146,26 @@ const DTV = JSON.parse(document.getElementById("dtv-data").textContent);
 const fmt = n => (n==null || isNaN(n)) ? "—"
   : Math.round(n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, " ");
 const pct = n => (n==null||isNaN(n)) ? "" : (n>=0?"+":"") + n.toFixed(1) + "%";
-const TIER_COLORS = { avg:"#2f81f7", x1:"#3fb950", x10:"#d29922", x100:"#a371f7", x1000:"#f85149" };
+// Code couleur DofusTradingView : une HAUSSE de prix est défavorable (acheteur)
+// → ROUGE quand ça monte, VERT quand ça descend.
+const UP="#f85149", DOWN="#3fb950";
+const trendColor = d => d>0 ? UP : d<0 ? DOWN : "var(--muted)";
+const dmy = ts => { const d=new Date(ts); return isNaN(d) ? "—"
+  : String(d.getDate()).padStart(2,"0")+"/"+String(d.getMonth()+1).padStart(2,"0")+"/"+String(d.getFullYear()).slice(-2); };
+const TIER_COLORS = { avg:"#2f81f7", x1:"#3fb950", x10:"#d29922", x100:"#a371f7", x1000:"#e85aad" };
 const TIER_LABEL  = { avg:"Prix moyen", x1:"HDV x1", x10:"HDV x10", x100:"HDV x100", x1000:"HDV x1000" };
 const HDV_IDX = { x1:1, x10:2, x100:3, x1000:4 };  // index dans la ligne hdv [ts,x1,x10,x100,x1000,nb]
+const TIER_DIV = { avg:1, x1:1, x10:10, x100:100, x1000:1000 };  // diviseur prix unitaire
 
 // Renvoie la série [[ts,price],...] d'un item pour une source donnée (filtre 0/null).
 function seriesOf(item, source){
   if(source==="avg") return item.avg.filter(p=>p[1]!=null);
   const i = HDV_IDX[source];
   return item.hdv.map(r=>[r[0], r[i]]).filter(p=>p[1]!=null && p[1]>0);
+}
+// Idem mais prix ramené à l'UNITÉ (lot /10, /100, /1000) → comparable aux x1/moyen.
+function unitSeriesOf(item, source){
+  const d = TIER_DIV[source]; return seriesOf(item, source).map(p=>[p[0], p[1]/d]);
 }
 function statsOf(s){
   if(!s.length) return null;
@@ -190,6 +201,8 @@ document.getElementById("tabs").addEventListener("click", e=>{
 });
 
 // ── Onglet « Prix dans le temps » ──────────────────────────────────────────
+// Var % et Tendance (sparkline) sont TOUJOURS basées sur le prix moyen marché ;
+// Dernier/Min/Max/Moyen suivent la source sélectionnée.
 const COLS = [
   {k:"nom",   l:"Nom",    cls:"name", get:r=>r.nom, fmt:r=>r.nom},
   {k:"gid",   l:"GID",    get:r=>r.gid, fmt:r=>r.gid},
@@ -197,9 +210,10 @@ const COLS = [
   {k:"min",   l:"Min",    get:r=>r.st?r.st.min:null,  fmt:r=>fmt(r.st&&r.st.min)},
   {k:"max",   l:"Max",    get:r=>r.st?r.st.max:null,  fmt:r=>fmt(r.st&&r.st.max)},
   {k:"avg",   l:"Moyen",  get:r=>r.st?r.st.avg:null,  fmt:r=>fmt(r.st&&r.st.avg)},
-  {k:"var",   l:"Var",    get:r=>r.varpct, fmt:r=>`<span style="color:${r.varpct>=0?'var(--accent2)':'var(--bad)'}">${pct(r.varpct)}</span>`},
-  {k:"n",     l:"#pts",   get:r=>r.st?r.st.n:0, fmt:r=>r.st?r.st.n:0},
-  {k:"spark", l:"Tendance", get:r=>0, fmt:r=>sparkline(r.s), sort:false},
+  {k:"var",   l:"Var (moy)", get:r=>r.varpct, fmt:r=>`<span style="color:${trendColor(r.varpct)}">${pct(r.varpct)}</span>`},
+  {k:"hdvn",  l:"Relevés HDV", get:r=>r.hdvN, fmt:r=>r.hdvN||'<span class="muted">0</span>'},
+  {k:"hdvlast",l:"Dernier HDV", get:r=>r.hdvLastT, fmt:r=>r.hdvLast?dmy(r.hdvLast):'<span class="muted">—</span>'},
+  {k:"spark", l:"Tendance (moy)", get:r=>0, fmt:r=>sparkline(r.avgS), sort:false},
 ];
 let SOURCE="avg", SORT={k:"last",dir:-1}, FILTER="", SELECTED=null;
 
@@ -208,8 +222,12 @@ function computeRows(){
   let rows = DTV.items.map(it=>{
     const s = seriesOf(it, SOURCE);
     const st = statsOf(s);
-    const varpct = st && st.first ? (st.last-st.first)/st.first*100 : null;
-    return {gid:it.gid, nom:it.nom, item:it, s, st, varpct};
+    const avgS = seriesOf(it, "avg");
+    const avgSt = statsOf(avgS);
+    const varpct = avgSt && avgSt.first ? (avgSt.last-avgSt.first)/avgSt.first*100 : null;
+    const hdvLast = it.hdv.length ? it.hdv[it.hdv.length-1][0] : null;
+    return {gid:it.gid, nom:it.nom, item:it, s, st, avgS, varpct,
+            hdvN:it.hdv.length, hdvLast, hdvLastT:hdvLast?Date.parse(hdvLast):-Infinity};
   }).filter(r=>r.st);   // n'affiche que les items qui ont des données pour cette source
   if(q) rows = rows.filter(r=>r.nom.toLowerCase().includes(q) || String(r.gid).includes(q));
   const col = COLS.find(c=>c.k===SORT.k) || COLS[2];
@@ -230,23 +248,21 @@ function renderHead(){
 function renderRows(){
   const rows = computeRows();
   document.getElementById("count").textContent = rows.length + " items";
-  const body = rows.slice(0, 600).map(r=>{
+  const body = rows.map(r=>{   // tous les items, sans plafond
     const sel = SELECTED===r.gid ? ' class="sel"' : '';
     return `<tr data-gid="${r.gid}"${sel}>` +
       COLS.map(c=>`<td class="${c.cls||''}">${c.fmt(r)}</td>`).join("") + `</tr>`;
   }).join("");
   document.getElementById("rows").innerHTML = body ||
     `<tr><td colspan="${COLS.length}"><div class="empty">Aucun item — lance d'abord <code>dtv ingest</code>.</div></td></tr>`;
-  if(rows.length>600) document.getElementById("count").textContent += " (600 affichés)";
 }
 
-// Mini sparkline SVG (40×16) de la série sélectionnée.
+// Mini sparkline SVG du prix moyen. Couleur inversée : rouge si ça monte, vert si ça descend.
 function sparkline(s){
   if(!s || s.length<2) return '<span class="muted">—</span>';
   const v=s.map(p=>p[1]), mn=Math.min(...v), mx=Math.max(...v), W=46,H=16,r=mx-mn||1;
   const pts=v.map((y,i)=>`${(i/(v.length-1)*W).toFixed(1)},${(H-(y-mn)/r*H).toFixed(1)}`).join(" ");
-  const up=v[v.length-1]>=v[0];
-  return `<svg class="spark" width="${W}" height="${H}"><polyline fill="none" stroke="${up?'var(--accent2)':'var(--bad)'}" stroke-width="1.5" points="${pts}"/></svg>`;
+  return `<svg class="spark" width="${W}" height="${H}"><polyline fill="none" stroke="${trendColor(v[v.length-1]-v[0])}" stroke-width="1.5" points="${pts}"/></svg>`;
 }
 
 // ── Graphe détaillé (SVG maison) ───────────────────────────────────────────
@@ -264,6 +280,7 @@ function showDetail(gid){
     `<h3>${it.nom}</h3><div class="sub">GID ${it.gid}</div>` +
     statBlock(it) +
     `<div id="chart"></div>` +
+    `<div class="sub" style="margin-top:6px">Graphe en prix unitaire (lots ÷ 10/100/1000) — comparable au x1 et au prix moyen.</div>` +
     `<div class="legend" id="legend"></div>`;
   drawLegend(it, avail);
   drawChart(it);
@@ -290,15 +307,16 @@ function drawLegend(it, avail){
 function drawChart(it){
   const host = document.getElementById("chart");
   const sources = ["avg","x1","x10","x100","x1000"].filter(s=>DETAIL_ON[s]);
-  const series = sources.map(src=>({src, color:TIER_COLORS[src], pts:seriesOf(it,src)
+  // Prix ramené à l'UNITÉ (lot /10/100/1000) → les tiers se comparent au x1 / moyen.
+  const series = sources.map(src=>({src, color:TIER_COLORS[src], pts:unitSeriesOf(it,src)
     .map(p=>[Date.parse(p[0]), p[1]]).filter(p=>!isNaN(p[0]))})).filter(s=>s.pts.length>0);
   if(!series.length){ host.innerHTML = '<div class="empty">Aucune série sélectionnée.</div>'; return; }
   const W=Math.max(host.clientWidth||520,320), H=240, P={l:54,r:12,t:12,b:24};
   let xs=[], ys=[];
   series.forEach(s=>s.pts.forEach(p=>{xs.push(p[0]); ys.push(p[1]);}));
-  let x0=Math.min(...xs), x1=Math.max(...xs), y0=Math.min(...ys), y1=Math.max(...ys);
-  if(x1===x0){ x0-=1; x1+=1; } if(y1===y0){ y0=y0*0.9||0; y1=y1*1.1||1; }
-  // échelle Y serrée sur [min,max] réels (pas d'ancrage à 0) pour lire les variations
+  let x0=Math.min(...xs), x1=Math.max(...xs);
+  // Axe Y : de 0 au prix unitaire le plus haut relevé.
+  let y0=0, y1=Math.max(...ys); if(x1===x0){ x0-=1; x1+=1; } if(!(y1>0)){ y1=1; }
   const sx=v=>P.l+(v-x0)/(x1-x0)*(W-P.l-P.r);
   const sy=v=>H-P.b-(v-y0)/(y1-y0)*(H-P.t-P.b);
   // grille + axes Y (4 paliers)

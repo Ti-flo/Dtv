@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Optional
 
 from .. import config
-from . import store
+from . import item_names, store
 
 
 # ── Construction du modèle de données ────────────────────────────────────────
@@ -72,10 +72,12 @@ def _price_series(conn: sqlite3.Connection) -> list[dict]:
             r["prix_x1000"], r["nb_offres"],
         ])
 
-    # Items sans nom → placeholder lisible.
+    # Noms manquants → résolution via le catalogue GID→nom (data/item_names.json,
+    # alimenté par `dump_item_names`). Dernier repli : « GID <n> ».
+    names = item_names.load_item_names()
     for slot in items.values():
         if not slot["nom"]:
-            slot["nom"] = f"GID {slot['gid']}"
+            slot["nom"] = names.get(slot["gid"]) or f"GID {slot['gid']}"
 
     return sorted(items.values(), key=lambda s: s["nom"].lower())
 
