@@ -306,11 +306,20 @@ def main():
     else:
         print("🪙 prix de runes : valeurs exemple (runes.json) — fournir --rune-prices pour du live")
 
-    # Observations (coeff réel + date dernier brisage, par item)
+    # Observations (coeff réel + date dernier brisage, par item).
+    # Priorité : fichier CSV explicite → sinon auto-chargement depuis la base SQLite.
     observations = {}
     if args.observations and args.observations.exists():
         observations = load_observations(args.observations)
-        print(f"📝 {len(observations)} observations de brisage chargées (coeff réel par item)")
+        print(f"📝 {len(observations)} observations de brisage chargées (CSV)")
+    else:
+        try:
+            obs_conn = store.connect()
+            observations = store.brisage_observations(obs_conn)
+            if observations:
+                print(f"📝 {len(observations)} observations de brisage chargées (base SQLite auto)")
+        except Exception:
+            pass
 
     # Calcul
     rows = []

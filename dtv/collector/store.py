@@ -318,6 +318,28 @@ def tier_prices_for_gids(conn: sqlite3.Connection, gids: list,
     return out
 
 
+def brisage_observations(conn: sqlite3.Connection) -> dict:
+    """
+    Dernière observation de brisage par GID depuis brisage_obs.
+
+    Retourne {gid: {"coeff": float|None, "date": str|None}} — même format
+    que brisage.load_observations() pour être interchangeable.
+    Prend le snapshot le plus récent (MAX ts) par GID.
+    """
+    rows = conn.execute(
+        """
+        SELECT b.gid, b.coefficient_reel, b.dernier_brisage
+        FROM brisage_obs b
+        WHERE b.ts = (SELECT MAX(ts) FROM brisage_obs b2 WHERE b2.gid = b.gid)
+          AND b.coefficient_reel IS NOT NULL
+        """
+    ).fetchall()
+    return {
+        r["gid"]: {"coeff": r["coefficient_reel"], "date": r["dernier_brisage"] or None}
+        for r in rows
+    }
+
+
 def stats(conn: sqlite3.Connection) -> dict:
     """Compteurs globaux de la base (pour `dtv doctor` / `dtv status`)."""
     def one(q):
