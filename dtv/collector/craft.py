@@ -61,7 +61,7 @@ def _best_unit_price(tier_prices: dict) -> Optional[float]:
     return min(units) if units else None
 
 
-MAX_PURCHASES = 20  # seuil de praticabilité : au-delà c'est trop de clics HDV
+MAX_PURCHASES = 30  # seuil de praticabilité : au-delà c'est trop de clics HDV
 
 
 def best_tier(tier_prices: dict, total_needed: int,

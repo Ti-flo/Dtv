@@ -118,47 +118,66 @@ def main():
         print(f"{nom} : recette vide.")
         sys.exit(0)
 
+    # Plan minimal à 10 % du volume (au moins 1 craft).
+    n_mini = max(1, plan["n_crafts"] // 10)
+    plan_mini = craft.craft_plan(recipe_items, ing_prices, n_crafts=n_mini)
+
+    def _print_plan(p, label: str, src: str):
+        print(f"\n--- {label} : {p['n_crafts']} crafts  ({src}) ---")
+        print(f"  {'Ingrédient':28s} {'Qté':>4s} {'Besoin':>8s} {'Tier':>6s} "
+              f"{'PU':>10s} {'Coût ligne':>12s} {'Achats':>7s}")
+        print("  " + "-" * 85)
+        warns = []
+        for d in p["detail"]:
+            ing = display_names.get(d["nom"], d["nom"])[:28]
+            tier = f"x{d['tier']}" if d["tier"] else "—"
+            pu = _fmt(d["unit_price"])
+            line = _fmt(d["line_cost"]) if d["line_cost"] is not None else "PRIX INCONNU"
+            np_ = d.get("n_purchases")
+            np_str = str(np_) if np_ is not None else "—"
+            flag = " !" if (np_ is not None and np_ > craft.MAX_PURCHASES) else "  "
+            print(f"  {ing:28s} {d['qty']:>4d} {_fmt(d['total_needed']):>8s} {tier:>6s} "
+                  f"{pu:>10s} {line:>12s} {np_str:>6s}{flag}")
+            if np_ is not None and np_ > craft.MAX_PURCHASES:
+                warns.append((display_names.get(d["nom"], d["nom"]), d["tier"], np_,
+                              d["total_needed"], d.get("available_tiers", {})))
+        print("  " + "-" * 85)
+        missing_flag = "" if p["complete"] else f"   /!\\ {len(p['missing'])} ingrédient(s) sans prix"
+        print(f"  {'COÛT DE CRAFT / unité':>50s}  = {_fmt(p['cost_per_craft'])} kamas{missing_flag}")
+        print(f"  {'COÛT TOTAL pour ' + str(p['n_crafts']) + ' crafts':>50s}  "
+              f"= {_fmt(p['cost_total'])} kamas")
+        if warns:
+            print(f"\n  /!\\ Aucun lot assez grand pour rester sous {craft.MAX_PURCHASES} achats :")
+            for wnom, wtier, wnp, wneeded, wavail in warns:
+                next_tier = next((t for t in (10, 100, 1000) if t > wtier), None)
+                hint = (f" -> capture x{next_tier} dans l'HDV pour réduire"
+                        if next_tier else "")
+                print(f"       {wnom}: x{wtier} max disponible → {wnp} achats{hint}")
+        if not p["complete"]:
+            print(f"\n  Ingrédients sans prix HDV ni moyen : "
+                  f"{', '.join(display_names.get(m, m) for m in p['missing'])}")
+            print("  (ouvre-les dans l'HDV pendant une capture pour relever leur prix)")
+
     # Affichage
     print(f"\n=== Plan de craft : {nom}  (GID {it.get('GID')}, niv {it.get('Niveau')}) ===")
-    src = "forcé" if args.n_crafts else "estimé d'après le coût"
-    print(f"Nombre de crafts conseillé : {plan['n_crafts']}  ({src})")
-    print(f"Fenêtre prix HDV réels : {args.days} derniers jours (repli : prix moyen serveur)\n")
+    print(f"Fenêtre prix HDV réels : {args.days} derniers jours (repli : prix moyen serveur)")
 
-    print(f"  {'Ingrédient':28s} {'Qté':>4s} {'Besoin':>8s} {'Tier':>6s} "
-          f"{'PU':>10s} {'Coût ligne':>12s} {'Achats':>7s}")
-    print("  " + "-" * 85)
-    warnings = []
-    for d in plan["detail"]:
-        ing = display_names.get(d["nom"], d["nom"])[:28]
-        tier = f"x{d['tier']}" if d["tier"] else "—"
-        pu = _fmt(d["unit_price"])
-        line = _fmt(d["line_cost"]) if d["line_cost"] is not None else "PRIX INCONNU"
-        np_ = d.get("n_purchases")
-        np_str = str(np_) if np_ is not None else "—"
-        flag = " !" if (np_ is not None and np_ > 20) else "  "
-        print(f"  {ing:28s} {d['qty']:>4d} {_fmt(d['total_needed']):>8s} {tier:>6s} "
-              f"{pu:>10s} {line:>12s} {np_str:>6s}{flag}")
-        if np_ is not None and np_ > 20:
-            warnings.append((display_names.get(d["nom"], d["nom"]), d["tier"], np_,
-                             d["total_needed"], d.get("available_tiers", {})))
+    src_full = "forcé" if args.n_crafts else "estimé d'après le coût"
+    _print_plan(plan, "Plan réaliste (100 %)", src_full)
 
-    print("  " + "-" * 85)
-    flag = "" if plan["complete"] else f"   /!\\ {len(plan['missing'])} ingrédient(s) sans prix"
-    print(f"  {'COÛT DE CRAFT / unité':>50s}  = {_fmt(plan['cost_per_craft'])} kamas{flag}")
-    print(f"  {'COÛT TOTAL pour ' + str(plan['n_crafts']) + ' crafts':>50s}  "
-          f"= {_fmt(plan['cost_total'])} kamas")
-    if warnings:
-        print(f"\n  /!\\ Aucun lot assez grand pour rester sous 20 achats :")
-        for nom, tier, np_, needed, avail in warnings:
-            # Tier le plus grand disponible (déjà choisi) — données manquantes pour mieux
-            next_tier = next((t for t in (10, 100, 1000) if t > tier), None)
-            hint = (f" -> capture x{next_tier} dans l'HDV pour réduire"
-                    if next_tier else "")
-            print(f"       {nom}: x{tier} max disponible → {np_} achats{hint}")
-    if not plan["complete"]:
-        print(f"\n  Ingrédients sans prix HDV ni moyen : "
-              f"{', '.join(display_names.get(m, m) for m in plan['missing'])}")
-        print("  (ouvre-les dans l'HDV pendant une capture pour relever leur prix)")
+    if plan_mini is not None and n_mini != plan["n_crafts"]:
+        _print_plan(plan_mini, "Plan minimal  (10 %)", "10 % du plan réaliste")
+
+        # Comparaison
+        diff = plan["cost_per_craft"] - plan_mini["cost_per_craft"]
+        if diff > 0:
+            print(f"\n  => Le plan minimal est moins cher de {_fmt(diff)} kamas/craft "
+                  f"({diff / plan['cost_per_craft'] * 100:.1f} % d'économie par craft).")
+        elif diff < 0:
+            print(f"\n  => Le plan réaliste est moins cher de {_fmt(-diff)} kamas/craft "
+                  f"({-diff / plan_mini['cost_per_craft'] * 100:.1f} % d'économie par craft).")
+        else:
+            print("\n  => Coût par craft identique dans les deux plans.")
 
 
 if __name__ == "__main__":
