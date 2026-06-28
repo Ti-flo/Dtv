@@ -57,6 +57,22 @@ def build_name_to_gid(catalog_dir) -> dict:
     return out
 
 
+def build_recipes(catalog_dir) -> dict:
+    """
+    {nom normalisé → [(qty, ingrédient normalisé), …]} pour tous les items
+    craftables des 3 catalogues. Sert à la RÉCURSIVITÉ des sous-crafts
+    (craft.resolve_craft_unit_costs) : un ingrédient craftable peut être chiffré
+    à son coût de craft plutôt qu'à son prix HDV.
+    """
+    out: dict = {}
+    for it in _iter_ingredient_items(catalog_dir):
+        rr = br.parse_recipe(it.get("Recette") or "")
+        if rr:
+            out.setdefault(br.normalize_name(it.get("Nom_FR", "")),
+                           [(q, br.normalize_name(ing)) for q, ing in rr])
+    return out
+
+
 def build_name_prices(item_prices: dict, catalog_dir) -> dict:
     """
     {nom d'ingrédient normalisé → prix} en croisant les catalogues (Nom_FR → GID)

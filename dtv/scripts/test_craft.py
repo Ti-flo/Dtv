@@ -113,6 +113,51 @@ def test_plan_manquant():
     print("✅ plan : ingrédient sans prix signalé, recette vide → None OK")
 
 
+def test_resolve_recursion():
+    # lingot craftable depuis 2 minerai : crafter (2×20=40) < acheter (100).
+    recipes = {"lingot": [(2, "minerai")]}
+    buy = {"lingot": 100, "minerai": 20}
+    res = craft.resolve_craft_unit_costs(recipes, buy)
+    assert res["minerai"]["unit"] == 20 and res["minerai"]["method"] == "buy"
+    assert res["lingot"]["craft_unit"] == 40
+    assert res["lingot"]["unit"] == 40 and res["lingot"]["method"] == "craft"
+
+    # si l'achat est moins cher que le craft → on achète.
+    res2 = craft.resolve_craft_unit_costs({"x": [(5, "y")]}, {"x": 30, "y": 20})
+    assert res2["x"]["method"] == "buy" and res2["x"]["unit"] == 30   # craft = 100 > 30
+
+    # cycle a→b→a : pas de boucle infinie, repli sur l'achat.
+    res3 = craft.resolve_craft_unit_costs({"a": [(1, "b")], "b": [(1, "a")]},
+                                          {"b": 10})  # a non achetable
+    assert res3["b"]["unit"] == 10                    # b se replie sur l'achat (cycle)
+    assert res3["a"]["unit"] == 10                    # a = craft via b
+
+    # ingrédient profond non chiffrable → craft impossible, item non résoluble.
+    res4 = craft.resolve_craft_unit_costs({"top": [(1, "mid")], "mid": [(1, "leaf")]}, {})
+    assert res4["top"]["unit"] is None
+    print("✅ resolve_craft_unit_costs (min(achat,craft), cycle, manquant) OK")
+
+
+def test_plan_craft_alt():
+    # 2 lingots par craft ; lingot dispo à l'HDV (PU 100) MAIS craftable à 40.
+    recipe = [(2, "lingot")]
+    tp = {"lingot": {1: 100, 10: 1000, 100: 10000, 1000: 100000}}
+    plan = craft.craft_plan(recipe, tp, n_crafts=10, craft_alt={"lingot": 40})
+    d = plan["detail"][0]
+    assert d["method"] == "craft" and d["tier"] is None and d["unit_price"] == 40
+    assert plan["cost_per_craft"] == 2 * 40            # on craft l'ingrédient
+
+    # craft plus cher que l'achat → on achète (comportement historique).
+    plan2 = craft.craft_plan(recipe, tp, n_crafts=10, craft_alt={"lingot": 999})
+    d2 = plan2["detail"][0]
+    assert d2["method"] == "buy" and d2["unit_price"] == 100
+
+    # sans craft_alt → identique à avant (achat HDV seul).
+    plan3 = craft.craft_plan(recipe, tp, n_crafts=10)
+    assert plan3["detail"][0]["method"] == "buy"
+    print("✅ craft_plan avec craft_alt (min achat/craft par ingrédient) OK")
+
+
 def test_store_tier_prices():
     db = Path(tempfile.mktemp(suffix=".db"))
     conn = store.connect(db)
@@ -203,6 +248,8 @@ if __name__ == "__main__":
     test_plan_n_crafts_force()
     test_plan_n_purchases()
     test_plan_manquant()
+    test_resolve_recursion()
+    test_plan_craft_alt()
     test_store_tier_prices()
     test_store_brisage_observations()
     test_parse_recycling_runes()

@@ -46,7 +46,8 @@ from dtv import config
 from dtv.collector import brisage as br
 from dtv.collector import craft, store
 from dtv.collector.catalog import (
-    INGREDIENT_CATALOGS, build_name_prices, build_name_to_gid, load_catalog,
+    INGREDIENT_CATALOGS, build_name_prices, build_name_to_gid, build_recipes,
+    load_catalog,
 )
 
 
@@ -291,6 +292,17 @@ def main():
         except Exception:
             pass
 
+    # Récursivité des sous-crafts : coût de craft unitaire par item (min achat/craft),
+    # passé à craft_plan qui tranche par ingrédient. Cohérent avec le rapport HTML.
+    craft_alt: dict = {}
+    if args.craft and use_db_craft:
+        recipes_all = build_recipes(args.catalog.parent)
+        buy_unit = {nom: craft.best_unit_price(t) for nom, t in ing_tier_prices.items()}
+        buy_unit = {k: v for k, v in buy_unit.items() if v is not None}
+        resolved = craft.resolve_craft_unit_costs(recipes_all, buy_unit)
+        craft_alt = {nom: r["craft_unit"] for nom, r in resolved.items()
+                     if r["craft_unit"] is not None}
+
     # Stratégie de coût injectée dans build_ranking : craft optimisé par tiers
     # (base SQLite), craft avg_prices en repli, ou prix HDV de l'item hors --craft.
     def _cost_for(it):
@@ -301,7 +313,7 @@ def main():
                     return (None, None)
                 recipe_items = [(qty, br.normalize_name(ing)) for qty, ing in recipe_raw]
                 ing_p = {n: ing_tier_prices[n] for _, n in recipe_items if n in ing_tier_prices}
-                plan = craft.craft_plan(recipe_items, ing_p)
+                plan = craft.craft_plan(recipe_items, ing_p, craft_alt=craft_alt)
                 return (plan["cost_per_craft"] if plan else None,
                         len(plan["missing"]) if plan else None)
             cc = br.craft_cost(it.get("Recette") or "", name_prices)

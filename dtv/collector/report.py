@@ -169,6 +169,19 @@ def build_brisage_data(conn: sqlite3.Connection, *, coeff: float = 100.0) -> dic
     use_db_craft = bool(ing_tier_prices)
     name_prices = catalog_mod.build_name_prices(item_prices, catalog_dir)
 
+    # Récursivité des sous-crafts : un ingrédient craftable est chiffré au moins
+    # cher entre l'acheter (HDV) et le crafter récursivement. craft_alt = coût de
+    # craft unitaire par item ; passé à craft_plan qui tranche par ingrédient.
+    craft_alt: dict = {}
+    if use_db_craft:
+        recipes_all = catalog_mod.build_recipes(catalog_dir)
+        buy_unit = {nom: craft.best_unit_price(tiers)
+                    for nom, tiers in ing_tier_prices.items()}
+        buy_unit = {k: v for k, v in buy_unit.items() if v is not None}
+        resolved = craft.resolve_craft_unit_costs(recipes_all, buy_unit)
+        craft_alt = {nom: r["craft_unit"] for nom, r in resolved.items()
+                     if r["craft_unit"] is not None}
+
     def _cost_for(it):
         if use_db_craft:
             recipe_raw = br.parse_recipe(it.get("Recette") or "")
@@ -176,7 +189,7 @@ def build_brisage_data(conn: sqlite3.Connection, *, coeff: float = 100.0) -> dic
                 return (None, None)
             recipe_items = [(qty, br.normalize_name(ing)) for qty, ing in recipe_raw]
             ing_p = {n: ing_tier_prices[n] for _, n in recipe_items if n in ing_tier_prices}
-            plan = craft.craft_plan(recipe_items, ing_p)
+            plan = craft.craft_plan(recipe_items, ing_p, craft_alt=craft_alt)
             return (plan["cost_per_craft"] if plan else None,
                     len(plan["missing"]) if plan else None)
         cc = br.craft_cost(it.get("Recette") or "", name_prices)
@@ -213,13 +226,14 @@ def build_brisage_data(conn: sqlite3.Connection, *, coeff: float = 100.0) -> dic
             recipe_items = [(qty, br.normalize_name(ing)) for qty, ing in recipe_raw]
             ing_p = {n: ing_tier_prices[n] for _, n in recipe_items if n in ing_tier_prices}
             recipe = [{"nom": ing, "qty": qty,
-                       "tiers": ing_tier_prices.get(br.normalize_name(ing))}
+                       "tiers": ing_tier_prices.get(br.normalize_name(ing)),
+                       "craft_unit": craft_alt.get(br.normalize_name(ing))}
                       for qty, ing in recipe_raw]
             cpc = {}
             for B in _CRAFT_BATCHES:
-                pl = craft.craft_plan(recipe_items, ing_p, n_crafts=B)
+                pl = craft.craft_plan(recipe_items, ing_p, n_crafts=B, craft_alt=craft_alt)
                 cpc[str(B)] = round(pl["cost_per_craft"], 2) if pl else None
-            pa = craft.craft_plan(recipe_items, ing_p)
+            pa = craft.craft_plan(recipe_items, ing_p, craft_alt=craft_alt)
             cpc["auto"] = round(pa["cost_per_craft"], 2) if pa else None
             return {"recipe": recipe, "n_auto": (pa["n_crafts"] if pa else None),
                     "cpc": cpc, "db": True}

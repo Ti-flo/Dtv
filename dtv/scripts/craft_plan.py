@@ -27,6 +27,7 @@ from dtv import config
 from dtv.collector import brisage as br
 from dtv.collector import craft
 from dtv.collector import store
+from dtv.collector.catalog import build_recipes
 from dtv.scripts.brisage import load_catalog
 
 
@@ -113,14 +114,28 @@ def main():
         if g and g in tp_by_gid:
             ing_prices[n] = tp_by_gid[g]
 
-    plan = craft.craft_plan(recipe_items, ing_prices, n_crafts=args.n_crafts)
+    # Récursivité des sous-crafts : coût de craft unitaire par ingrédient
+    # (min achat/craft), pour chiffrer un ingrédient craftable à son coût de craft.
+    all_gids = [g for g in name2gid.values() if g]
+    tp_all = store.tier_prices_for_gids(conn, all_gids, days=args.days)
+    buy_unit = {nom: craft.best_unit_price(tp_all[g])
+                for nom, g in name2gid.items() if g in tp_all}
+    buy_unit = {k: v for k, v in buy_unit.items() if v is not None}
+    resolved = craft.resolve_craft_unit_costs(
+        build_recipes(Path(catalog_path).parent), buy_unit)
+    craft_alt = {nom: r["craft_unit"] for nom, r in resolved.items()
+                 if r["craft_unit"] is not None}
+
+    plan = craft.craft_plan(recipe_items, ing_prices, n_crafts=args.n_crafts,
+                            craft_alt=craft_alt)
     if plan is None:
         print(f"{nom} : recette vide.")
         sys.exit(0)
 
     # Plan minimal à 10 % du volume (au moins 1 craft).
     n_mini = max(1, plan["n_crafts"] // 10)
-    plan_mini = craft.craft_plan(recipe_items, ing_prices, n_crafts=n_mini)
+    plan_mini = craft.craft_plan(recipe_items, ing_prices, n_crafts=n_mini,
+                                 craft_alt=craft_alt)
 
     def _print_plan(p, label: str, src: str):
         print(f"\n--- {label} : {p['n_crafts']} crafts  ({src}) ---")
@@ -130,7 +145,7 @@ def main():
         warns = []
         for d in p["detail"]:
             ing = display_names.get(d["nom"], d["nom"])[:28]
-            tier = f"x{d['tier']}" if d["tier"] else "—"
+            tier = "craft" if d.get("method") == "craft" else (f"x{d['tier']}" if d["tier"] else "—")
             pu = _fmt(d["unit_price"])
             line = _fmt(d["line_cost"]) if d["line_cost"] is not None else "PRIX INCONNU"
             np_ = d.get("n_purchases")

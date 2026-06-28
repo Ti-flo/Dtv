@@ -697,10 +697,14 @@ function openBModal(r, real){
     recipeRows = c.recipe.map(ing=>{
       const need = ing.qty * batchN;
       const bt = bestTier(ing.tiers, need);
-      if(!bt) return `<tr><td>${ing.nom}</td><td>${ing.qty}</td><td>${fmt(need)}</td><td colspan="3" class="bad">prix inconnu</td></tr>`;
-      const nAch = Math.ceil(need/bt.tier);
+      const buy = bt ? bt.unit : null, alt = ing.craft_unit;
+      // miroir de craft_plan : moins cher entre acheter (tier) et crafter l'ingrédient
+      let tier, unit, info;
+      if(buy!=null && (alt==null || buy<=alt)){ tier="x"+bt.tier; unit=buy; info=`(${Math.ceil(need/bt.tier)} ach.)`; }
+      else if(alt!=null){ tier='<span style="color:var(--accent2)">craft</span>'; unit=alt; info=""; }
+      else return `<tr><td>${ing.nom}</td><td>${ing.qty}</td><td>${fmt(need)}</td><td colspan="3" class="bad">prix inconnu</td></tr>`;
       return `<tr><td>${ing.nom}</td><td>${ing.qty}</td><td>${fmt(need)}</td>`+
-             `<td>x${bt.tier}</td><td>${fmt(bt.unit)}</td><td>${fmt(ing.qty*bt.unit)} <span class="muted">(${nAch} ach.)</span></td></tr>`;
+             `<td>${tier}</td><td>${fmt(unit)}</td><td>${fmt(ing.qty*unit)} <span class="muted">${info}</span></td></tr>`;
     }).join("");
   }
   const runeRows = (r.runes_detail&&r.runes_detail.length)
