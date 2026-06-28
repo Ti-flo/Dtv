@@ -192,7 +192,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   </section>
   <section class="tab" data-tab="achats"><div class="soon"><div class="big">🛒</div><p>Onglet « Ressources achetées » — à venir (dépend de <code>transactions_observations.csv</code>).</p></div></section>
   <section class="tab" data-tab="craft"><div id="craft-root"></div></section>
-  <section class="tab" data-tab="affaires"><div class="soon"><div class="big">💎</div><p>Onglet « Bonnes affaires du moment » — à venir.</p></div></section>
+  <section class="tab" data-tab="affaires"><div id="affaires-root"></div></section>
 </main>
 <div class="chart-tip" id="tip"></div>
 <div class="modal-bg" id="bmodal" style="display:none"><div class="modal" id="bmodal-box"></div></div>
@@ -744,6 +744,121 @@ function closeBModal(){ document.getElementById("bmodal").style.display="none"; 
 document.getElementById("bmodal").addEventListener("click", e=>{ if(e.target.id==="bmodal") closeBModal(); });
 document.addEventListener("keydown", e=>{ if(e.key==="Escape") closeBModal(); });
 
+// ── Onglet « Bonnes affaires du moment » ───────────────────────────────────
+const normName = s => (s||"").toLowerCase().replace(/\s+/g," ").trim();
+function median(a){ const b=a.slice().sort((x,y)=>x-y), n=b.length;
+  return n ? (n%2 ? b[(n-1)/2] : (b[n/2-1]+b[n/2])/2) : null; }
+// Statistiques « affaire » d'un item à partir de sa série de prix moyen.
+function dealStats(item){
+  const s=item.avg.filter(p=>p[1]!=null).map(p=>p[1]);
+  if(s.length<4) return null;
+  const cur=s[s.length-1], med=median(s), mean=s.reduce((a,b)=>a+b,0)/s.length;
+  const sd=Math.sqrt(s.reduce((a,b)=>a+(b-mean)**2,0)/s.length);
+  return {cur, med, mean, n:s.length,
+          ecart: med ? (cur-med)/med*100 : null,
+          z: sd ? (cur-mean)/sd : null,
+          series: item.avg.filter(p=>p[1]!=null)};
+}
+const DEALS = (()=>{
+  const out=[];
+  for(const it of DTV.items){
+    const st=dealStats(it); if(!st||st.ecart==null) continue;
+    out.push({gid:it.gid, nom:it.nom, type:it.type||"", level:it.level, st});
+  }
+  return out;
+})();
+const DEALMAP = (()=>{ const m={}; DEALS.forEach(d=>{ m[normName(d.nom)]=d; }); return m; })();
+let AFF_SEUIL=-10, AFF_SENS="buy", AFF_SORT={k:"ecart",dir:1};
+const ecartColor = e => e<0 ? 'var(--accent2)' : e>0 ? 'var(--bad)' : 'var(--muted)';
+
+function affDealCols(){
+  return [
+    {k:"fav", l:"★", cls:"fav", sort:false, get:r=>0, fmt:r=>`<span class="star ${isFav(r.gid)?'on':''}" data-fav="${r.gid}">★</span>`},
+    {k:"nom", l:"Nom", cls:"name", get:r=>r.nom, fmt:r=>r.nom},
+    {k:"type", l:"Type", cls:"type", get:r=>r.type, fmt:r=>r.type||'<span class="muted">—</span>'},
+    {k:"level", l:"Niv", cls:"narrow", get:r=>r.level, fmt:r=>r.level==null?'<span class="muted">—</span>':r.level},
+    {k:"cur", l:"Prix actuel", cls:"narrow", get:r=>r.st.cur, fmt:r=>fmt(r.st.cur)},
+    {k:"med", l:"Médiane", cls:"narrow", get:r=>r.st.med, fmt:r=>fmt(r.st.med)},
+    {k:"ecart", l:"Écart", cls:"narrow", title:"Écart du prix actuel vs médiane historique", get:r=>r.st.ecart, fmt:r=>`<span style="color:${ecartColor(r.st.ecart)}">${pct(r.st.ecart)}</span>`},
+    {k:"z", l:"z", cls:"narrow", title:"z-score = (actuel − moyenne) / écart-type", get:r=>r.st.z, fmt:r=>r.st.z==null?'—':r.st.z.toFixed(2)},
+    {k:"n", l:"#pts", cls:"narrow", get:r=>r.st.n, fmt:r=>r.st.n},
+    {k:"spark", l:"Tendance", sort:false, get:r=>0, fmt:r=>sparkline(lastDays(r.st.series,7))},
+  ];
+}
+function renderAffaires(){
+  const root=document.getElementById("affaires-root");
+  const seuilSel = `<select id="affSeuil">${[-5,-10,-20,-30].map(v=>`<option value="${v}"${v===AFF_SEUIL?' selected':''}>${Math.abs(v)}%</option>`).join("")}</select>`;
+  const sensSel = `<select id="affSens"><option value="buy"${AFF_SENS==="buy"?" selected":""}>sous la médiane (à acheter)</option><option value="sell"${AFF_SENS==="sell"?" selected":""}>au-dessus (à vendre)</option></select>`;
+  // Section 1 : affaires de prix.
+  let rows = DEALS.filter(d=> AFF_SENS==="buy" ? d.st.ecart<=AFF_SEUIL : d.st.ecart>=Math.abs(AFF_SEUIL));
+  const cols = affDealCols();
+  const col = cols.find(c=>c.k===AFF_SORT.k)||cols[6];
+  rows.sort((a,b)=>{ let va=col.get(a),vb=col.get(b);
+    const an=va==null,bn=vb==null; if(an&&bn)return 0; if(an)return 1; if(bn)return -1;
+    if(typeof va==="string"){va=va.toLowerCase();vb=vb.toLowerCase();return va<vb?-AFF_SORT.dir:va>vb?AFF_SORT.dir:0;}
+    return (va-vb)*AFF_SORT.dir; });
+  const head = cols.map(c=>{ const arr=AFF_SORT.k===c.k?`<span class="arrow">${AFF_SORT.dir<0?"▼":"▲"}</span>`:"";
+    const tt=c.title?` title="${c.title}"`:""; return `<th class="${c.cls||''}"${tt} data-k="${c.k}" data-sort="${c.sort!==false}">${c.l} ${arr}</th>`; }).join("");
+  const body = rows.length ? rows.map(r=>`<tr data-gid="${r.gid}">`+cols.map(c=>`<td class="${c.cls||''}">${c.fmt(r)}</td>`).join("")+"</tr>").join("")
+    : `<tr><td colspan="${cols.length}"><div class="empty">Aucun item ${AFF_SENS==="buy"?"sous":"au-dessus de"} sa médiane à ce seuil.</div></td></tr>`;
+  // Section 2 : opportunités craft/brisage induites (un ingrédient est en promo).
+  let ops=[];
+  if(B.available){
+    for(const r of B.theo){
+      if(!r.craft||!r.craft.recipe) continue;
+      const d=deriveB(r,false);
+      if(!(d.benef>0)) continue;
+      const promo=r.craft.recipe.map(ing=>({ing, deal:DEALMAP[normName(ing.nom)]}))
+        .filter(x=>x.deal && x.deal.st.ecart<=AFF_SEUIL);
+      if(promo.length) ops.push({r, d, promo});
+    }
+    ops.sort((a,b)=> (a.d.cmin??1e9)-(b.d.cmin??1e9));
+  }
+  const opBody = ops.length ? ops.map(o=>{
+    const ings=o.promo.map(x=>`${x.ing.nom} <span style="color:${ecartColor(x.deal.st.ecart)}">${pct(x.deal.st.ecart)}</span>`).join(", ");
+    return `<tr data-gid="${o.r.GID}"><td class="name">${o.r.Nom}</td><td class="type">${o.r.Type||'—'}</td>`+
+      `<td class="runesb">${ings}</td><td class="narrow">${num(o.d.cost)}</td>`+
+      `<td class="narrow">${benFmt(o.d.benef)}</td><td class="narrow">${o.d.cmin==null?'—':fmt(o.d.cmin)+'%'}</td>`+
+      `<td class="narrow">${o.d.rent==null?'—':o.d.rent.toFixed(2)}</td></tr>`;
+  }).join("") : `<tr><td colspan="7"><div class="empty">${B.available?"Aucune recette dont un ingrédient est en promo à ce seuil.":"Catalogue craft indisponible."}</div></td></tr>`;
+
+  root.innerHTML =
+    `<div class="controls"><label class="muted">Affaires <b id="affCount"></b></label>`+
+    `<label class="muted">Sens&nbsp;${sensSel}</label>`+
+    `<label class="muted">Seuil d'écart&nbsp;${seuilSel}</label>`+
+    `<span class="muted">prix actuel vs médiane historique du prix moyen</span></div>`+
+    `<h3 class="sec">💸 Prix bas du moment <span class="muted">— clique une ligne pour voir le graphe</span></h3>`+
+    `<div class="tablewrap"><table id="affTbl"><thead><tr>${head}</tr></thead><tbody id="affRows">${body}</tbody></table></div>`+
+    `<h3 class="sec">⚒️ Opportunités craft/brisage induites <span class="muted">— rentables maintenant ET un ingrédient est en promo</span></h3>`+
+    `<div class="tablewrap"><table><thead><tr><th class="name">Item</th><th class="type">Type</th><th class="runesb">Ingrédient(s) en promo</th><th class="narrow">Craft</th><th class="narrow">Bénéf</th><th class="narrow">C.min</th><th class="narrow">Rent</th></tr></thead><tbody id="opRows">${opBody}</tbody></table></div>`;
+  document.getElementById("affCount").textContent = rows.length;
+  document.getElementById("affSeuil").addEventListener("change", e=>{ AFF_SEUIL=Number(e.target.value); renderAffaires(); });
+  document.getElementById("affSens").addEventListener("change", e=>{ AFF_SENS=e.target.value; AFF_SORT={k:"ecart",dir:AFF_SENS==="buy"?1:-1}; renderAffaires(); });
+  document.querySelector("#affTbl thead").addEventListener("click", e=>{
+    const th=e.target.closest("th"); if(!th||th.dataset.sort==="false"||!th.dataset.k) return;
+    const k=th.dataset.k; if(AFF_SORT.k===k) AFF_SORT.dir*=-1; else AFF_SORT={k, dir:(k==="nom"||k==="type")?1:-1};
+    renderAffaires();
+  });
+  document.getElementById("affRows").addEventListener("click", e=>{
+    const star=e.target.closest(".star");
+    if(star){ const gid=+star.dataset.fav; toggleFav(gid); star.classList.toggle("on",isFav(gid)); renderListControls(); return; }
+    const tr=e.target.closest("tr"); if(!tr||!tr.dataset.gid) return;
+    gotoPrice(+tr.dataset.gid);
+  });
+  document.getElementById("opRows").addEventListener("click", e=>{
+    const tr=e.target.closest("tr"); if(!tr||!tr.dataset.gid) return;
+    const r=B.theo.find(x=>x.GID==tr.dataset.gid); if(r) openBModal(r,false);
+  });
+}
+// Cliquer une affaire → bascule sur l'onglet Prix dans le temps et ouvre le graphe.
+function gotoPrice(gid){
+  document.querySelector('nav.tabs button[data-go="prix"]').click();
+  FILTER=""; document.getElementById("q").value="";
+  if(SOURCE!=="avg"){ SOURCE="avg"; document.getElementById("source").value="avg"; }
+  renderRows(); showDetail(gid);
+  document.querySelector(".tablewrap").scrollTop=0;
+}
+
 // ── Boot ───────────────────────────────────────────────────────────────────
 (function initTypeFilter(){
   const types = [...new Set(DTV.items.map(it=>it.type).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'fr'));
@@ -753,6 +868,7 @@ document.addEventListener("keydown", e=>{ if(e.key==="Escape") closeBModal(); })
 renderListControls();
 renderHead(); renderRows();
 renderBrisage();
+renderAffaires();
 if(DTV.items.length){
   // sélectionne le 1er item de la vue (niveau le plus bas) pour montrer un graphe d'emblée
   const first = computeRows()[0];
