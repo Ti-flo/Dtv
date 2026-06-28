@@ -222,11 +222,6 @@ class PassiveCollector:
             # Journal comptable : ventes (msgId 65 en jeu, 73 hors jeu) + achats HDV (252).
             self._record_transaction(msg)
 
-        elif mtype == "ExchangeBidhouseMinimumItemPriceListMessage":
-            # Prix plancher réel par GID : x1/x10/x100/x1000. Bien plus frais que avgprices,
-            # idéal pour les tiers d'achat des ingrédients de craft.
-            self._record_min_prices(msg)
-
         elif mtype == "ExchangeLeaveMessage":
             log.debug("HDV closed (passive)")
 
@@ -350,39 +345,6 @@ class PassiveCollector:
         path = self._data_dir / "transactions_observations.csv"
         fields = ["timestamp", "type", "gid", "nom", "quantite",
                   "kamas_total", "kamas_unitaire", "compte_collecteur"]
-        is_new = not path.exists()
-        with self._lock:
-            with open(path, "a", newline="", encoding="utf-8") as f:
-                writer = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
-                if is_new:
-                    writer.writeheader()
-                writer.writerow(row)
-
-    def _record_min_prices(self, msg: dict):
-        """
-        Prix planchers réels par GID depuis ExchangeBidhouseMinimumItemPriceListMessage.
-        Arrive a chaque fois qu'on ouvre un type d'item dans le vendeur HDV.
-        prices = [prix_x1, prix_x10, prix_x100, prix_x1000] (0 = pas de stock a ce tier).
-        """
-        gid = msg.get("objectGID")
-        prices = msg.get("prices") or []
-        if gid is None or not prices:
-            return
-        tiers = (self._quantities or [1, 10, 100, 1000])[:4]
-        row = {
-            "timestamp": datetime.now().isoformat(),
-            "gid": gid,
-            "nom": self._names.get(gid, ""),
-        }
-        for i, tier in enumerate(tiers):
-            row[f"prix_x{tier}"] = prices[i] if i < len(prices) else 0
-        self._append_min_prices_row(row, tiers)
-
-    def _append_min_prices_row(self, row: dict, tiers: list):
-        day = datetime.now().strftime("%Y%m%d")
-        path = self._data_dir / f"min_prices_{day}.csv"
-        price_cols = [f"prix_x{t}" for t in tiers]
-        fields = ["timestamp", "gid", "nom"] + price_cols
         is_new = not path.exists()
         with self._lock:
             with open(path, "a", newline="", encoding="utf-8") as f:
