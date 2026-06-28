@@ -247,7 +247,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main():
-    args = build_parser().parse_args()
+    parser = build_parser()
+    args, unknown = parser.parse_known_args()
+    # Subcommands with a `rest` field (brisage, craft) are passthroughs:
+    # unknown args (--craft, --top, etc.) belong to the delegate script.
+    if hasattr(args, "rest") and unknown:
+        args.rest = (args.rest or []) + unknown
+    elif unknown:
+        parser.error(f"unrecognized arguments: {' '.join(unknown)}")
     args.func(args)
 
 
