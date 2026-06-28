@@ -187,6 +187,16 @@ def cmd_craft(args):
     _delegate(brisage.main, argv)
 
 
+def cmd_craftplan(args):
+    from dtv.scripts import craft_plan
+    argv = ["craft_plan", args.item]
+    if args.n_crafts is not None:
+        argv += ["--n-crafts", str(args.n_crafts)]
+    if args.days is not None:
+        argv += ["--days", str(args.days)]
+    _delegate(craft_plan.main, argv)
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="dtv", description="DofusTradingView — commande unique")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -224,6 +234,14 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("item", help="nom de l'item")
     sp.add_argument("rest", nargs=argparse.REMAINDER, help="args passés à brisage")
     sp.set_defaults(func=cmd_craft)
+
+    sp = sub.add_parser("craftplan", help="plan de craft optimisé (tiers d'achat + n_crafts)")
+    sp.add_argument("item", help="nom de l'item à fabriquer")
+    sp.add_argument("--n-crafts", type=int, default=None,
+                    help="forcer le nombre de crafts (sinon estimé)")
+    sp.add_argument("--days", type=int, default=None,
+                    help="fenêtre prix HDV réels en jours (def 7)")
+    sp.set_defaults(func=cmd_craftplan)
 
     return p
 

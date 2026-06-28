@@ -40,7 +40,24 @@ python -m dtv.scripts.dtv history "Frêne"        # tendance du prix dans le tem
 python -m dtv.scripts.dtv movers --top 30        # plus fortes variations (2 derniers snapshots)
 python -m dtv.scripts.dtv brisage --craft --top 50    # classement brisage (avg-prices auto)
 python -m dtv.scripts.dtv craft "Bâton de Boisaille"  # détail coût de craft d'un item
+python -m dtv.scripts.dtv craftplan "Bâton de Boisaille"  # plan d'achat optimisé (tiers + n_crafts)
 ```
+
+### Plan de craft optimisé (`craftplan`)
+
+> Calcule le **coût de craft réel** en choisissant le bon tier d'achat
+> (x1/x10/x100/x1000) pour chaque ingrédient, selon le nombre de crafts qu'on
+> fera. Prix réels HDV des 7 derniers jours (repli sur le prix moyen serveur).
+> Nécessite `dtv ingest` au préalable (lit la base SQLite).
+
+```powershell
+python -m dtv.scripts.dtv craftplan "Épée de Boued"            # n_crafts estimé d'après le coût
+python -m dtv.scripts.dtv craftplan "Marteau" --n-crafts 50    # forcer 50 crafts
+python -m dtv.scripts.dtv craftplan "Dague" --days 14          # élargir la fenêtre de prix réels
+```
+
+Échelle nombre de crafts (selon le coût unitaire) : `≤2k → 1000` · `≤10k → 200`
+· `≤100k → 20` · `≤300k → 10` · `>300k → 1` (item à vendre, pas à briser en masse).
 
 > `dtv brisage` / `dtv craft` piochent tout seuls le dernier `avgprices_*.csv`,
 > le catalogue équipements et `rune_gids.json`. Ajoute des flags pour surcharger
