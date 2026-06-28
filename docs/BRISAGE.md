@@ -171,10 +171,29 @@ GID,coefficient_reel,dernier_brisage
 2424,280,2026-06-27
 ```
 
-Passé via `--observations`, le CLI :
+Les observations sont **chargées automatiquement depuis la base SQLite**
+(`store.brisage_observations` lit la table `brisage_obs`, remplie par `dtv ingest`).
+On peut aussi forcer un CSV précis via `--observations`. Le CLI alors :
 - affiche les colonnes **Coeff Réel** + **Dernier Brisage** ;
 - **utilise le coeff réel par item** (au lieu de `--coeff`) pour Revenu/Bénéfice ;
 - la **date** dit si le coeff est encore fiable (le coeff dérive à chaque brisage).
+
+### Deux tableaux : THÉORIQUE vs RÉEL
+
+`dtv brisage` affiche **deux classements distincts** :
+
+| Tableau | Items | Coeff appliqué | Tri | Usage |
+|---|---|---|---|---|
+| 🏆 **TOP THÉORIQUE** | tout le catalogue | `--coeff` (déf 100 %) | Coeff Min ↑ | **découverte** : quels items *pourraient* être rentables (pari le plus sûr = Coeff Min le plus bas) |
+| 🎯 **BRISAGES RÉELS** | uniquement les items déjà brisés (coeff observé en base) | coeff **réel** observé | bénéfice réel ↓ | **watchlist** : ce qui est rentable *maintenant*, au vrai coeff |
+
+Chaque tableau reste **cohérent dans sa colonne bénéfice** : tous ses items sont
+chiffrés au même coeff (théorique uniforme, ou réel par item). Le tableau réel
+marque chaque ligne `✓`/`✗` (rentable ou non au coeff observé) et affiche `Rev@réel`.
+
+**Pourquoi c'est utile** : un item qu'on sait un peu rentable (coeff réel connu)
+dont le **coût de craft baisse** voit son bénéfice réel monter → il remonte en tête
+du tableau réel = *top brisage du moment*. C'est le signal d'action.
 
 > 🔜 **À terme, relevé automatiquement via CDP au moment du brisage** : le panneau de
 > brisage affiche, par item, le coefficient + les runes obtenues + une « valeur estimée »
@@ -183,17 +202,19 @@ Passé via `--observations`, le CLI :
 > rempliront seuls **et** valideront la formule. Voir TODO dans KNOWLEDGE.md. Pour
 > l'instant rempli à la main.
 >
-> **✅ Protocole RÉSOLU (dump CDP 27/06)** — le message résultat est
-> **`ExchangeCraftResultRunicRecyclingMessage`** :
-> - `frequencyBonus` = **coefficient de brisage réel** (confirmé : 8 % en jeu = `frequencyBonus:8`)
-> - `resultObjects` = runes obtenues (`{objectGID rune, quantity}` ; **vide** si coeff trop bas)
-> - `objectGID` = item brisé
+> **✅ Protocole RÉSOLU (dump CDP 27/06, confirmé HAR S7 28/06)** — le message résultat
+> est **`ExchangeCraftResultRunicRecyclingMessage`** :
+> - `frequencyBonus` = **coefficient de brisage réel** (confirmé : 8 % et 57 % en jeu)
+> - `resultObjects` = runes obtenues ; **vide** si coeff trop bas
+> - `objectGID` (niveau item) = item brisé
+> - ⚠️ **piège de casse** : les runes dans `resultObjects` utilisent `objectGid`/`objectQty`
+>   (≠ `objectGID`/`quantity` du niveau item) — bug historique « gidNone » corrigé,
+>   cf. `parse_recycling_runes`. Détail : `PROTOCOL.md` §5-bis.
 >
-> `PassiveCollector` le parse automatiquement et remplit `data/raw/brisage_observations.csv`
-> (`GID, coefficient_reel, dernier_brisage, runes_obtenues, nom, …`) → directement
-> exploitable par `brisage.py --observations`. Détail wire-level : `PROTOCOL.md` §5-bis.
-> ⚠️ Un export HAR DevTools ne capte PAS le WebSocket — c'est le dump CDP `--dump-raw`
-> qui a révélé le protocole.
+> `PassiveCollector` le parse automatiquement → `data/raw/brisage_observations.csv`,
+> ingéré dans `brisage_obs` par `dtv ingest`, **chargé d'office** par `dtv brisage`.
+> ⚠️ Un export HAR DevTools capte le WebSocket **si l'inspecteur était ouvert AVANT** —
+> les HAR S7 contiennent bien les 2 brisages. Sinon, dump CDP `--dump-raw`.
 
 ---
 

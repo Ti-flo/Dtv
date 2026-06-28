@@ -314,27 +314,35 @@ runique). Séquence confirmée sur un dump `ws_raw` réel (brisage d'un arc à c
 ```json
 {
   "_messageType": "ExchangeCraftResultRunicRecyclingMessage",
-  "craftResult": 1,
+  "craftResult": 2,
   "recyclingResults": [
     {
       "_type": "ObjectRuneRecyclingResult",
-      "objectUID": 316860449,
-      "objectGID": 829,            // ← item brisé (GID)
-      "quantity": 1,
-      "resultObjects": [],         // ← runes obtenues (ObjectItem: objectGID rune + quantity) ; [] = aucune
-      "frequencyBonus": 8          // ← ⭐ LE COEFFICIENT DE BRISAGE RÉEL (en %)
+      "objectUID": 359036171,
+      "objectGID": 74,             // ← item brisé (GID)  — casse objectGID (D MAJ)
+      "quantity": 100,             // ← nb d'items brisés en une fois
+      "resultObjects": [           // ← runes obtenues ; [] = aucune (coeff trop bas)
+        { "_type": "RecyclingResult", "objectGid": 1519, "objectQty": 3 }
+      ],
+      "frequencyBonus": 2          // ← ⭐ LE COEFFICIENT DE BRISAGE RÉEL (en %)
     }
   ]
 }
 ```
 
-- **`frequencyBonus` = le coefficient de brisage** (confirmé : Flo a vu « 8 % » en jeu,
-  le message porte `frequencyBonus: 8`). On ne le connaît bien qu'**après** le cast — le
-  message d'ouverture (`ExchangeStartOk…`) ne le contient pas.
+- **`frequencyBonus` = le coefficient de brisage** (confirmé : Flo a vu « 8 % » et
+  « 57 % » en jeu, le message porte `frequencyBonus` correspondant). On ne le connaît
+  bien qu'**après** le cast — le message d'ouverture (`ExchangeStartOk…`) ne le contient pas.
 - **`resultObjects`** = les runes obtenues. **Vide** quand le coeff est trop bas pour
-  produire une rune (cas observé : arc bas niveau à 8 % → 0 rune). Sinon liste d'ObjectItem
-  `{objectGID: <GID rune>, quantity: N}` → traduits en code rune via `rune_gids.json`.
-- **`objectGID`** = l'item brisé → permet de remplir `coefficient_reel` par item.
+  produire une rune (cas observé : arc bas niveau à 8 % → 0 rune). Sinon liste de
+  `RecyclingResult`.
+- ⚠️ **PIÈGE DE CASSE (vérifié sur HAR S7, 28/06)** : au niveau de l'item brisé le champ
+  est **`objectGID`** (D majuscule) + **`quantity`**, mais dans `resultObjects` chaque
+  rune est **`objectGid`** (d minuscule) + **`objectQty`** — noms ET casse différents !
+  Lire `objectGID`/`quantity` pour les runes renvoie `None` → bug historique « gidNone×1 ».
+  Le parseur (`parse_recycling_runes`) lit les deux casses par robustesse et rend
+  `gid<N>` si le GID rune est absent de `rune_gids.json` (jamais `gidNone`).
+- **`objectGID`** (niveau item) = l'item brisé → remplit `coefficient_reel` par item.
 
 ### Bruit autour de l'atelier (à ignorer)
 
