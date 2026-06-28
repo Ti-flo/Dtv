@@ -108,8 +108,10 @@ _BRISAGE_FIELDS = (
     "Craft_Manquants", "Coeff_Min", "Coeff_Reel", "Dernier_Brisage",
     "Revenu_theo", "Benefice_theo", "Rent_theo",
     "Revenu_reel", "Benefice_reel", "Rent_reel", "Runes",
+    "craft", "runes_detail",  # détail au clic (recette par batch + runes)
 )
-_BRISAGE_CAP = 1000  # plafond du tableau théorique embarqué (les + rentables)
+_BRISAGE_CAP = 500   # plafond du tableau théorique embarqué (les + rentables ; détail au clic embarqué)
+_CRAFT_BATCHES = (1, 10, 100, 1000)
 
 
 def build_brisage_data(conn: sqlite3.Connection, *, coeff: float = 100.0) -> dict:
@@ -194,12 +196,67 @@ def build_brisage_data(conn: sqlite3.Connection, *, coeff: float = 100.0) -> dic
     for r in rows:
         r["Prix_Moyen"] = item_prices.get(r["GID"])
 
+    # Détail au clic : recette + coût de craft à PLUSIEURS batchs (le moteur
+    # craft_plan refait sa recherche de tier optimal pour chaque taille), + le
+    # détail des runes. Calculé seulement pour les lignes embarquées.
+    cat_by_gid: dict = {}
+    for it in catalog:
+        g = br.to_gid(it.get("GID"))
+        if g is not None:
+            cat_by_gid.setdefault(g, it)
+
+    def _craft_detail(it):
+        recipe_raw = br.parse_recipe(it.get("Recette") or "")
+        if not recipe_raw:
+            return None
+        if use_db_craft:
+            recipe_items = [(qty, br.normalize_name(ing)) for qty, ing in recipe_raw]
+            ing_p = {n: ing_tier_prices[n] for _, n in recipe_items if n in ing_tier_prices}
+            recipe = [{"nom": ing, "qty": qty,
+                       "tiers": ing_tier_prices.get(br.normalize_name(ing))}
+                      for qty, ing in recipe_raw]
+            cpc = {}
+            for B in _CRAFT_BATCHES:
+                pl = craft.craft_plan(recipe_items, ing_p, n_crafts=B)
+                cpc[str(B)] = round(pl["cost_per_craft"], 2) if pl else None
+            pa = craft.craft_plan(recipe_items, ing_p)
+            cpc["auto"] = round(pa["cost_per_craft"], 2) if pa else None
+            return {"recipe": recipe, "n_auto": (pa["n_crafts"] if pa else None),
+                    "cpc": cpc, "db": True}
+        # Repli avgprices (pas de tiers) : coût plat, identique quel que soit le batch.
+        cc = br.craft_cost(it.get("Recette") or "", name_prices)
+        flat = round(cc["cost"], 2) if cc else None
+        recipe = [{"nom": ing, "qty": qty, "tiers": None} for qty, ing in recipe_raw]
+        return {"recipe": recipe, "n_auto": None, "db": False,
+                "cpc": {k: flat for k in ("auto", "1", "10", "100", "1000")}}
+
+    def _runes_detail(effets, niveau):
+        out = []
+        for code, q in sorted(br.breakdown(effets or "", niveau or 0).items(),
+                              key=lambda kv: -kv[1]):
+            out.append({"code": code, "nom": br.RUNES.get(code, {}).get("nom", code),
+                        "qty": round(q, 3), "price": br.rune_price(code, rune_prices)})
+        return out
+
+    def _enrich(r):
+        if "craft" in r:
+            return r            # déjà enrichi (item présent dans theo ET real)
+        it = cat_by_gid.get(r["GID"])
+        r["craft"] = _craft_detail(it) if it else None
+        r["runes_detail"] = _runes_detail(it.get("Effets") if it else "", r["Niveau"])
+        return r
+
     def _trim(r):
         return {k: r.get(k) for k in _BRISAGE_FIELDS}
 
     real = [r for r in rows if r["Coeff_Reel"] is not None]
     real.sort(key=lambda r: (r["Benefice_reel"] is not None, r["Benefice_reel"] or 0),
               reverse=True)
+
+    for r in real:
+        _enrich(r)
+    for r in rows[:_BRISAGE_CAP]:
+        _enrich(r)
 
     return {
         "available": True,
