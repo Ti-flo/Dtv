@@ -17,6 +17,7 @@ EXEMPLES
 """
 import argparse
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -138,7 +139,8 @@ def main():
         print(f"  {ing:28s} {d['qty']:>4d} {_fmt(d['total_needed']):>8s} {tier:>6s} "
               f"{pu:>10s} {line:>12s} {np_str:>6s}{flag}")
         if np_ is not None and np_ > 20:
-            warnings.append((display_names.get(d["nom"], d["nom"]), d["tier"], np_, d["total_needed"]))
+            warnings.append((display_names.get(d["nom"], d["nom"]), d["tier"], np_,
+                             d["total_needed"], d.get("available_tiers", {})))
 
     print("  " + "-" * 85)
     flag = "" if plan["complete"] else f"   /!\\ {len(plan['missing'])} ingrédient(s) sans prix"
@@ -147,10 +149,20 @@ def main():
           f"= {_fmt(plan['cost_total'])} kamas")
     if warnings:
         print(f"\n  /!\\ Ingrédients avec trop de transactions (lot trop petit) :")
-        for nom, tier, np_, needed in warnings:
-            next_tier = next((t for t in (10, 100, 1000) if t > tier), None)
-            suggestion = f"  -> ouvre-le à x{next_tier} dans l'HDV pendant la prochaine capture" if next_tier else ""
-            print(f"       {nom}: {needed} unités par lot x{tier} = {np_} achats !{suggestion}")
+        for nom, tier, np_, needed, avail in warnings:
+            larger = {t: p for t, p in avail.items() if t > tier}
+            if larger:
+                # Données x100/x1000 existent mais plus chères à l'unité → conseil pratique
+                best_large = min(larger, key=lambda t: larger[t] / t)
+                pu_large = larger[best_large] / best_large
+                np_large = math.ceil(needed / best_large)
+                print(f"       {nom}: x{tier} moins cher/u mais {np_} achats"
+                      f" -> x{best_large} ({pu_large:.0f} kamas/u) = {np_large} achats seulement")
+            else:
+                # Pas de données pour les lots plus grands → capturer
+                next_tier = next((t for t in (10, 100, 1000) if t > tier), None)
+                hint = f"  -> ouvre-le à x{next_tier} dans l'HDV pendant la prochaine capture" if next_tier else ""
+                print(f"       {nom}: {needed} unités par lot x{tier} = {np_} achats !{hint}")
     if not plan["complete"]:
         print(f"\n  Ingrédients sans prix HDV ni moyen : "
               f"{', '.join(display_names.get(m, m) for m in plan['missing'])}")

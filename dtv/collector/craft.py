@@ -38,7 +38,7 @@ QUANTITY_TIERS = (1, 10, 100, 1000)
 # → NCRAFT_BEYOND (item à revendre tel quel plutôt qu'à fabriquer en masse).
 NCRAFT_SCALE = (
     (2_000, 1000),
-    (10_000, 200),
+    (10_000, 100),
     (100_000, 20),
     (300_000, 10),
 )
@@ -132,10 +132,11 @@ def craft_plan(recipe_items: list, ingredient_tier_prices: dict,
         tp = ingredient_tier_prices.get(nom)
         total_needed = qty * n_crafts
         bt = best_tier(tp, total_needed) if tp else None
+        avail = {t: p for t, p in (tp or {}).items() if p and p > 0}
         if bt is None:
             detail.append({"qty": qty, "nom": nom, "tier": None, "unit_price": None,
                            "line_cost": None, "total_needed": total_needed,
-                           "n_purchases": None})
+                           "n_purchases": None, "available_tiers": avail})
         else:
             tier, up = bt
             line = qty * up
@@ -143,7 +144,7 @@ def craft_plan(recipe_items: list, ingredient_tier_prices: dict,
             n_purchases = math.ceil(total_needed / tier)
             detail.append({"qty": qty, "nom": nom, "tier": tier, "unit_price": up,
                            "line_cost": line, "total_needed": total_needed,
-                           "n_purchases": n_purchases})
+                           "n_purchases": n_purchases, "available_tiers": avail})
 
     return {
         "n_crafts": n_crafts,

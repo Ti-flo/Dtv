@@ -26,13 +26,13 @@ def test_echelle_n_crafts():
     # bornes hautes incluses, sauts aux frontières
     assert craft.estimate_n_crafts(1) == 1000
     assert craft.estimate_n_crafts(2000) == 1000
-    assert craft.estimate_n_crafts(2001) == 200
-    assert craft.estimate_n_crafts(10_000) == 200
+    assert craft.estimate_n_crafts(2001) == 100
+    assert craft.estimate_n_crafts(10_000) == 100
     assert craft.estimate_n_crafts(100_000) == 20
     assert craft.estimate_n_crafts(300_000) == 10
     assert craft.estimate_n_crafts(300_001) == 1
     assert craft.estimate_n_crafts(None) == 1
-    print("✅ échelle n_crafts (1000/200/20/10/1, bornes incluses) OK")
+    print("✅ échelle n_crafts (1000/100/20/10/1, bornes incluses) OK")
 
 
 def test_best_tier():
