@@ -250,8 +250,11 @@ class PassiveCollector:
 
         self._append_hdv_row(record)
         self.items_captured += 1
-        log.info("OK recorded item GID=%s (%d offers) - prix_x1=%s",
-                 gid, len(offers), record.get("prix_x1"))
+        log.info("OK GID=%s %s | x1=%s x10=%s x100=%s x1000=%s (%d offres)",
+                 gid, record.get("nom") or "?",
+                 record.get("prix_x1") or "-", record.get("prix_x10") or "-",
+                 record.get("prix_x100") or "-", record.get("prix_x1000") or "-",
+                 len(offers))
 
     def _record_brisage(self, msg: dict):
         """
