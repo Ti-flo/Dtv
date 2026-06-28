@@ -72,7 +72,9 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   tbody tr { cursor:pointer; }
   tbody tr:hover { background:var(--panel); }
   tbody tr.sel { background:#1f6feb22; outline:1px solid var(--accent); }
-  td.name { max-width:260px; overflow:hidden; text-overflow:ellipsis; }
+  th.name, td.name { max-width:170px; overflow:hidden; text-overflow:ellipsis; }
+  th.var, td.var, th.narrow, td.narrow { padding-left:6px; padding-right:6px; }
+  td.var, td.narrow { font-variant-numeric:tabular-nums; }
   .muted { color:var(--muted); }
   .spark { display:block; }
   .detail {
@@ -201,19 +203,42 @@ document.getElementById("tabs").addEventListener("click", e=>{
 });
 
 // ── Onglet « Prix dans le temps » ──────────────────────────────────────────
-// Var % et Tendance (sparkline) sont TOUJOURS basées sur le prix moyen marché ;
+// Var j/s/m et Tendance sont TOUJOURS basées sur le prix moyen marché ;
 // Dernier/Min/Max/Moyen suivent la source sélectionnée.
+const DAY = 86400000;
+// Variation % du prix moyen entre maintenant et ~N jours en arrière (null si pas
+// d'historique assez ancien).
+function varOver(series, days){
+  if(!series || series.length<2) return null;
+  const lastT = Date.parse(series[series.length-1][0]), last = series[series.length-1][1];
+  const target = lastT - days*DAY;
+  let past=null;
+  for(let i=series.length-1;i>=0;i--){ if(Date.parse(series[i][0])<=target){ past=series[i][1]; break; } }
+  if(past==null || past===0) return null;
+  return (last-past)/past*100;
+}
+// Tronque une série à ses N derniers jours (relatif au dernier point).
+function lastDays(series, days){
+  if(!series || !series.length) return series||[];
+  const lastT = Date.parse(series[series.length-1][0]);
+  const out = series.filter(p=>Date.parse(p[0]) >= lastT - days*DAY);
+  return out.length>=2 ? out : series.slice(-2);
+}
+const varCell = v => v==null ? '<span class="muted">—</span>'
+  : `<span style="color:${trendColor(v)}">${pct(v)}</span>`;
 const COLS = [
   {k:"nom",   l:"Nom",    cls:"name", get:r=>r.nom, fmt:r=>r.nom},
   {k:"gid",   l:"GID",    get:r=>r.gid, fmt:r=>r.gid},
-  {k:"last",  l:"Dernier",get:r=>r.st?r.st.last:null, fmt:r=>fmt(r.st&&r.st.last)},
+  {k:"last",  l:"Dernier",title:"Dernier prix (source sélectionnée)", get:r=>r.st?r.st.last:null, fmt:r=>fmt(r.st&&r.st.last)},
   {k:"min",   l:"Min",    get:r=>r.st?r.st.min:null,  fmt:r=>fmt(r.st&&r.st.min)},
   {k:"max",   l:"Max",    get:r=>r.st?r.st.max:null,  fmt:r=>fmt(r.st&&r.st.max)},
   {k:"avg",   l:"Moyen",  get:r=>r.st?r.st.avg:null,  fmt:r=>fmt(r.st&&r.st.avg)},
-  {k:"var",   l:"Var (moy)", get:r=>r.varpct, fmt:r=>`<span style="color:${trendColor(r.varpct)}">${pct(r.varpct)}</span>`},
-  {k:"hdvn",  l:"Relevés HDV", get:r=>r.hdvN, fmt:r=>r.hdvN||'<span class="muted">0</span>'},
-  {k:"hdvlast",l:"Dernier HDV", get:r=>r.hdvLastT, fmt:r=>r.hdvLast?dmy(r.hdvLast):'<span class="muted">—</span>'},
-  {k:"spark", l:"Tendance (moy)", get:r=>0, fmt:r=>sparkline(r.avgS), sort:false},
+  {k:"varj",  l:"Var j",  cls:"var", title:"Variation du prix moyen sur 24h", get:r=>r.varj, fmt:r=>varCell(r.varj)},
+  {k:"vars",  l:"Var s",  cls:"var", title:"Variation du prix moyen sur 1 semaine", get:r=>r.vars, fmt:r=>varCell(r.vars)},
+  {k:"varm",  l:"Var m",  cls:"var", title:"Variation du prix moyen sur 1 mois", get:r=>r.varm, fmt:r=>varCell(r.varm)},
+  {k:"hdvn",  l:"Relevé", cls:"narrow", title:"Nombre de relevés HDV réels", get:r=>r.hdvN, fmt:r=>r.hdvN||'<span class="muted">0</span>'},
+  {k:"hdvlast",l:"Dernier",cls:"narrow", title:"Date du dernier relevé HDV", get:r=>r.hdvLastT, fmt:r=>r.hdvLast?dmy(r.hdvLast):'<span class="muted">—</span>'},
+  {k:"spark", l:"Tendance", title:"Prix moyen sur 7 jours (échelle 0→max)", get:r=>0, fmt:r=>sparkline(lastDays(r.avgS,7)), sort:false},
 ];
 let SOURCE="avg", SORT={k:"last",dir:-1}, FILTER="", SELECTED=null;
 
@@ -223,10 +248,9 @@ function computeRows(){
     const s = seriesOf(it, SOURCE);
     const st = statsOf(s);
     const avgS = seriesOf(it, "avg");
-    const avgSt = statsOf(avgS);
-    const varpct = avgSt && avgSt.first ? (avgSt.last-avgSt.first)/avgSt.first*100 : null;
     const hdvLast = it.hdv.length ? it.hdv[it.hdv.length-1][0] : null;
-    return {gid:it.gid, nom:it.nom, item:it, s, st, avgS, varpct,
+    return {gid:it.gid, nom:it.nom, item:it, s, st, avgS,
+            varj:varOver(avgS,1), vars:varOver(avgS,7), varm:varOver(avgS,30),
             hdvN:it.hdv.length, hdvLast, hdvLastT:hdvLast?Date.parse(hdvLast):-Infinity};
   }).filter(r=>r.st);   // n'affiche que les items qui ont des données pour cette source
   if(q) rows = rows.filter(r=>r.nom.toLowerCase().includes(q) || String(r.gid).includes(q));
@@ -242,7 +266,8 @@ function computeRows(){
 function renderHead(){
   document.getElementById("head").innerHTML = COLS.map(c=>{
     const arr = SORT.k===c.k ? `<span class="arrow">${SORT.dir<0?"▼":"▲"}</span>` : "";
-    return `<th class="${c.cls||''}" data-k="${c.k}" data-sort="${c.sort!==false}">${c.l} ${arr}</th>`;
+    const tt = c.title ? ` title="${c.title}"` : "";
+    return `<th class="${c.cls||''}"${tt} data-k="${c.k}" data-sort="${c.sort!==false}">${c.l} ${arr}</th>`;
   }).join("");
 }
 function renderRows(){
@@ -251,22 +276,26 @@ function renderRows(){
   const body = rows.map(r=>{   // tous les items, sans plafond
     const sel = SELECTED===r.gid ? ' class="sel"' : '';
     return `<tr data-gid="${r.gid}"${sel}>` +
-      COLS.map(c=>`<td class="${c.cls||''}">${c.fmt(r)}</td>`).join("") + `</tr>`;
+      COLS.map(c=>{
+        const ttl = c.k==="nom" ? ` title="${String(r.nom).replace(/"/g,"&quot;")}"` : "";
+        return `<td class="${c.cls||''}"${ttl}>${c.fmt(r)}</td>`;
+      }).join("") + `</tr>`;
   }).join("");
   document.getElementById("rows").innerHTML = body ||
     `<tr><td colspan="${COLS.length}"><div class="empty">Aucun item — lance d'abord <code>dtv ingest</code>.</div></td></tr>`;
 }
 
-// Mini sparkline SVG du prix moyen. Couleur inversée : rouge si ça monte, vert si ça descend.
+// Mini sparkline SVG du prix moyen (7 derniers jours). Échelle Y 0→max, comme le
+// graphe. Couleur inversée : rouge si ça monte, vert si ça descend.
 function sparkline(s){
   if(!s || s.length<2) return '<span class="muted">—</span>';
-  const v=s.map(p=>p[1]), mn=Math.min(...v), mx=Math.max(...v), W=46,H=16,r=mx-mn||1;
-  const pts=v.map((y,i)=>`${(i/(v.length-1)*W).toFixed(1)},${(H-(y-mn)/r*H).toFixed(1)}`).join(" ");
+  const v=s.map(p=>p[1]), mx=Math.max(...v)||1, W=46,H=16;
+  const pts=v.map((y,i)=>`${(i/(v.length-1)*W).toFixed(1)},${(H-(y/mx)*H).toFixed(1)}`).join(" ");
   return `<svg class="spark" width="${W}" height="${H}"><polyline fill="none" stroke="${trendColor(v[v.length-1]-v[0])}" stroke-width="1.5" points="${pts}"/></svg>`;
 }
 
 // ── Graphe détaillé (SVG maison) ───────────────────────────────────────────
-let DETAIL_ON = {avg:true, x1:true, x10:false, x100:false, x1000:false};
+let DETAIL_ON = {avg:true, x1:true, x10:true, x100:true, x1000:true};
 function showDetail(gid){
   SELECTED = gid;
   const it = DTV.items.find(i=>i.gid===gid);
@@ -289,8 +318,14 @@ function showDetail(gid){
 function statBlock(it){
   const blocks = ["avg","x1","x10","x100","x1000"].map(src=>{
     const st = statsOf(seriesOf(it,src)); if(!st) return "";
-    return `<div class="stat"><div class="v" style="color:${TIER_COLORS[src]}">${fmt(st.last)}</div>`+
-           `<div class="l">${TIER_LABEL[src]} · min ${fmt(st.min)} / max ${fmt(st.max)} / moy ${fmt(st.avg)}</div></div>`;
+    const div = TIER_DIV[src];
+    // prix unitaire affiché À CÔTÉ du prix du lot pour comparer facilement
+    const unit = div>1 ? ` <span class="muted">= ${fmt(st.last/div)}/u</span>` : "";
+    const mm = div>1
+      ? `lot min ${fmt(st.min)} / max ${fmt(st.max)} · /u min ${fmt(st.min/div)} / max ${fmt(st.max/div)}`
+      : `min ${fmt(st.min)} / max ${fmt(st.max)} / moy ${fmt(st.avg)}`;
+    return `<div class="stat"><div class="v" style="color:${TIER_COLORS[src]}">${fmt(st.last)}${unit}</div>`+
+           `<div class="l">${TIER_LABEL[src]} · ${mm}</div></div>`;
   }).join("");
   return `<div class="statgrid">${blocks||'<span class="muted">aucune donnée</span>'}</div>`;
 }
@@ -330,18 +365,21 @@ function drawChart(it){
     grid+=`<text x="${x.toFixed(1)}" y="${H-8}" text-anchor="${f===0?'start':f===1?'end':'middle'}">${new Date(t).toLocaleDateString('fr-FR',{day:'2-digit',month:'2-digit'})}</text>`;
   });
   const paths = series.map(s=>{
-    const dots = s.pts.map(p=>`<circle cx="${sx(p[0]).toFixed(1)}" cy="${sy(p[1]).toFixed(1)}" r="2.5" fill="${s.color}" data-v="${p[1]}" data-t="${p[0]}"/>`).join("");
+    const div = TIER_DIV[s.src];
+    const dots = s.pts.map(p=>`<circle cx="${sx(p[0]).toFixed(1)}" cy="${sy(p[1]).toFixed(1)}" r="2.5" fill="${s.color}" data-u="${p[1]}" data-lot="${p[1]*div}" data-src="${s.src}" data-t="${p[0]}"/>`).join("");
     const line = s.pts.length>1 ? `<polyline fill="none" stroke="${s.color}" stroke-width="1.8" points="${s.pts.map(p=>`${sx(p[0]).toFixed(1)},${sy(p[1]).toFixed(1)}`).join(" ")}"/>` : "";
     return line+dots;
   }).join("");
   host.innerHTML = `<svg width="100%" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="overflow:visible">${grid}${paths}</svg>`;
-  // tooltip
+  // tooltip : prix du LOT + prix UNITAIRE côte à côte
   const tip=document.getElementById("tip");
   host.querySelectorAll("circle").forEach(c=>{
     c.addEventListener("mousemove",e=>{
       tip.style.display="block"; tip.style.left=(e.pageX+12)+"px"; tip.style.top=(e.pageY-10)+"px";
-      const t=new Date(+c.dataset.t).toLocaleString('fr-FR');
-      tip.innerHTML=`<b>${fmt(+c.dataset.v)}</b> kamas<br><span class="muted">${t}</span>`;
+      const t=new Date(+c.dataset.t).toLocaleString('fr-FR'), src=c.dataset.src;
+      const lot=fmt(+c.dataset.lot), u=fmt(+c.dataset.u);
+      const line = TIER_DIV[src]>1 ? `lot <b>${lot}</b> · unité <b>${u}</b> k` : `<b>${u}</b> k`;
+      tip.innerHTML=`<span style="color:${TIER_COLORS[src]}">${TIER_LABEL[src]}</span><br>${line}<br><span class="muted">${t}</span>`;
     });
     c.addEventListener("mouseleave",()=>tip.style.display="none");
   });
