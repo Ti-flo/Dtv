@@ -82,6 +82,31 @@ def _load_rune_gid_to_code(path: Path = _RUNE_GIDS_PATH) -> dict[int, str]:
     return out
 
 
+def parse_recycling_runes(result_objects, rune_codes: dict) -> str:
+    """
+    Runes obtenues d'un brisage → chaîne « code×qty, code×qty » (vide si aucune).
+
+    Structure réelle (vérifiée sur ExchangeCraftResultRunicRecyclingMessage) :
+        resultObjects = [{"_type":"RecyclingResult","objectGid":1519,"objectQty":3}, …]
+
+    ATTENTION protocole : au niveau de l'item brisé le champ est `objectGID`
+    (D majuscule), mais dans resultObjects c'est `objectGid` / `objectQty`. On
+    lit les deux casses pour être robuste aux variantes serveur. Un GID de rune
+    inconnu (absent de rune_gids.json) est rendu « gid<N> » plutôt que perdu.
+    """
+    runes = []
+    for ro in result_objects or []:
+        rgid = ro.get("objectGid")
+        if rgid is None:
+            rgid = ro.get("objectGID")
+        qty = ro.get("objectQty")
+        if qty is None:
+            qty = ro.get("quantity", 1)
+        code = rune_codes.get(rgid, f"gid{rgid}")
+        runes.append(f"{code}×{qty}")
+    return ", ".join(runes)
+
+
 class PassiveCollector:
     """
     Feed it WebSocket frames via handle_frame(); it writes CSVs as data arrives.
@@ -277,14 +302,7 @@ class PassiveCollector:
         for r in results:
             gid = r.get("objectGID")
             coeff = r.get("frequencyBonus")
-            # Runes obtenues : code rune (via rune_gids) × quantité ; sinon GID brut.
-            runes = []
-            for ro in r.get("resultObjects") or []:
-                rgid = ro.get("objectGID")
-                qty = ro.get("quantity", 1)
-                code = self._rune_codes.get(rgid, f"gid{rgid}")
-                runes.append(f"{code}×{qty}")
-            runes_str = ", ".join(runes)
+            runes_str = parse_recycling_runes(r.get("resultObjects"), self._rune_codes)
             row = {
                 "GID": gid,
                 "coefficient_reel": coeff,

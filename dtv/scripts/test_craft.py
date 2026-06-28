@@ -155,6 +155,46 @@ def test_store_tier_prices():
     print("✅ store.tier_prices_for_gids (dernier snapshot / repli avgprice si >7j) OK")
 
 
+def test_store_brisage_observations():
+    db = Path(tempfile.mktemp(suffix=".db"))
+    conn = store.connect(db)
+    now = datetime.now()
+    old = (now - timedelta(days=5)).isoformat()
+    recent = (now - timedelta(days=1)).isoformat()
+
+    # GID 850 : 2 brisages → on prend le DERNIER (recent), coeff 57 (pas l'ancien 80)
+    conn.execute("INSERT INTO brisage_obs(ts,gid,nom,coefficient_reel,dernier_brisage,runes_obtenues,account)"
+                 " VALUES (?,?,?,?,?,?,?)", (old, 850, "Anneau Agilesque", 80.0, "2026-06-23", "ag×2", "j"))
+    conn.execute("INSERT INTO brisage_obs(ts,gid,nom,coefficient_reel,dernier_brisage,runes_obtenues,account)"
+                 " VALUES (?,?,?,?,?,?,?)", (recent, 850, "Anneau Agilesque", 57.0, "2026-06-28", "ag×2", "j"))
+    # GID 900 : coeff NULL (brisage sans coeff capté) → exclu
+    conn.execute("INSERT INTO brisage_obs(ts,gid,nom,coefficient_reel,dernier_brisage,runes_obtenues,account)"
+                 " VALUES (?,?,?,?,?,?,?)", (recent, 900, "Sans Coeff", None, "2026-06-28", "", "j"))
+    conn.commit()
+
+    obs = store.brisage_observations(conn)
+    assert obs[850]["coeff"] == 57.0, obs[850]              # dernier, pas l'ancien
+    assert obs[850]["date"] == "2026-06-28", obs[850]
+    assert 900 not in obs                                   # coeff NULL → exclu
+    conn.close()
+    os.unlink(db)
+    print("✅ store.brisage_observations (dernier coeff par GID, NULL exclu) OK")
+
+
+def test_parse_recycling_runes():
+    from dtv.collector.passive_capture import parse_recycling_runes
+    # Structure réelle du message (HAR) : objectGid / objectQty (casse Dofus)
+    real = [{"_type": "RecyclingResult", "objectGid": 1519, "objectQty": 3}]
+    assert parse_recycling_runes(real, {1519: "ag"}) == "ag×3"
+    # GID rune non mappé → « gid<N> » et JAMAIS « gidNone » (l'ancien bug)
+    assert parse_recycling_runes(real, {}) == "gid1519×3"
+    # Aucune rune (coeff bas, resultObjects vide)
+    assert parse_recycling_runes([], {1519: "ag"}) == ""
+    # Repli ancienne casse objectGID/quantity (robustesse variantes serveur)
+    assert parse_recycling_runes([{"objectGID": 1519, "quantity": 2}], {1519: "ag"}) == "ag×2"
+    print("✅ parse_recycling_runes (objectGid/objectQty, plus de gidNone) OK")
+
+
 if __name__ == "__main__":
     test_echelle_n_crafts()
     test_best_tier()
@@ -164,4 +204,6 @@ if __name__ == "__main__":
     test_plan_n_purchases()
     test_plan_manquant()
     test_store_tier_prices()
+    test_store_brisage_observations()
+    test_parse_recycling_runes()
     print("\n🏁 Tous les tests craft passent.")

@@ -222,6 +222,51 @@ def load_observations(path: Path) -> dict[int, dict]:
     return obs
 
 
+# ── Rendu d'un classement ────────────────────────────────────────────────────
+def _render_ranking(rows: list, top: int, craft: bool, show_obs: bool, *,
+                    real_mode: bool, title: str, subtitle: str, sort_label: str,
+                    rev_label: str, rev_key: str, ben_key: str, rent_key: str):
+    """
+    Affiche un tableau de rentabilité de brisage.
+
+    rev_key/ben_key/rent_key : colonnes revenu/bénéfice/rentabilité à lire dans
+    chaque ligne (théorique au coeff --coeff, ou réel au coeff observé).
+    real_mode=True ajoute un marqueur ✓/✗ (rentable ou non au coeff réel).
+    """
+    cost_label = "Craft" if craft else "Coût"
+
+    print(f"\n{title}")
+    if subtitle:
+        print(subtitle)
+    print(f"   trié par {sort_label} — {min(top, len(rows))}/{len(rows)} items\n")
+
+    mark = "  " if real_mode else ""   # 2 cols pour le marqueur ✓/✗ en mode réel
+    header = (f"  {mark}{'Nom':26s} {'Niv':>3s} {rev_label:>10s} {cost_label:>10s} "
+              f"{'CoeffMin':>9s} {'Bénéf':>11s} {'Rent':>6s}")
+    if show_obs:
+        header += f" {'CoeffRéel':>9s} {'DernBris':>10s}"
+    print(header)
+    print("  " + "─" * (84 + len(mark) + (21 if show_obs else 0)))
+    for r in rows[:top]:
+        cout = f"{r['Cout_HDV']:,.0f}" if r["Cout_HDV"] is not None else "—"
+        cmin = f"{r['Coeff_Min']:,.0f}%" if r["Coeff_Min"] is not None else "—"
+        ben = r.get(ben_key)
+        ben_str = f"{ben:,.0f}" if ben is not None else "—"
+        rent = r.get(rent_key)
+        rent_str = f"{rent:.2f}" if rent is not None else "—"
+        rev = r.get(rev_key)
+        rev_str = f"{rev:,.0f}" if rev is not None else "—"
+        # ✓ si rentable au coeff de ce tableau (bénéfice positif), ✗ sinon.
+        flag = (("✓ " if (ben is not None and ben > 0) else "✗ ") if real_mode else "")
+        line = (f"  {flag}{r['Nom'][:26]:26s} {r['Niveau']:3d} {rev_str:>10s} "
+                f"{cout:>10s} {cmin:>9s} {ben_str:>11s} {rent_str:>6s}")
+        if show_obs:
+            creel = f"{r['Coeff_Reel']:,.0f}%" if r["Coeff_Reel"] is not None else "—"
+            dbris = r["Dernier_Brisage"] or "—"
+            line += f" {creel:>9s} {dbris:>10s}"
+        print(line)
+
+
 # ── Main ────────────────────────────────────────────────────────────────────
 def main():
     ap = argparse.ArgumentParser(description="Classement rentabilité de brisage")
@@ -321,7 +366,10 @@ def main():
         except Exception:
             pass
 
-    # Calcul
+    # Calcul : pour chaque item on calcule la BASE (revenu au coeff 100 %) et le
+    # coût. On en dérive DEUX perspectives, pour rester cohérent par tableau :
+    #   - THÉORIQUE : revenu au coeff --coeff (déf 100 %), uniforme pour tous.
+    #   - RÉEL      : revenu au coeff observé en jeu (si on a brisé l'item).
     rows = []
     for it in catalog:
         effets = it.get("Effets") or ""
@@ -349,75 +397,100 @@ def main():
         else:
             cout = item_prices.get(gid) if (gid is not None and item_prices) else None
         obs = observations.get(gid) if (gid is not None and observations) else None
-        # coeff réel observé par item s'il existe, sinon le coeff global (--coeff)
-        coeff_item = obs["coeff"] if (obs and obs["coeff"]) else args.coeff
-        res = br.profitability(effets, niveau, cout, rune_prices, coeff=coeff_item)
-        if res["revenu_coeff100"] <= 0:
+        coeff_reel = obs["coeff"] if (obs and obs["coeff"]) else None
+
+        res = br.profitability(effets, niveau, cout, rune_prices, coeff=args.coeff)
+        base = res["revenu_coeff100"]            # revenu des runes au coeff 100 %
+        if base <= 0:
             continue
+
+        def _perf(coeff):
+            """(revenu, bénéfice, rentabilité) à un coeff donné. revenu sans coût OK."""
+            if coeff is None:
+                return (None, None, None)
+            revenu = base * coeff / 100.0
+            if cout is None:
+                return (round(revenu, 2), None, None)
+            return (round(revenu, 2), round(revenu - cout, 2),
+                    round(revenu / cout, 4) if cout else None)
+
+        rev_theo, ben_theo, rent_theo = _perf(args.coeff)
+        rev_reel, ben_reel, rent_reel = _perf(coeff_reel)
         rows.append({
             "GID": gid,
             "Nom": it.get("Nom_FR", ""),
             "Type": it.get("Type", ""),
             "Niveau": int(niveau),
-            "Revenu_coeff100": res["revenu_coeff100"],
-            "Revenu_brisage": res["revenu"],     # au coeff appliqué (réel ou --coeff)
+            "Base_coeff100": base,               # revenu runes au coeff 100 %
             "Cout_HDV": res["cout"],             # = coût de craft si --craft
             "Craft_Manquants": craft_missing,    # nb d'ingrédients sans prix (None hors --craft)
             "Coeff_Min": res["coeff_min"],       # coeff % minimal pour être rentable
-            "Coeff_Reel": obs["coeff"] if obs else None,        # observé en jeu
-            "Dernier_Brisage": obs["date"] if obs else None,    # date observation
-            "Benefice": res["benefice"],
-            "Rentabilite": res["rentabilite"],
+            "Coeff_Reel": coeff_reel,            # observé en jeu (None si jamais brisé)
+            "Coeff_Theo": args.coeff,            # coeff supposé pour le tableau théorique
+            "Dernier_Brisage": obs["date"] if obs else None,
+            "Revenu_theo": rev_theo, "Benefice_theo": ben_theo, "Rent_theo": rent_theo,
+            "Revenu_reel": rev_reel, "Benefice_reel": ben_reel, "Rent_reel": rent_reel,
             "Runes": ", ".join(f"{c}×{q:g}" for c, q in res["runes"].items()),
         })
 
-    # Tri : si coût connu → par Coeff_Min croissant (pari le plus sûr d'abord),
-    # car le coeff réel est inconnu. Sinon → par revenu de brisage.
+    # Tri du tableau théorique : si coût connu → par Coeff_Min croissant (pari le
+    # plus sûr), sinon → par revenu de base (coeff 100 %).
+    NEG_INF = float("-inf")
     has_cost = any(r["Coeff_Min"] is not None for r in rows)
     if has_cost:
         rows = [r for r in rows if r["Coeff_Min"] is not None]
         if args.min_rentabilite:
-            rows = [r for r in rows if (r["Rentabilite"] or 0) >= args.min_rentabilite]
+            rows = [r for r in rows if (r["Rent_theo"] or 0) >= args.min_rentabilite]
         if args.sort == "benefice":
-            rows.sort(key=lambda r: r["Benefice"], reverse=True)
+            rows.sort(key=lambda r: r["Benefice_theo"] if r["Benefice_theo"] is not None else NEG_INF,
+                      reverse=True)
             sort_label = f"bénéfice (au coeff {args.coeff:g}%)"
         elif args.sort == "revenu":
-            rows.sort(key=lambda r: r["Revenu_coeff100"], reverse=True)
+            rows.sort(key=lambda r: r["Base_coeff100"], reverse=True)
             sort_label = "revenu de brisage (coeff 100%)"
         else:  # coeff-min (défaut)
             rows.sort(key=lambda r: r["Coeff_Min"])
             sort_label = "Coeff Min croissant (pari le plus sûr — coeff réel inconnu)"
     else:
-        rows.sort(key=lambda r: r["Revenu_coeff100"], reverse=True)
+        rows.sort(key=lambda r: r["Base_coeff100"], reverse=True)
         sort_label = "revenu de brisage coeff 100% (coût HDV inconnu)"
 
-    # Affichage
+    # ── Affichage : DEUX tableaux distincts ─────────────────────────────────
+    # 1. TOP THÉORIQUE   — tout le catalogue, coeff réel inconnu (découverte).
+    #    Trié par Coeff Min (le pari le plus sûr d'abord).
+    # 2. BRISAGES RÉELS  — uniquement les items déjà brisés en jeu (coeff observé),
+    #    bénéfice/rentabilité calculés au VRAI coeff. C'est la watchlist : si le
+    #    coût de craft d'un item connu rentable baisse, il remonte ici.
     show_obs = bool(observations)
-    print(f"\n🏆 Top {min(args.top, len(rows))} / {len(rows)} items — trié par {sort_label}")
-    print(f"   (Coeff Min = coefficient serveur minimal pour rentrer dans ses frais ; "
-          f"plus bas = plus sûr)\n")
-    cost_label = "Craft" if args.craft else "Coût"
-    header = (f"  {'Nom':26s} {'Niv':>3s} {'Rev@100%':>10s} {cost_label:>10s} "
-              f"{'CoeffMin':>9s} {'Bénéf':>11s} {'Rent':>6s}")
-    if show_obs:
-        header += f" {'CoeffRéel':>9s} {'DernBris':>10s}"
-    print(header)
-    print("  " + "─" * (84 + (21 if show_obs else 0)))
-    for r in rows[:args.top]:
-        cout = f"{r['Cout_HDV']:,.0f}" if r["Cout_HDV"] is not None else "—"
-        cmin = f"{r['Coeff_Min']:,.0f}%" if r["Coeff_Min"] is not None else "—"
-        benef = f"{r['Benefice']:,.0f}" if r["Benefice"] is not None else "—"
-        rent = f"{r['Rentabilite']:.2f}" if r["Rentabilite"] is not None else "—"
-        line = (f"  {r['Nom'][:26]:26s} {r['Niveau']:3d} {r['Revenu_coeff100']:10,.0f} "
-                f"{cout:>10s} {cmin:>9s} {benef:>11s} {rent:>6s}")
-        if show_obs:
-            creel = f"{r['Coeff_Reel']:,.0f}%" if r["Coeff_Reel"] is not None else "—"
-            dbris = r["Dernier_Brisage"] or "—"
-            line += f" {creel:>9s} {dbris:>10s}"
-        print(line)
+    coeff_lbl = f"Rev@{args.coeff:g}%"
+    _render_ranking(
+        rows, args.top, args.craft, show_obs, real_mode=False,
+        title="🏆 TOP THÉORIQUE — potentiel de brisage (coeff réel inconnu)",
+        subtitle="   Coeff Min = coeff serveur minimal pour être rentable (plus bas = plus sûr).",
+        sort_label=sort_label, rev_label=coeff_lbl,
+        rev_key="Revenu_theo", ben_key="Benefice_theo", rent_key="Rent_theo",
+    )
+
+    real = [r for r in rows if r["Coeff_Reel"] is not None]
+    if real:
+        # Bénéfice au coeff RÉEL décroissant : le plus rentable maintenant en tête.
+        real.sort(key=lambda r: (r["Benefice_reel"] is not None, r["Benefice_reel"] or 0),
+                  reverse=True)
+        rentables = sum(1 for r in real if (r["Benefice_reel"] or 0) > 0)
+        _render_ranking(
+            real, len(real), args.craft, show_obs=True, real_mode=True,
+            title="🎯 BRISAGES RÉELS — watchlist (coeff observé en jeu appliqué)",
+            subtitle=(f"   {rentables}/{len(real)} rentables au coeff réel actuel. "
+                      f"Bénéf/Rent au VRAI coeff ; coût de craft à jour → top brisage du moment."),
+            sort_label="bénéfice réel décroissant", rev_label="Rev@réel",
+            rev_key="Revenu_reel", ben_key="Benefice_reel", rent_key="Rent_reel",
+        )
+    elif show_obs:
+        print("\n🎯 BRISAGES RÉELS : aucune observation ne correspond à un item chiffrable "
+              "(coût/prix manquant ou non craftable).")
 
     # Export
-    if args.out:
+    if args.out and rows:
         if args.out.suffix.lower() == ".json":
             with open(args.out, "w", encoding="utf-8") as f:
                 json.dump(rows, f, ensure_ascii=False, indent=2)
