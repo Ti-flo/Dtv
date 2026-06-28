@@ -143,7 +143,15 @@ def _delegate(main_fn, argv):
 
 def cmd_capture(args):
     from dtv.scripts import capture_phone
-    _delegate(capture_phone.main, ["capture_phone"] + args.rest)
+    argv = ["capture_phone", "--account", args.account, "--port", str(args.port)]
+    if args.dump_raw:
+        argv.append("--dump-raw")
+    if args.no_adb:
+        argv.append("--no-adb")
+    if args.adb_serial:
+        argv += ["--adb-serial", args.adb_serial]
+    argv += (args.rest or [])
+    _delegate(capture_phone.main, argv)
 
 
 def _latest_avgprices() -> Path | None:
@@ -200,7 +208,12 @@ def build_parser() -> argparse.ArgumentParser:
     sp.set_defaults(func=cmd_movers)
 
     sp = sub.add_parser("capture", help="lance la capture passive (auto)")
-    sp.add_argument("rest", nargs=argparse.REMAINDER, help="args passés à capture_phone")
+    sp.add_argument("--account", default="main", help="nom du compte collecteur")
+    sp.add_argument("--dump-raw", action="store_true", help="dump brut WS (debug)")
+    sp.add_argument("--no-adb", action="store_true", help="pas d'auto-forward adb")
+    sp.add_argument("--port", type=int, default=9222, help="port CDP (défaut 9222)")
+    sp.add_argument("--adb-serial", help="serial adb si plusieurs devices")
+    sp.add_argument("rest", nargs=argparse.REMAINDER, help="args supplémentaires")
     sp.set_defaults(func=cmd_capture)
 
     sp = sub.add_parser("brisage", help="classement rentabilité de brisage")
