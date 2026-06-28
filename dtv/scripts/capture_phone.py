@@ -66,6 +66,14 @@ import subprocess
 import sys
 from pathlib import Path
 
+# Console Windows = cp1252 : tout caractère non-latin1 dans un log (→, ✓, ×…)
+# fait crasher le StreamHandler. On force stdout en UTF-8 tolérant une fois pour
+# toutes — ainsi aucun log ne pourra plus interrompre la capture.
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except (AttributeError, ValueError):
+    pass
+
 _log_dir = Path(__file__).parent.parent.parent / "data"
 _log_dir.mkdir(parents=True, exist_ok=True)
 _log_handlers: list = [logging.StreamHandler(sys.stdout)]
@@ -161,7 +169,7 @@ def _discover_webview_socket(serial: str = None) -> str:
 
 def _setup_forward(port: int, serial: str = None):
     socket_name = _discover_webview_socket(serial)
-    log.info("Forwarding tcp:%d → localabstract:%s", port, socket_name)
+    log.info("Forwarding tcp:%d -> localabstract:%s", port, socket_name)
     _adb(["forward", f"tcp:{port}", f"localabstract:{socket_name}"], serial)
 
 

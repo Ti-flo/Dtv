@@ -155,9 +155,22 @@ class CDPClient:
 
         if not candidates:
             return None
+
+        # Classe les cibles : la WebView du jeu d'abord, les pages vides en dernier.
+        # Un émulateur expose souvent un 'about:blank' parasite EN PREMIER, sans
+        # trafic WebSocket — l'attacher = 0 frame capturée (le bug observé).
+        def _score(t: dict) -> int:
+            blob = (t.get("url", "") + " " + t.get("title", "")).lower()
+            if "dofus" in blob:
+                return 0                      # la cible du jeu : priorité absolue
+            if "about:blank" in blob or not blob.strip():
+                return 2                      # page vide : à éviter
+            return 1
+        candidates.sort(key=_score)
+
         if len(candidates) > 1:
-            log.info("Multiple debuggable targets (%d) — using the first. "
-                     "Pass --target-filter to disambiguate. Titles: %s",
+            log.info("Plusieurs cibles inspectables (%d) — choix de la plus probable. "
+                     "Surcharge avec --target-filter si besoin. Titres: %s",
                      len(candidates), [t.get("title") for t in candidates])
 
         chosen = candidates[0]
