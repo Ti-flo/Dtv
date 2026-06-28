@@ -360,6 +360,48 @@ Le coeff réel + les runes obtenues se remplissent seuls et **valident la formul
 
 ---
 
+## 5-ter. Mise en vente HDV (nos propres prix de vente) ⭐ CONFIRMÉ (HAR S7 28/06)
+
+Quand le joueur **dépose un item en vente** à l'HDV, la séquence est :
+
+```
+→ sendMessage:ExchangeObjectMovePricedMessage   {objectUID:<uid>, quantity:1, price:139}
+                                                  ← on POSE l'item au prix choisi (par UID, pas GID)
+← ExchangeBidHouseItemAddOkMessage   {itemInfo:{…}}   ← ⭐ CONFIRMATION (porte le GID + prix)
+```
+
+### `ExchangeBidHouseItemAddOkMessage` — notre prix de vente, par GID
+
+```json
+{
+  "_messageType": "ExchangeBidHouseItemAddOkMessage",
+  "itemInfo": {
+    "_type": "ObjectItemToSellInBid",
+    "objectGID": 287,          // ← item mis en vente (GID exploitable)
+    "objectUID": 358686396,
+    "quantity": 1,             // ← taille du lot (1/10/100/1000)
+    "objectPrice": 139,        // ← ⭐ NOTRE prix de vente pour ce lot
+    "unsoldDelay": 672,        // ← durée avant retrait (heures)
+    "effects": []
+  }
+}
+```
+
+- L'ordre `ExchangeObjectMovePricedMessage` (envoi) identifie l'item par `objectUID`
+  (pas de GID) → seul le `…ItemAddOkMessage` reçu permet de relier **GID ↔ prix de vente**.
+- C'est notre **prix d'offre réel** (sell-side), distinct du prix moyen serveur et du
+  prix plancher des autres vendeurs. Utile pour : suivre nos marges réelles, détecter
+  quand on est sous/sur-coté, et fermer la boucle « craft → brise → revends ».
+- Ventes **réalisées** (≠ mises en vente) : déjà captées via `TextInformationMessage`
+  msgId 65 (vente en jeu) / 73 (vente hors-ligne « away-sell ») / 252 (achat) → cf. §7.
+
+> 🔜 **Non encore auto-collecté** (capture à ajouter sur le modèle du brisage) :
+> un handler `ExchangeBidHouseItemAddOkMessage` → `ventes_listees.csv`
+> (`GID, prix, quantite_lot, unsoldDelay, ts, compte`) donnerait l'historique de nos
+> prix de vente. À greenlighter avant d'ajouter le flux de données.
+
+---
+
 ## 6. Types d'objets — ressources (superTypeId = 9)
 
 `window.gui.databases.ItemTypes` (console DevTools) → **64 types** de superType 9.
