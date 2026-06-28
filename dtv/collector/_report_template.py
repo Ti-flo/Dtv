@@ -90,6 +90,10 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   td.var, td.narrow { font-variant-numeric:tabular-nums; }
   thead th.runes, tbody td.runes { text-align:left; }
   th.runes, td.runes { max-width:200px; overflow:hidden; text-overflow:ellipsis; color:var(--muted); }
+  /* Colonne runes des tables brisage : prend tout l'espace restant (greedy),
+     les autres colonnes se réduisent à leur contenu. */
+  thead th.runesb, tbody td.runesb { text-align:left; }
+  th.runesb, td.runesb { width:100%; white-space:normal; color:var(--muted); padding-left:14px; }
   .notice { background:var(--panel); border:1px solid var(--border); border-radius:8px;
             padding:10px 14px; margin-bottom:14px; font-size:13px; display:flex; gap:16px; flex-wrap:wrap; }
   .notice b { color:var(--text); }
@@ -539,18 +543,19 @@ function brisageCols(real){
     {k:"Nom", l:"Nom", cls:"name", get:r=>r.Nom||("GID "+r.GID), fmt:r=>r.Nom||("GID "+r.GID)},
     {k:"Type", l:"Type", cls:"type", get:r=>r.Type||"", fmt:r=>r.Type||'<span class="muted">—</span>'},
     {k:"Niveau", l:"Niv", cls:"narrow", get:r=>r.Niveau, fmt:r=>r.Niveau},
-    {k:cur.rev, l:revLbl, title:"Valeur des runes obtenues", get:r=>r[cur.rev], fmt:r=>fmt(r[cur.rev])},
-    {k:"Cout_HDV", l:"Coût craft", title:"Coût de craft (Σ ingrédients au meilleur tier)", get:r=>r.Cout_HDV, fmt:r=>r.Cout_HDV==null?'<span class="muted">—</span>':fmt(r.Cout_HDV)},
-    {k:"Coeff_Min", l:"Coeff min", title:"Coeff serveur minimal pour être rentable (plus bas = plus sûr)", get:r=>r.Coeff_Min, fmt:r=>r.Coeff_Min==null?'<span class="muted">—</span>':fmt(r.Coeff_Min)+"%"},
-    {k:cur.ben, l:"Bénéf", get:r=>r[cur.ben], fmt:r=>benFmt(r[cur.ben])},
-    {k:cur.rent, l:"Rent", title:"Rentabilité = revenu / coût", get:r=>r[cur.rent], fmt:r=>r[cur.rent]==null?'<span class="muted">—</span>':r[cur.rent].toFixed(2)},
+    {k:cur.rev, l:revLbl, cls:"narrow", title:"Valeur des runes obtenues", get:r=>r[cur.rev], fmt:r=>fmt(r[cur.rev])},
+    {k:"Prix_Moyen", l:"Prix moy", cls:"narrow", title:"Prix moyen de l'item fini à l'HDV (achat direct, à comparer au coût de craft)", get:r=>r.Prix_Moyen, fmt:r=>r.Prix_Moyen==null?'<span class="muted">—</span>':fmt(r.Prix_Moyen)},
+    {k:"Cout_HDV", l:"Craft", cls:"narrow", title:"Coût de craft (Σ ingrédients au meilleur tier)", get:r=>r.Cout_HDV, fmt:r=>r.Cout_HDV==null?'<span class="muted">—</span>':fmt(r.Cout_HDV)},
+    {k:"Coeff_Min", l:"C.min", cls:"narrow", title:"Coeff serveur minimal pour être rentable (plus bas = plus sûr)", get:r=>r.Coeff_Min, fmt:r=>r.Coeff_Min==null?'<span class="muted">—</span>':fmt(r.Coeff_Min)+"%"},
+    {k:cur.ben, l:"Bénéf", cls:"narrow", get:r=>r[cur.ben], fmt:r=>benFmt(r[cur.ben])},
+    {k:cur.rent, l:"Rent", cls:"narrow", title:"Rentabilité = revenu / coût", get:r=>r[cur.rent], fmt:r=>r[cur.rent]==null?'<span class="muted">—</span>':r[cur.rent].toFixed(2)},
   );
   if(real) cols.push(
-    {k:"Coeff_Reel", l:"Coeff réel", get:r=>r.Coeff_Reel, fmt:r=>r.Coeff_Reel==null?'—':fmt(r.Coeff_Reel)+"%"},
-    {k:"Dernier_Brisage", l:"Dernier bris.", cls:"narrow", get:r=>r.Dernier_Brisage||"", fmt:r=>r.Dernier_Brisage?dmy(r.Dernier_Brisage):'<span class="muted">—</span>'},
+    {k:"Coeff_Reel", l:"C.réel", cls:"narrow", get:r=>r.Coeff_Reel, fmt:r=>r.Coeff_Reel==null?'—':fmt(r.Coeff_Reel)+"%"},
+    {k:"Dernier_Brisage", l:"Brisé", cls:"narrow", get:r=>r.Dernier_Brisage||"", fmt:r=>r.Dernier_Brisage?dmy(r.Dernier_Brisage):'<span class="muted">—</span>'},
   );
-  cols.push({k:"Runes", l:"Runes", cls:"runes", sort:false, get:r=>r.Runes||"",
-    fmt:r=>`<span title="${String(r.Runes||'').replace(/"/g,'&quot;')}">${r.Runes||'—'}</span>`});
+  cols.push({k:"Runes", l:"Runes obtenues", cls:"runesb", sort:false, get:r=>r.Runes||"",
+    fmt:r=>r.Runes||'<span class="muted">—</span>'});
   return cols;
 }
 const BSORT = {};
@@ -590,17 +595,19 @@ function renderBrisage(){
                                : '<span class="tag warn">coût = craft (avgprices, sans optim. tiers)</span>';
   const runeTag = B.rune_live ? '<span class="tag ok">prix runes HDV</span>'
                               : '<span class="tag warn">prix runes = exemples</span>';
+  const hasReal = B.real && B.real.length;
   root.innerHTML =
     `<div class="notice">`+
     `<span><b>${fmt(B.n_ranked)}</b> items chiffrables / ${fmt(B.n_catalog)} au catalogue</span>`+
     `<span>${costTag}</span><span>${runeTag}</span>`+
     `<span>coeff théorique <b>${B.coeff}%</b></span></div>`+
-    `<h3 class="sec">🏆 Top théorique <span class="muted">— ${B.sort_label}</span></h3><div id="btheo"></div>`+
-    (B.real && B.real.length
+    // Brisages réels EN PREMIER (watchlist : ce qui est rentable maintenant).
+    (hasReal
       ? `<h3 class="sec">🎯 Brisages réels <span class="muted">— coeff observé en jeu appliqué (${B.n_real})</span></h3><div id="breal"></div>`
-      : `<h3 class="sec">🎯 Brisages réels</h3><div class="empty">Aucune observation de coefficient en jeu pour l'instant (capture en cours de remplissage).</div>`);
+      : `<h3 class="sec">🎯 Brisages réels</h3><div class="empty">Aucune observation de coefficient en jeu pour l'instant (capture en cours de remplissage).</div>`)+
+    `<h3 class="sec">🏆 Top théorique <span class="muted">— ${B.sort_label}</span></h3><div id="btheo"></div>`;
+  if(hasReal) renderBTable("breal", B.real, true, {k:"Benefice_reel", dir:-1});
   renderBTable("btheo", B.theo, false, {k:"Coeff_Min", dir:1});
-  if(B.real && B.real.length) renderBTable("breal", B.real, true, {k:"Benefice_reel", dir:-1});
 }
 
 // ── Boot ───────────────────────────────────────────────────────────────────

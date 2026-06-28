@@ -104,8 +104,8 @@ def _latest_avg_prices(conn: sqlite3.Connection) -> dict:
 
 # Colonnes embarquées par ligne de classement (sous-ensemble lisible/léger).
 _BRISAGE_FIELDS = (
-    "GID", "Nom", "Type", "Niveau", "Base_coeff100", "Cout_HDV", "Craft_Manquants",
-    "Coeff_Min", "Coeff_Reel", "Dernier_Brisage",
+    "GID", "Nom", "Type", "Niveau", "Prix_Moyen", "Base_coeff100", "Cout_HDV",
+    "Craft_Manquants", "Coeff_Min", "Coeff_Reel", "Dernier_Brisage",
     "Revenu_theo", "Benefice_theo", "Rent_theo",
     "Revenu_reel", "Benefice_reel", "Rent_reel", "Runes",
 )
@@ -189,6 +189,10 @@ def build_brisage_data(conn: sqlite3.Connection, *, coeff: float = 100.0) -> dic
     rows, sort_label = br.build_ranking(
         catalog, _cost_for, rune_prices=rune_prices, observations=observations,
         coeff=coeff, sort="coeff-min")
+
+    # Prix moyen de l'item fini à l'HDV (≠ coût de craft) → décision craft vs achat.
+    for r in rows:
+        r["Prix_Moyen"] = item_prices.get(r["GID"])
 
     def _trim(r):
         return {k: r.get(k) for k in _BRISAGE_FIELDS}
