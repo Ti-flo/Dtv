@@ -72,7 +72,9 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   tbody tr { cursor:pointer; }
   tbody tr:hover { background:var(--panel); }
   tbody tr.sel { background:#1f6feb22; outline:1px solid var(--accent); }
-  th.name, td.name { max-width:170px; overflow:hidden; text-overflow:ellipsis; }
+  th.name, td.name { max-width:140px; overflow:hidden; text-overflow:ellipsis; }
+  thead th.type, tbody td.type { text-align:left; }
+  th.type, td.type { max-width:104px; overflow:hidden; text-overflow:ellipsis; color:var(--muted); }
   th.var, td.var, th.narrow, td.narrow { padding-left:6px; padding-right:6px; }
   td.var, td.narrow { font-variant-numeric:tabular-nums; }
   .muted { color:var(--muted); }
@@ -224,10 +226,33 @@ function lastDays(series, days){
   const out = series.filter(p=>Date.parse(p[0]) >= lastT - days*DAY);
   return out.length>=2 ? out : series.slice(-2);
 }
+// Indice de VOLUME 0–10 : fréquence de changement du prix moyen sur les 10
+// derniers jours. 10 = le prix bouge à chaque relevé, 0 = il ne bouge jamais.
+function volumeIndex(series){
+  const s = lastDays(series, 10);
+  if(!s || s.length<2) return null;
+  let changes=0;
+  for(let i=1;i<s.length;i++){ if(s[i][1]!==s[i-1][1]) changes++; }
+  return Math.round(changes/(s.length-1)*10);
+}
 const varCell = v => v==null ? '<span class="muted">—</span>'
   : `<span style="color:${trendColor(v)}">${pct(v)}</span>`;
+// Échelle « jolie » : pas rond (1/2/2.5/5 ×10^k) et plafond arrondi au-dessus du
+// max → axe Y lisible (0-20-40-60-80 plutôt que des valeurs biscornues).
+function niceStep(rough){
+  const p = Math.pow(10, Math.floor(Math.log10(rough)));
+  const f = rough/p;
+  const nf = f<=1?1 : f<=2?2 : f<=2.5?2.5 : f<=5?5 : 10;
+  return nf*p;
+}
+function niceScale(max, target){
+  if(!(max>0)) return {top:1, step:1};
+  const step = niceStep(max/(target||5));
+  return {top: Math.ceil(max/step)*step, step};
+}
 const COLS = [
   {k:"nom",   l:"Nom",    cls:"name", get:r=>r.nom, fmt:r=>r.nom},
+  {k:"type",  l:"Type",   cls:"type", title:"Type d'objet", get:r=>r.type, fmt:r=>r.type||'<span class="muted">—</span>'},
   {k:"gid",   l:"GID",    get:r=>r.gid, fmt:r=>r.gid},
   {k:"last",  l:"Dernier",title:"Dernier prix (source sélectionnée)", get:r=>r.st?r.st.last:null, fmt:r=>fmt(r.st&&r.st.last)},
   {k:"min",   l:"Min",    get:r=>r.st?r.st.min:null,  fmt:r=>fmt(r.st&&r.st.min)},
@@ -236,7 +261,8 @@ const COLS = [
   {k:"varj",  l:"Var j",  cls:"var", title:"Variation du prix moyen sur 24h", get:r=>r.varj, fmt:r=>varCell(r.varj)},
   {k:"vars",  l:"Var s",  cls:"var", title:"Variation du prix moyen sur 1 semaine", get:r=>r.vars, fmt:r=>varCell(r.vars)},
   {k:"varm",  l:"Var m",  cls:"var", title:"Variation du prix moyen sur 1 mois", get:r=>r.varm, fmt:r=>varCell(r.varm)},
-  {k:"hdvn",  l:"Relevé", cls:"narrow", title:"Nombre de relevés HDV réels", get:r=>r.hdvN, fmt:r=>r.hdvN||'<span class="muted">0</span>'},
+  {k:"vol",   l:"V",      cls:"narrow", title:"Indice de volume 0–10 : fréquence de changement du prix moyen sur 10 jours", get:r=>r.vol, fmt:r=>r.vol==null?'<span class="muted">—</span>':r.vol},
+  {k:"hdvn",  l:"R",      cls:"narrow", title:"Nombre de relevés HDV réels", get:r=>r.hdvN, fmt:r=>r.hdvN||'<span class="muted">0</span>'},
   {k:"hdvlast",l:"Dernier",cls:"narrow", title:"Date du dernier relevé HDV", get:r=>r.hdvLastT, fmt:r=>r.hdvLast?dmy(r.hdvLast):'<span class="muted">—</span>'},
   {k:"spark", l:"Tendance", title:"Prix moyen sur 7 jours (échelle 0→max)", get:r=>0, fmt:r=>sparkline(lastDays(r.avgS,7)), sort:false},
 ];
@@ -249,8 +275,9 @@ function computeRows(){
     const st = statsOf(s);
     const avgS = seriesOf(it, "avg");
     const hdvLast = it.hdv.length ? it.hdv[it.hdv.length-1][0] : null;
-    return {gid:it.gid, nom:it.nom, item:it, s, st, avgS,
+    return {gid:it.gid, nom:it.nom, type:it.type||"", item:it, s, st, avgS,
             varj:varOver(avgS,1), vars:varOver(avgS,7), varm:varOver(avgS,30),
+            vol:volumeIndex(avgS),
             hdvN:it.hdv.length, hdvLast, hdvLastT:hdvLast?Date.parse(hdvLast):-Infinity};
   }).filter(r=>r.st);   // n'affiche que les items qui ont des données pour cette source
   if(q) rows = rows.filter(r=>r.nom.toLowerCase().includes(q) || String(r.gid).includes(q));
@@ -316,16 +343,14 @@ function showDetail(gid){
   document.querySelectorAll("#rows tr").forEach(tr=>tr.classList.toggle("sel", +tr.dataset.gid===gid));
 }
 function statBlock(it){
+  // Compact : prix actuel coloré + prix unitaire à côté (rien d'autre, pour
+  // laisser la place au graphe).
   const blocks = ["avg","x1","x10","x100","x1000"].map(src=>{
     const st = statsOf(seriesOf(it,src)); if(!st) return "";
     const div = TIER_DIV[src];
-    // prix unitaire affiché À CÔTÉ du prix du lot pour comparer facilement
     const unit = div>1 ? ` <span class="muted">= ${fmt(st.last/div)}/u</span>` : "";
-    const mm = div>1
-      ? `lot min ${fmt(st.min)} / max ${fmt(st.max)} · /u min ${fmt(st.min/div)} / max ${fmt(st.max/div)}`
-      : `min ${fmt(st.min)} / max ${fmt(st.max)} / moy ${fmt(st.avg)}`;
     return `<div class="stat"><div class="v" style="color:${TIER_COLORS[src]}">${fmt(st.last)}${unit}</div>`+
-           `<div class="l">${TIER_LABEL[src]} · ${mm}</div></div>`;
+           `<div class="l">${TIER_LABEL[src]}</div></div>`;
   }).join("");
   return `<div class="statgrid">${blocks||'<span class="muted">aucune donnée</span>'}</div>`;
 }
@@ -351,12 +376,18 @@ function drawChart(it){
   series.forEach(s=>s.pts.forEach(p=>{xs.push(p[0]); ys.push(p[1]);}));
   let x0=Math.min(...xs), x1=Math.max(...xs);
   // Axe Y : de 0 au prix unitaire le plus haut relevé.
-  let y0=0, y1=Math.max(...ys); if(x1===x0){ x0-=1; x1+=1; } if(!(y1>0)){ y1=1; }
+  let y0=0, dataMax=Math.max(...ys); if(x1===x0){ x0-=1; x1+=1; } if(!(dataMax>0)){ dataMax=1; }
+  // Axe Y : 0 → plafond ARRONDI au-dessus du max, paliers ronds.
+  const sc = niceScale(dataMax, 5);
+  let y1 = sc.top;
   const sx=v=>P.l+(v-x0)/(x1-x0)*(W-P.l-P.r);
   const sy=v=>H-P.b-(v-y0)/(y1-y0)*(H-P.t-P.b);
-  // grille + axes Y (4 paliers)
-  let grid="", ny=4;
-  for(let i=0;i<=ny;i++){ const val=y0+(y1-y0)*i/ny, y=sy(val);
+  // grille Y : subdivisions (demi-pas, lignes fines pointillées) puis paliers ronds.
+  let grid="";
+  for(let val=sc.step/2; val<y1; val+=sc.step){ const y=sy(val);
+    grid+=`<line x1="${P.l}" y1="${y.toFixed(1)}" x2="${W-P.r}" y2="${y.toFixed(1)}" stroke="var(--grid)" stroke-opacity="0.45" stroke-dasharray="3 3"/>`;
+  }
+  for(let val=0; val<=y1+1e-6; val+=sc.step){ const y=sy(val);
     grid+=`<line x1="${P.l}" y1="${y.toFixed(1)}" x2="${W-P.r}" y2="${y.toFixed(1)}" stroke="var(--grid)"/>`;
     grid+=`<text x="${P.l-6}" y="${(y+3).toFixed(1)}" text-anchor="end">${fmt(val)}</text>`;
   }
