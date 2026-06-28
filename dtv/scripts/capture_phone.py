@@ -66,13 +66,18 @@ import subprocess
 import sys
 from pathlib import Path
 
+_log_dir = Path(__file__).parent.parent.parent / "data"
+_log_dir.mkdir(parents=True, exist_ok=True)
+_log_handlers: list = [logging.StreamHandler(sys.stdout)]
+try:
+    _log_handlers.append(logging.FileHandler(_log_dir / "capture.log"))
+except OSError:
+    pass
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s — %(message)s",
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler(Path(__file__).parent.parent.parent / "data" / "capture.log"),
-    ],
+    handlers=_log_handlers,
+    force=True,  # override tout config antérieure (dtv.py, imports, etc.)
 )
 log = logging.getLogger(__name__)
 
