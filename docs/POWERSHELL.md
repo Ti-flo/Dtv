@@ -29,18 +29,33 @@ git pull origin claude/dtv-project-assessment-7t8m3u
 > Une seule surface pour tout. Tous les chemins (adb, catalogues, base) sont
 > résolus automatiquement. Architecture : `docs/ARCHITECTURE.md`.
 
+Deux façons d'appeler la commande (équivalentes) :
+
 ```powershell
 cd "C:\Users\GAMING3\Desktop\dtv"
 
-python -m dtv.scripts.dtv doctor                 # état config (adb/catalogues) + base
-python -m dtv.scripts.dtv capture --account jetable   # capture passive AUTO (adb+socket)
-python -m dtv.scripts.dtv ingest                 # historise les CSV dans la base SQLite
-python -m dtv.scripts.dtv prices "Frêne"         # dernier prix moyen des items « Frêne »
-python -m dtv.scripts.dtv history "Frêne"        # tendance du prix dans le temps
-python -m dtv.scripts.dtv movers --top 30        # plus fortes variations (2 derniers snapshots)
-python -m dtv.scripts.dtv brisage --craft --top 50    # classement brisage (avg-prices auto)
-python -m dtv.scripts.dtv craft "Bâton de Boisaille"  # détail coût de craft d'un item
-python -m dtv.scripts.dtv craftplan "Bâton de Boisaille"  # plan d'achat optimisé (tiers + n_crafts)
+# Forme courte (dtv.bat dans la racine du repo)
+.\dtv doctor
+.\dtv capture --account jetable
+.\dtv ingest
+
+# Forme longue (toujours disponible, peu importe le répertoire)
+python -m dtv.scripts.dtv doctor
+python -m dtv.scripts.dtv ingest
+```
+
+```powershell
+cd "C:\Users\GAMING3\Desktop\dtv"
+
+.\dtv doctor                              # état config (adb/catalogues) + base
+.\dtv capture --account jetable          # capture passive AUTO (adb+socket)
+.\dtv ingest                             # historise les CSV dans la base SQLite
+.\dtv prices "Frêne"                     # dernier prix moyen des items « Frêne »
+.\dtv history "Frêne"                    # tendance du prix dans le temps
+.\dtv movers --top 30                    # plus fortes variations (2 derniers snapshots)
+.\dtv brisage --craft --top 50           # classement brisage (avg-prices auto)
+.\dtv craft "Bâton de Boisaille"         # détail coût de craft d'un item
+.\dtv craftplan "Bâton de Boisaille"     # plan d'achat optimisé (tiers + n_crafts)
 ```
 
 ### Plan de craft optimisé (`craftplan`)
