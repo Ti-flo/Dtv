@@ -82,6 +82,23 @@ def test_plan_n_crafts_force():
     print("✅ plan avec --n-crafts forcé (tier suit le besoin) OK")
 
 
+def test_plan_n_purchases():
+    # besoin 3×1000 = 3000 → tier x1000 → 3 achats
+    recipe = [(3, "x")]
+    prices = {"x": {1: 10, 10: 95, 100: 900, 1000: 8000}}
+    plan = craft.craft_plan(recipe, prices)
+    d = plan["detail"][0]
+    assert d["tier"] == 1000
+    assert d["n_purchases"] == 3           # ceil(3000 / 1000)
+    # si seul x10 dispo, besoin 3000 → 300 achats
+    prices2 = {"x": {1: None, 10: 95, 100: None, 1000: None}}
+    plan2 = craft.craft_plan(recipe, prices2)
+    d2 = plan2["detail"][0]
+    assert d2["tier"] == 10
+    assert d2["n_purchases"] == 300        # ceil(3000 / 10) — impraticable !
+    print("✅ n_purchases (nb de lots à acheter dans l'HDV) OK")
+
+
 def test_plan_manquant():
     plan = craft.craft_plan([(1, "a"), (2, "b")], {"a": {1: 100}})
     assert not plan["complete"] and plan["missing"] == ["b"]
@@ -124,6 +141,7 @@ if __name__ == "__main__":
     test_plan_bon_marche()
     test_plan_cher()
     test_plan_n_crafts_force()
+    test_plan_n_purchases()
     test_plan_manquant()
     test_store_tier_prices()
     print("\n🏁 Tous les tests craft passent.")

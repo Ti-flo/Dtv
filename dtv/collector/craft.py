@@ -27,6 +27,7 @@ nombre de crafts dépend du coût : un craft pas cher → on en fait des centain
 
 stdlib pure (pas d'I/O) → testable et réutilisable par le CLI et le futur report.
 """
+import math
 from typing import Optional
 
 # Tiers d'achat de l'HDV (tailles de lot). Confirmé sur les captures : la
@@ -133,13 +134,16 @@ def craft_plan(recipe_items: list, ingredient_tier_prices: dict,
         bt = best_tier(tp, total_needed) if tp else None
         if bt is None:
             detail.append({"qty": qty, "nom": nom, "tier": None, "unit_price": None,
-                           "line_cost": None, "total_needed": total_needed})
+                           "line_cost": None, "total_needed": total_needed,
+                           "n_purchases": None})
         else:
             tier, up = bt
             line = qty * up
             cost_per_craft += line
+            n_purchases = math.ceil(total_needed / tier)
             detail.append({"qty": qty, "nom": nom, "tier": tier, "unit_price": up,
-                           "line_cost": line, "total_needed": total_needed})
+                           "line_cost": line, "total_needed": total_needed,
+                           "n_purchases": n_purchases})
 
     return {
         "n_crafts": n_crafts,

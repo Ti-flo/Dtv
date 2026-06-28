@@ -124,21 +124,33 @@ def main():
     print(f"Fenêtre prix HDV réels : {args.days} derniers jours (repli : prix moyen serveur)\n")
 
     print(f"  {'Ingrédient':28s} {'Qté':>4s} {'Besoin':>8s} {'Tier':>6s} "
-          f"{'PU':>10s} {'Coût ligne':>12s}")
-    print("  " + "-" * 76)
+          f"{'PU':>10s} {'Coût ligne':>12s} {'Achats':>7s}")
+    print("  " + "-" * 85)
+    warnings = []
     for d in plan["detail"]:
         ing = display_names.get(d["nom"], d["nom"])[:28]
         tier = f"x{d['tier']}" if d["tier"] else "—"
         pu = _fmt(d["unit_price"])
         line = _fmt(d["line_cost"]) if d["line_cost"] is not None else "PRIX INCONNU"
+        np_ = d.get("n_purchases")
+        np_str = str(np_) if np_ is not None else "—"
+        flag = " !" if (np_ is not None and np_ > 20) else "  "
         print(f"  {ing:28s} {d['qty']:>4d} {_fmt(d['total_needed']):>8s} {tier:>6s} "
-              f"{pu:>10s} {line:>12s}")
+              f"{pu:>10s} {line:>12s} {np_str:>6s}{flag}")
+        if np_ is not None and np_ > 20:
+            warnings.append((display_names.get(d["nom"], d["nom"]), d["tier"], np_, d["total_needed"]))
 
-    print("  " + "-" * 76)
+    print("  " + "-" * 85)
     flag = "" if plan["complete"] else f"   /!\\ {len(plan['missing'])} ingrédient(s) sans prix"
     print(f"  {'COÛT DE CRAFT / unité':>50s}  = {_fmt(plan['cost_per_craft'])} kamas{flag}")
     print(f"  {'COÛT TOTAL pour ' + str(plan['n_crafts']) + ' crafts':>50s}  "
           f"= {_fmt(plan['cost_total'])} kamas")
+    if warnings:
+        print(f"\n  /!\\ Ingrédients avec trop de transactions (lot trop petit) :")
+        for nom, tier, np_, needed in warnings:
+            next_tier = next((t for t in (10, 100, 1000) if t > tier), None)
+            suggestion = f"  -> ouvre-le à x{next_tier} dans l'HDV pendant la prochaine capture" if next_tier else ""
+            print(f"       {nom}: {needed} unités par lot x{tier} = {np_} achats !{suggestion}")
     if not plan["complete"]:
         print(f"\n  Ingrédients sans prix HDV ni moyen : "
               f"{', '.join(display_names.get(m, m) for m in plan['missing'])}")
