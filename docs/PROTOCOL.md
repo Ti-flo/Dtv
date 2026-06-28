@@ -8,6 +8,7 @@
 > - `0e24427b` — login + HDV (session 4)
 > - `har_1` (`6c60608e`) — login + HDV + achat (session 6, 07:50 UTC)
 > - `har_2` (`20a12e4a`) — login + gameplay/tuto + level-up (session 6, 08:41 UTC)
+> - `9c7de280` (`AwaySell_Concassage_Brisage_PresentSell`) — ventes hors-ligne + brisage + concassage + ventes/achat en jeu (session 7, 28 juin 2026)
 
 ---
 
@@ -488,8 +489,60 @@ la collecte HDV → indice de suspicion côté serveur, lever une alerte.
 
 ---
 
-## 10. Endpoints HTTP utiles (hors WebSocket)
+---
 
+## 10. Journal comptable HDV (TextInformationMessage)
+
+Toutes les transactions passent par `TextInformationMessage` (serveur→client).
+Sélection par `msgId` — les paramètres utilisent l'index 0-based (`%1 = params[0]`).
+
+| msgId | Événement | Template serveur | Extraction |
+|---|---|---|---|
+| **73** | Vente *hors jeu* (offline) | `Banque : + %1 Kamas (vente de %4 $item%3 hors jeu).` | kamas=p[0], gid=p[2], qty=p[3] |
+| **65** | Vente *en jeu* | `Banque : + %1 Kamas (vente de %4 $item%3).` | kamas=p[0], gid=p[2], qty=p[3] |
+| **252** | Achat HDV | `%3 x {item,%1,%2} (%4 kamas)` | gid=p[0], uid=p[1], qty=p[2], kamas=p[3] |
+
+**Exemples observés (session 7) :**
+```
+msgId=73  params=["449","536","536","1"]   → vente_hors_jeu GID=536  qty=1  +449 kamas
+msgId=65  params=["118","8680","8680","1"] → vente           GID=8680 qty=1  +118 kamas
+msgId=65  params=["10","468","468","1"]    → vente           GID=468  qty=1  +10 kamas  (pain Amakna, auto-achat test)
+msgId=252 params=["74","359036171","100","500"] → achat      GID=74   qty=100 500 kamas
+```
+
+**Implémentation :** `PassiveCollector._record_transaction()` écrit dans `data/raw/transactions_observations.csv`
+(colonnes : timestamp, type, gid, nom, quantite, kamas_total, kamas_unitaire, compte_collecteur).
+
+---
+
+## 11. Prix planchers réels HDV (ExchangeBidhouseMinimumItemPriceListMessage)
+
+Arrive à chaque ouverture d'un type d'item dans le vendeur HDV. Contient le **prix plancher actuel** (offre la moins chère) pour chaque tier.
+
+```json
+{
+  "_messageType": "ExchangeBidhouseMinimumItemPriceListMessage",
+  "objectGID": 1523,
+  "prices": [129, 995, 10000, 109999]
+}
+```
+
+`prices[i]` correspond à `quantities[i]` (reçu dans `ExchangeStartedBidBuyerMessage.sellerDescriptor.quantities` = `[1, 10, 100, 1000]`). **Valeur 0 = pas de stock à ce tier.**
+
+Prix unitaires effectifs : `prix_x1=129`, `prix_x10/10=99.5`, `prix_x100/100=100`, `prix_x1000/1000=110`.
+→ Le tier x10 est le moins cher ici.
+
+**Implémentation :** `PassiveCollector._record_min_prices()` écrit dans `data/raw/min_prices_AAAAMMJJ.csv`
+(colonnes : timestamp, gid, nom, prix_x1, prix_x10, prix_x100, prix_x1000). Un fichier par jour, append.
+
+**Usage craft (tiers d'achat) :** pour calculer le coût de craft d'un item, croiser `min_prices` par GID ingrédient, choisir le tier le moins cher par unité parmi ceux avec stock (prix > 0) et dont le total ≤ quantité nécessaire.
+
+---
+
+## 12. Endpoints HTTP utiles (hors WebSocket)
+
+| URL | Contenu |
+|---|---|
 | URL | Contenu |
 |---|---|
 | `…/login.ankama-games.com/config.json?lang=fr` | config (avant auth) |

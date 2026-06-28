@@ -218,6 +218,15 @@ class PassiveCollector:
             # resultObjects = runes obtenues, objectGID = item brisé.
             self._record_brisage(msg)
 
+        elif mtype == "TextInformationMessage":
+            # Journal comptable : ventes (msgId 65 en jeu, 73 hors jeu) + achats HDV (252).
+            self._record_transaction(msg)
+
+        elif mtype == "ExchangeBidhouseMinimumItemPriceListMessage":
+            # Prix plancher réel par GID : x1/x10/x100/x1000. Bien plus frais que avgprices,
+            # idéal pour les tiers d'achat des ingrédients de craft.
+            self._record_min_prices(msg)
+
         elif mtype == "ExchangeLeaveMessage":
             log.debug("HDV closed (passive)")
 
@@ -291,6 +300,96 @@ class PassiveCollector:
             self.brisages_captured += 1
             log.info("BRISAGE GID=%s coeff=%s%% runes=[%s] (%s)",
                      gid, coeff, runes_str or "aucune", row["nom"])
+
+    def _record_transaction(self, msg: dict):
+        """
+        Journal comptable des transactions HDV depuis TextInformationMessage.
+
+        msgId 65  : vente en jeu         params=[kamas, gid, gid, qty]
+        msgId 73  : vente hors jeu       params=[kamas, gid, gid, qty]
+        msgId 252 : achat HDV            params=[gid, uid, qty, kamas_total]
+
+        Template Dofus (%1 = params[0], %2 = params[1], …) :
+          65/73 : "Banque : + %1 Kamas (vente de %4 $item%3[hors jeu].)"
+          252   : "%3 x {item,%1,%2} (%4 kamas)"
+        """
+        msg_id = msg.get("msgId")
+        if msg_id not in (65, 73, 252):
+            return
+        params = msg.get("parameters") or []
+        try:
+            if msg_id in (65, 73):
+                kamas_total = int(params[0])
+                gid = int(params[2])
+                qty = int(params[3])
+                tx_type = "vente" if msg_id == 65 else "vente_hors_jeu"
+            else:  # 252 = achat
+                gid = int(params[0])
+                qty = int(params[2])
+                kamas_total = int(params[3])
+                tx_type = "achat"
+        except (IndexError, ValueError):
+            return
+
+        nom = self._names.get(gid, "")
+        kamas_unitaire = round(kamas_total / qty, 2) if qty else 0
+        row = {
+            "timestamp": datetime.now().isoformat(),
+            "type": tx_type,
+            "gid": gid,
+            "nom": nom,
+            "quantite": qty,
+            "kamas_total": kamas_total,
+            "kamas_unitaire": kamas_unitaire,
+            "compte_collecteur": self._account,
+        }
+        self._append_transaction_row(row)
+        log.info("TX %s GID=%s (%s) qty=%s kamas=%s", tx_type, gid, nom or "?", qty, kamas_total)
+
+    def _append_transaction_row(self, row: dict):
+        path = self._data_dir / "transactions_observations.csv"
+        fields = ["timestamp", "type", "gid", "nom", "quantite",
+                  "kamas_total", "kamas_unitaire", "compte_collecteur"]
+        is_new = not path.exists()
+        with self._lock:
+            with open(path, "a", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
+                if is_new:
+                    writer.writeheader()
+                writer.writerow(row)
+
+    def _record_min_prices(self, msg: dict):
+        """
+        Prix planchers réels par GID depuis ExchangeBidhouseMinimumItemPriceListMessage.
+        Arrive a chaque fois qu'on ouvre un type d'item dans le vendeur HDV.
+        prices = [prix_x1, prix_x10, prix_x100, prix_x1000] (0 = pas de stock a ce tier).
+        """
+        gid = msg.get("objectGID")
+        prices = msg.get("prices") or []
+        if gid is None or not prices:
+            return
+        tiers = (self._quantities or [1, 10, 100, 1000])[:4]
+        row = {
+            "timestamp": datetime.now().isoformat(),
+            "gid": gid,
+            "nom": self._names.get(gid, ""),
+        }
+        for i, tier in enumerate(tiers):
+            row[f"prix_x{tier}"] = prices[i] if i < len(prices) else 0
+        self._append_min_prices_row(row, tiers)
+
+    def _append_min_prices_row(self, row: dict, tiers: list):
+        day = datetime.now().strftime("%Y%m%d")
+        path = self._data_dir / f"min_prices_{day}.csv"
+        price_cols = [f"prix_x{t}" for t in tiers]
+        fields = ["timestamp", "gid", "nom"] + price_cols
+        is_new = not path.exists()
+        with self._lock:
+            with open(path, "a", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
+                if is_new:
+                    writer.writeheader()
+                writer.writerow(row)
 
     def _append_brisage_row(self, row: dict):
         """Append une observation de brisage (header écrit une fois)."""
