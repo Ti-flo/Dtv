@@ -27,7 +27,9 @@ from pathlib import Path
 from typing import Optional
 
 from .. import config
-from . import item_names, store
+from . import brisage as br
+from . import catalog as catalog_mod
+from . import craft, item_names, store
 
 
 # ── Construction du modèle de données ────────────────────────────────────────
@@ -90,6 +92,126 @@ def _price_series(conn: sqlite3.Connection) -> list[dict]:
     return sorted(items.values(), key=lambda s: s["nom"].lower())
 
 
+def _latest_avg_prices(conn: sqlite3.Connection) -> dict:
+    """{gid → dernier prix moyen connu} (dernier snapshot par GID)."""
+    rows = conn.execute(
+        "SELECT gid, price FROM avg_prices ap "
+        "WHERE price IS NOT NULL "
+        "  AND ts = (SELECT MAX(ts) FROM avg_prices a2 WHERE a2.gid = ap.gid)"
+    ).fetchall()
+    return {r["gid"]: float(r["price"]) for r in rows}
+
+
+# Colonnes embarquées par ligne de classement (sous-ensemble lisible/léger).
+_BRISAGE_FIELDS = (
+    "GID", "Nom", "Type", "Niveau", "Base_coeff100", "Cout_HDV", "Craft_Manquants",
+    "Coeff_Min", "Coeff_Reel", "Dernier_Brisage",
+    "Revenu_theo", "Benefice_theo", "Rent_theo",
+    "Revenu_reel", "Benefice_reel", "Rent_reel", "Runes",
+)
+_BRISAGE_CAP = 1000  # plafond du tableau théorique embarqué (les + rentables)
+
+
+def build_brisage_data(conn: sqlite3.Connection, *, coeff: float = 100.0) -> dict:
+    """
+    Données de l'onglet « Craft & Brisage » : les 2 tableaux théorique/réel.
+
+    Coût = COÛT DE CRAFT (tiers HDV optimisés depuis la base ; repli avgprices).
+    Réutilise EXACTEMENT le moteur du CLI (brisage.build_ranking + craft.craft_plan)
+    pour des chiffres identiques entre `dtv brisage` et le rapport.
+
+    Sans catalogue scrapé → {"available": False, "reason": …}.
+    """
+    cat_path = config.catalog("equipements")
+    extra = config.catalog("consommables")
+    paths = [p for p in (cat_path, extra) if p and Path(p).exists()]
+    if not paths:
+        return {"available": False,
+                "reason": "catalogue scrapé introuvable (equipements_dofus_touch_full.json). "
+                          "Configure DTV_SCRAPER_DIR ou lance le scraper."}
+
+    catalog: list[dict] = []
+    for p in paths:
+        try:
+            catalog += catalog_mod.load_catalog(p)
+        except Exception:
+            continue
+    if not catalog:
+        return {"available": False, "reason": "catalogue illisible."}
+
+    catalog_dir = Path(paths[0]).parent
+    item_prices = _latest_avg_prices(conn)
+
+    # Prix des runes (revenu) : depuis le HDV via rune_gids.json, sinon exemples.
+    rune_prices = None
+    rg_path = config.rune_gids_path()
+    if rg_path.exists():
+        try:
+            code2gid = json.loads(rg_path.read_text(encoding="utf-8"))
+            rp = {c: item_prices[int(g)] for c, g in code2gid.items()
+                  if g is not None and int(g) in item_prices}
+            rune_prices = rp or None
+        except Exception:
+            rune_prices = None
+
+    # Coût de craft : prix HDV par tiers depuis la base (optimisation de lot),
+    # repli avgprices x1 si la base n'a pas encore de relevés HDV.
+    name2gid = catalog_mod.build_name_to_gid(catalog_dir)
+    ing_tier_prices: dict = {}
+    if name2gid:
+        try:
+            tp = store.tier_prices_for_gids(conn, list(name2gid.values()), days=7)
+            ing_tier_prices = {nom: tp[gid] for nom, gid in name2gid.items() if gid in tp}
+        except Exception:
+            ing_tier_prices = {}
+    use_db_craft = bool(ing_tier_prices)
+    name_prices = catalog_mod.build_name_prices(item_prices, catalog_dir)
+
+    def _cost_for(it):
+        if use_db_craft:
+            recipe_raw = br.parse_recipe(it.get("Recette") or "")
+            if not recipe_raw:
+                return (None, None)
+            recipe_items = [(qty, br.normalize_name(ing)) for qty, ing in recipe_raw]
+            ing_p = {n: ing_tier_prices[n] for _, n in recipe_items if n in ing_tier_prices}
+            plan = craft.craft_plan(recipe_items, ing_p)
+            return (plan["cost_per_craft"] if plan else None,
+                    len(plan["missing"]) if plan else None)
+        cc = br.craft_cost(it.get("Recette") or "", name_prices)
+        return (cc["cost"] if cc else None, len(cc["missing"]) if cc else None)
+
+    observations = {}
+    try:
+        observations = store.brisage_observations(conn)
+    except Exception:
+        observations = {}
+
+    rows, sort_label = br.build_ranking(
+        catalog, _cost_for, rune_prices=rune_prices, observations=observations,
+        coeff=coeff, sort="coeff-min")
+
+    def _trim(r):
+        return {k: r.get(k) for k in _BRISAGE_FIELDS}
+
+    real = [r for r in rows if r["Coeff_Reel"] is not None]
+    real.sort(key=lambda r: (r["Benefice_reel"] is not None, r["Benefice_reel"] or 0),
+              reverse=True)
+
+    return {
+        "available": True,
+        "craft_mode": use_db_craft,          # True = coût craft tiers HDV, False = avgprices
+        "rune_live": rune_prices is not None,
+        "coeff": coeff,
+        "sort_label": sort_label,
+        "n_catalog": len(catalog),
+        "n_priced": len(item_prices),
+        "n_ranked": len(rows),
+        "n_real": len(real),
+        "theo": [_trim(r) for r in rows[:_BRISAGE_CAP]],
+        "real": [_trim(r) for r in real],
+    }
+
+
 def build_report_data(conn: sqlite3.Connection) -> dict:
     """Assemble le dict complet (sérialisable JSON) consommé par la page."""
     st = store.stats(conn)
@@ -102,6 +224,7 @@ def build_report_data(conn: sqlite3.Connection) -> dict:
         "stats": dict(st),
         "snapshots": [{"id": r["snapshot"], "ts": r["ts"]} for r in snaps],
         "items": _price_series(conn),
+        "brisage": build_brisage_data(conn),
     }
 
 

@@ -88,6 +88,17 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   th.fav, td.fav { padding-left:8px; padding-right:2px; text-align:center; cursor:default; }
   th.var, td.var, th.narrow, td.narrow { padding-left:6px; padding-right:6px; }
   td.var, td.narrow { font-variant-numeric:tabular-nums; }
+  thead th.runes, tbody td.runes { text-align:left; }
+  th.runes, td.runes { max-width:200px; overflow:hidden; text-overflow:ellipsis; color:var(--muted); }
+  .notice { background:var(--panel); border:1px solid var(--border); border-radius:8px;
+            padding:10px 14px; margin-bottom:14px; font-size:13px; display:flex; gap:16px; flex-wrap:wrap; }
+  .notice b { color:var(--text); }
+  h3.sec { margin:22px 0 8px; font-size:15px; }
+  h3.sec .muted { font-weight:400; font-size:12px; }
+  .tag { display:inline-block; padding:1px 8px; border-radius:10px; font-size:11px; border:1px solid var(--border); color:var(--muted); }
+  .tag.ok { color:var(--accent2); border-color:#2ea04366; }
+  .tag.warn { color:var(--warn); border-color:#d2992266; }
+  td.good { color:var(--accent2); } td.bad { color:var(--bad); }
   .muted { color:var(--muted); }
   .spark { display:block; }
   .detail {
@@ -157,7 +168,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     </div>
   </section>
   <section class="tab" data-tab="achats"><div class="soon"><div class="big">🛒</div><p>Onglet « Ressources achetées » — à venir (dépend de <code>transactions_observations.csv</code>).</p></div></section>
-  <section class="tab" data-tab="craft"><div class="soon"><div class="big">⚒️</div><p>Onglet « Craft &amp; Brisage » — à venir.</p></div></section>
+  <section class="tab" data-tab="craft"><div id="craft-root"></div></section>
   <section class="tab" data-tab="affaires"><div class="soon"><div class="big">💎</div><p>Onglet « Bonnes affaires du moment » — à venir.</p></div></section>
 </main>
 <div class="chart-tip" id="tip"></div>
@@ -511,6 +522,87 @@ document.getElementById("rows").addEventListener("click", e=>{
   showDetail(+tr.dataset.gid);
 });
 
+// ── Onglet « Craft & Brisage » ─────────────────────────────────────────────
+const B = DTV.brisage || {available:false, reason:"(pas de données)"};
+// Bénéfice : vert si positif (gain), rouge si négatif (perte).
+const benFmt = v => v==null ? '<span class="muted">—</span>'
+  : `<span style="color:${v>0?'var(--accent2)':v<0?'var(--bad)':'inherit'}">${(v>0?'+':'')+fmt(v)}</span>`;
+
+function brisageCols(real){
+  const cur = real ? {rev:"Revenu_reel", ben:"Benefice_reel", rent:"Rent_reel"}
+                   : {rev:"Revenu_theo", ben:"Benefice_theo", rent:"Rent_theo"};
+  const revLbl = real ? "Rev@réel" : `Rev@${B.coeff||100}%`;
+  const cols = [];
+  if(real) cols.push({k:"_mark", l:"", cls:"narrow", sort:false, get:r=>0,
+    fmt:r=>(r.Benefice_reel||0)>0?'<span style="color:var(--accent2)">✓</span>':'<span style="color:var(--bad)">✗</span>'});
+  cols.push(
+    {k:"Nom", l:"Nom", cls:"name", get:r=>r.Nom||("GID "+r.GID), fmt:r=>r.Nom||("GID "+r.GID)},
+    {k:"Type", l:"Type", cls:"type", get:r=>r.Type||"", fmt:r=>r.Type||'<span class="muted">—</span>'},
+    {k:"Niveau", l:"Niv", cls:"narrow", get:r=>r.Niveau, fmt:r=>r.Niveau},
+    {k:cur.rev, l:revLbl, title:"Valeur des runes obtenues", get:r=>r[cur.rev], fmt:r=>fmt(r[cur.rev])},
+    {k:"Cout_HDV", l:"Coût craft", title:"Coût de craft (Σ ingrédients au meilleur tier)", get:r=>r.Cout_HDV, fmt:r=>r.Cout_HDV==null?'<span class="muted">—</span>':fmt(r.Cout_HDV)},
+    {k:"Coeff_Min", l:"Coeff min", title:"Coeff serveur minimal pour être rentable (plus bas = plus sûr)", get:r=>r.Coeff_Min, fmt:r=>r.Coeff_Min==null?'<span class="muted">—</span>':fmt(r.Coeff_Min)+"%"},
+    {k:cur.ben, l:"Bénéf", get:r=>r[cur.ben], fmt:r=>benFmt(r[cur.ben])},
+    {k:cur.rent, l:"Rent", title:"Rentabilité = revenu / coût", get:r=>r[cur.rent], fmt:r=>r[cur.rent]==null?'<span class="muted">—</span>':r[cur.rent].toFixed(2)},
+  );
+  if(real) cols.push(
+    {k:"Coeff_Reel", l:"Coeff réel", get:r=>r.Coeff_Reel, fmt:r=>r.Coeff_Reel==null?'—':fmt(r.Coeff_Reel)+"%"},
+    {k:"Dernier_Brisage", l:"Dernier bris.", cls:"narrow", get:r=>r.Dernier_Brisage||"", fmt:r=>r.Dernier_Brisage?dmy(r.Dernier_Brisage):'<span class="muted">—</span>'},
+  );
+  cols.push({k:"Runes", l:"Runes", cls:"runes", sort:false, get:r=>r.Runes||"",
+    fmt:r=>`<span title="${String(r.Runes||'').replace(/"/g,'&quot;')}">${r.Runes||'—'}</span>`});
+  return cols;
+}
+const BSORT = {};
+function renderBTable(hostId, rows, real, defaultSort){
+  const cols = brisageCols(real);
+  if(!BSORT[hostId]) BSORT[hostId] = defaultSort;
+  const srt = BSORT[hostId];
+  const col = cols.find(c=>c.k===srt.k) || cols[0];
+  const sorted = rows.slice().sort((a,b)=>{
+    let va=col.get(a), vb=col.get(b);
+    const an=(va==null||va===""), bn=(vb==null||vb===""); if(an&&bn)return 0; if(an)return 1; if(bn)return -1;
+    if(typeof va==="string"){va=va.toLowerCase();vb=vb.toLowerCase();return va<vb?-srt.dir:va>vb?srt.dir:0;}
+    return (va-vb)*srt.dir;
+  });
+  const head = cols.map(c=>{
+    const arr = srt.k===c.k?`<span class="arrow">${srt.dir<0?"▼":"▲"}</span>`:"";
+    const tt=c.title?` title="${c.title}"`:"";
+    return `<th class="${c.cls||''}"${tt} data-k="${c.k}" data-sort="${c.sort!==false}">${c.l} ${arr}</th>`;
+  }).join("");
+  const body = sorted.map(r=>"<tr>"+cols.map(c=>`<td class="${c.cls||''}">${c.fmt(r)}</td>`).join("")+"</tr>").join("");
+  document.getElementById(hostId).innerHTML =
+    `<div class="tablewrap"><table><thead><tr>${head}</tr></thead><tbody>${body||`<tr><td>—</td></tr>`}</tbody></table></div>`;
+  document.querySelector(`#${hostId} thead`).addEventListener("click", e=>{
+    const th=e.target.closest("th"); if(!th||th.dataset.sort==="false"||!th.dataset.k) return;
+    const k=th.dataset.k;
+    if(srt.k===k) srt.dir*=-1; else BSORT[hostId]={k, dir:(k==="Nom"||k==="Type")?1:-1};
+    renderBTable(hostId, rows, real, defaultSort);
+  });
+}
+function renderBrisage(){
+  const root=document.getElementById("craft-root");
+  if(!B.available){
+    root.innerHTML=`<div class="soon"><div class="big">⚒️</div><p>${B.reason||'Pas de données de craft/brisage.'}</p></div>`;
+    return;
+  }
+  const costTag = B.craft_mode ? '<span class="tag ok">coût = craft (tiers HDV optimisés)</span>'
+                               : '<span class="tag warn">coût = craft (avgprices, sans optim. tiers)</span>';
+  const runeTag = B.rune_live ? '<span class="tag ok">prix runes HDV</span>'
+                              : '<span class="tag warn">prix runes = exemples</span>';
+  root.innerHTML =
+    `<div class="notice">`+
+    `<span><b>${fmt(B.n_ranked)}</b> items chiffrables / ${fmt(B.n_catalog)} au catalogue</span>`+
+    `<span>${costTag}</span><span>${runeTag}</span>`+
+    `<span>coeff théorique <b>${B.coeff}%</b></span></div>`+
+    `<h3 class="sec">🏆 Top théorique <span class="muted">— ${B.sort_label}</span></h3><div id="btheo"></div>`+
+    (B.real && B.real.length
+      ? `<h3 class="sec">🎯 Brisages réels <span class="muted">— coeff observé en jeu appliqué (${B.n_real})</span></h3><div id="breal"></div>`
+      : `<h3 class="sec">🎯 Brisages réels</h3><div class="empty">Aucune observation de coefficient en jeu pour l'instant (capture en cours de remplissage).</div>`);
+  renderBTable("btheo", B.theo, false, {k:"Coeff_Min", dir:1});
+  if(B.real && B.real.length) renderBTable("breal", B.real, true, {k:"Benefice_reel", dir:-1});
+}
+
 // ── Boot ───────────────────────────────────────────────────────────────────
 (function initTypeFilter(){
   const types = [...new Set(DTV.items.map(it=>it.type).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'fr'));
@@ -519,6 +611,7 @@ document.getElementById("rows").addEventListener("click", e=>{
 })();
 renderListControls();
 renderHead(); renderRows();
+renderBrisage();
 if(DTV.items.length){
   // sélectionne le 1er item de la vue (niveau le plus bas) pour montrer un graphe d'emblée
   const first = computeRows()[0];

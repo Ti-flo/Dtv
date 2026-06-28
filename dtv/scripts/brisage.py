@@ -45,35 +45,15 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from dtv import config
 from dtv.collector import brisage as br
 from dtv.collector import craft, store
+from dtv.collector.catalog import (
+    INGREDIENT_CATALOGS, build_name_prices, build_name_to_gid, load_catalog,
+)
 
 
-# ── Chargement du catalogue ─────────────────────────────────────────────────
-def load_catalog(path: Path) -> list[dict]:
-    if path.suffix.lower() == ".json":
-        with open(path, encoding="utf-8") as f:
-            return json.load(f)
-    import pandas as pd
-    df = pd.read_excel(path)
-    return df.to_dict("records")
-
-
-def _to_level(v) -> float:
-    try:
-        lvl = float(str(v).replace("Niv.", "").strip())
-        return 0.0 if lvl != lvl else lvl   # NaN (cellule xlsx vide) → 0
-    except (ValueError, AttributeError):
-        return 0.0
-
-
-def _to_gid(v):
-    """GID en int, ou None si absent/NaN (pandas met NaN pour les cellules vides)."""
-    if v is None:
-        return None
-    try:
-        g = int(float(v))
-        return g if g == g else None   # garde anti-NaN
-    except (ValueError, TypeError):
-        return None
+# Helpers de robustesse (xlsx pandas → NaN). Implémentation unique dans le moteur ;
+# alias ici pour la lisibilité du CLI et la compat des tests.
+_to_level = br.to_level
+_to_gid = br.to_gid
 
 
 # ── Chargement des prix ─────────────────────────────────────────────────────
@@ -115,61 +95,6 @@ def rune_prices_from_avg(avg: dict[int, float], rune_gids_path: Path) -> dict[st
         if gid is not None and int(gid) in avg:
             out[code] = avg[int(gid)]
     return out
-
-
-# Catalogues d'où viennent les noms d'ingrédients (à côté du catalogue principal).
-_INGREDIENT_CATALOGS = (
-    "ressources_dofus_touch_full.json",
-    "consommables_dofus_touch_full.json",
-    "equipements_dofus_touch_full.json",
-)
-
-
-def build_name_to_gid(catalog_dir: Path) -> dict:
-    """{nom normalisé → GID} depuis les 3 catalogues d'ingrédients."""
-    out: dict[str, int] = {}
-    for fname in _INGREDIENT_CATALOGS:
-        path = catalog_dir / fname
-        if not path.exists():
-            continue
-        try:
-            with open(path, encoding="utf-8") as f:
-                items = json.load(f)
-        except (OSError, json.JSONDecodeError):
-            continue
-        for it in items:
-            nom = it.get("Nom_FR")
-            gid = _to_gid(it.get("GID"))
-            if nom and gid:
-                out.setdefault(br.normalize_name(nom), gid)
-    return out
-
-
-def build_name_prices(item_prices: dict[int, float], catalog_dir: Path) -> dict[str, float]:
-    """
-    {nom d'ingrédient normalisé → prix moyen} pour chiffrer les recettes de craft.
-
-    Croise les catalogues scrapers (Nom_FR → GID) avec l'avgprices (GID → prix).
-    Indépendant de la colonne `nom` de l'avgprices → marche aussi sur les anciens
-    snapshots. Les catalogues sont cherchés à côté du catalogue principal.
-    """
-    name_prices: dict[str, float] = {}
-    for fname in _INGREDIENT_CATALOGS:
-        path = catalog_dir / fname
-        if not path.exists():
-            continue
-        try:
-            with open(path, encoding="utf-8") as f:
-                items = json.load(f)
-        except (OSError, json.JSONDecodeError):
-            continue
-        for it in items:
-            gid = _to_gid(it.get("GID"))
-            nom = it.get("Nom_FR")
-            if gid is None or not nom or gid not in item_prices:
-                continue
-            name_prices.setdefault(br.normalize_name(nom), item_prices[gid])
-    return name_prices
 
 
 def explain_craft(catalog: list[dict], name_prices: dict[str, float], query: str):
@@ -366,94 +291,27 @@ def main():
         except Exception:
             pass
 
-    # Calcul : pour chaque item on calcule la BASE (revenu au coeff 100 %) et le
-    # coût. On en dérive DEUX perspectives, pour rester cohérent par tableau :
-    #   - THÉORIQUE : revenu au coeff --coeff (déf 100 %), uniforme pour tous.
-    #   - RÉEL      : revenu au coeff observé en jeu (si on a brisé l'item).
-    rows = []
-    for it in catalog:
-        effets = it.get("Effets") or ""
-        if not isinstance(effets, str) or not effets.strip():
-            continue
-        niveau = _to_level(it.get("Niveau"))
-        gid = _to_gid(it.get("GID"))
-        # Coût : craft (tiers optimisés ou avg_prices) si --craft, sinon prix HDV de l'item
-        craft_missing = None
+    # Stratégie de coût injectée dans build_ranking : craft optimisé par tiers
+    # (base SQLite), craft avg_prices en repli, ou prix HDV de l'item hors --craft.
+    def _cost_for(it):
         if args.craft:
             if use_db_craft:
                 recipe_raw = br.parse_recipe(it.get("Recette") or "")
                 if not recipe_raw:
-                    cout = None
-                else:
-                    recipe_items = [(qty, br.normalize_name(ing)) for qty, ing in recipe_raw]
-                    ing_p = {n: ing_tier_prices[n] for _, n in recipe_items if n in ing_tier_prices}
-                    plan = craft.craft_plan(recipe_items, ing_p)
-                    cout = plan["cost_per_craft"] if plan else None
-                    craft_missing = len(plan["missing"]) if plan else None
-            else:
-                cc = br.craft_cost(it.get("Recette") or "", name_prices)
-                cout = cc["cost"] if cc else None
-                craft_missing = len(cc["missing"]) if cc else None
-        else:
-            cout = item_prices.get(gid) if (gid is not None and item_prices) else None
-        obs = observations.get(gid) if (gid is not None and observations) else None
-        coeff_reel = obs["coeff"] if (obs and obs["coeff"]) else None
+                    return (None, None)
+                recipe_items = [(qty, br.normalize_name(ing)) for qty, ing in recipe_raw]
+                ing_p = {n: ing_tier_prices[n] for _, n in recipe_items if n in ing_tier_prices}
+                plan = craft.craft_plan(recipe_items, ing_p)
+                return (plan["cost_per_craft"] if plan else None,
+                        len(plan["missing"]) if plan else None)
+            cc = br.craft_cost(it.get("Recette") or "", name_prices)
+            return (cc["cost"] if cc else None, len(cc["missing"]) if cc else None)
+        gid = br.to_gid(it.get("GID"))
+        return (item_prices.get(gid) if (gid is not None and item_prices) else None, None)
 
-        res = br.profitability(effets, niveau, cout, rune_prices, coeff=args.coeff)
-        base = res["revenu_coeff100"]            # revenu des runes au coeff 100 %
-        if base <= 0:
-            continue
-
-        def _perf(coeff):
-            """(revenu, bénéfice, rentabilité) à un coeff donné. revenu sans coût OK."""
-            if coeff is None:
-                return (None, None, None)
-            revenu = base * coeff / 100.0
-            if cout is None:
-                return (round(revenu, 2), None, None)
-            return (round(revenu, 2), round(revenu - cout, 2),
-                    round(revenu / cout, 4) if cout else None)
-
-        rev_theo, ben_theo, rent_theo = _perf(args.coeff)
-        rev_reel, ben_reel, rent_reel = _perf(coeff_reel)
-        rows.append({
-            "GID": gid,
-            "Nom": it.get("Nom_FR", ""),
-            "Type": it.get("Type", ""),
-            "Niveau": int(niveau),
-            "Base_coeff100": base,               # revenu runes au coeff 100 %
-            "Cout_HDV": res["cout"],             # = coût de craft si --craft
-            "Craft_Manquants": craft_missing,    # nb d'ingrédients sans prix (None hors --craft)
-            "Coeff_Min": res["coeff_min"],       # coeff % minimal pour être rentable
-            "Coeff_Reel": coeff_reel,            # observé en jeu (None si jamais brisé)
-            "Coeff_Theo": args.coeff,            # coeff supposé pour le tableau théorique
-            "Dernier_Brisage": obs["date"] if obs else None,
-            "Revenu_theo": rev_theo, "Benefice_theo": ben_theo, "Rent_theo": rent_theo,
-            "Revenu_reel": rev_reel, "Benefice_reel": ben_reel, "Rent_reel": rent_reel,
-            "Runes": ", ".join(f"{c}×{q:g}" for c, q in res["runes"].items()),
-        })
-
-    # Tri du tableau théorique : si coût connu → par Coeff_Min croissant (pari le
-    # plus sûr), sinon → par revenu de base (coeff 100 %).
-    NEG_INF = float("-inf")
-    has_cost = any(r["Coeff_Min"] is not None for r in rows)
-    if has_cost:
-        rows = [r for r in rows if r["Coeff_Min"] is not None]
-        if args.min_rentabilite:
-            rows = [r for r in rows if (r["Rent_theo"] or 0) >= args.min_rentabilite]
-        if args.sort == "benefice":
-            rows.sort(key=lambda r: r["Benefice_theo"] if r["Benefice_theo"] is not None else NEG_INF,
-                      reverse=True)
-            sort_label = f"bénéfice (au coeff {args.coeff:g}%)"
-        elif args.sort == "revenu":
-            rows.sort(key=lambda r: r["Base_coeff100"], reverse=True)
-            sort_label = "revenu de brisage (coeff 100%)"
-        else:  # coeff-min (défaut)
-            rows.sort(key=lambda r: r["Coeff_Min"])
-            sort_label = "Coeff Min croissant (pari le plus sûr — coeff réel inconnu)"
-    else:
-        rows.sort(key=lambda r: r["Base_coeff100"], reverse=True)
-        sort_label = "revenu de brisage coeff 100% (coût HDV inconnu)"
+    rows, sort_label = br.build_ranking(
+        catalog, _cost_for, rune_prices=rune_prices, observations=observations,
+        coeff=args.coeff, sort=args.sort, min_rentabilite=args.min_rentabilite)
 
     # ── Affichage : DEUX tableaux distincts ─────────────────────────────────
     # 1. TOP THÉORIQUE   — tout le catalogue, coeff réel inconnu (découverte).

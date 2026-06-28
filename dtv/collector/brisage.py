@@ -275,3 +275,119 @@ def profitability(effets: str, niveau: float, cout: Optional[float],
         "rentabilite": round(rentabilite, 4) if rentabilite is not None else None,
         "runes": {c: round(q, 3) for c, q in sorted(detail.items(), key=lambda kv: -kv[1])},
     }
+
+
+# ── Classement (partagé CLI + rapport HTML) ─────────────────────────────────
+def to_level(v) -> float:
+    """Niveau d'un item en float (gère 'Niv. 50', cellules vides/NaN → 0)."""
+    try:
+        lvl = float(str(v).replace("Niv.", "").strip())
+        return 0.0 if lvl != lvl else lvl   # NaN → 0
+    except (ValueError, AttributeError):
+        return 0.0
+
+
+def to_gid(v):
+    """GID en int, ou None si absent/NaN."""
+    if v is None:
+        return None
+    try:
+        g = int(float(v))
+        return g if g == g else None
+    except (ValueError, TypeError):
+        return None
+
+
+def build_ranking(catalog: list, cost_for, *, rune_prices: Optional[dict] = None,
+                  observations: Optional[dict] = None, coeff: float = 100.0,
+                  sort: str = "coeff-min", min_rentabilite: float = 0.0):
+    """
+    Construit le classement de rentabilité de brisage sur tout le catalogue.
+
+    Fonction PURE (aucune I/O) partagée par le CLI (`scripts/brisage.py`) et le
+    rapport HTML (`report.py`) pour qu'ils calculent EXACTEMENT la même chose.
+
+    Args:
+        catalog   : liste de dicts items (clés scrapées : Nom_FR, Effets, Niveau,
+                    GID, Type, Recette…).
+        cost_for  : callback `item_dict -> (cout: float|None, craft_missing: int|None)`.
+                    C'est la stratégie de coût injectée (prix HDV de l'item, coût
+                    de craft optimisé par tiers, coût de craft avg…). Découple le
+                    « combien ça coûte » du « combien ça rapporte ».
+        rune_prices : {code rune → prix} (HDV live) ; sinon prix exemple runes.json.
+        observations: {gid → {coeff, date}} coeff réel observé en jeu.
+        coeff     : coefficient théorique supposé (%) pour le tableau théorique.
+        sort      : 'coeff-min' (pari le plus sûr), 'benefice' ou 'revenu'.
+        min_rentabilite : filtre rentabilité revenu/coût minimale.
+
+    Retourne (rows, sort_label). Chaque row a les mêmes clés que l'ancien CLI :
+        GID, Nom, Type, Niveau, Base_coeff100, Cout_HDV, Craft_Manquants,
+        Coeff_Min, Coeff_Reel, Coeff_Theo, Dernier_Brisage,
+        Revenu_theo/Benefice_theo/Rent_theo, Revenu_reel/Benefice_reel/Rent_reel,
+        Runes.
+    """
+    observations = observations or {}
+    rows = []
+    for it in catalog:
+        effets = it.get("Effets") or ""
+        if not isinstance(effets, str) or not effets.strip():
+            continue
+        niveau = to_level(it.get("Niveau"))
+        gid = to_gid(it.get("GID"))
+        cout, craft_missing = cost_for(it)
+        obs = observations.get(gid) if (gid is not None) else None
+        coeff_reel = obs["coeff"] if (obs and obs.get("coeff")) else None
+
+        res = profitability(effets, niveau, cout, rune_prices, coeff=coeff)
+        base = res["revenu_coeff100"]
+        if base <= 0:
+            continue
+
+        def _perf(c):
+            if c is None:
+                return (None, None, None)
+            revenu = base * c / 100.0
+            if cout is None:
+                return (round(revenu, 2), None, None)
+            return (round(revenu, 2), round(revenu - cout, 2),
+                    round(revenu / cout, 4) if cout else None)
+
+        rev_theo, ben_theo, rent_theo = _perf(coeff)
+        rev_reel, ben_reel, rent_reel = _perf(coeff_reel)
+        rows.append({
+            "GID": gid,
+            "Nom": it.get("Nom_FR", ""),
+            "Type": it.get("Type", ""),
+            "Niveau": int(niveau),
+            "Base_coeff100": base,
+            "Cout_HDV": res["cout"],
+            "Craft_Manquants": craft_missing,
+            "Coeff_Min": res["coeff_min"],
+            "Coeff_Reel": coeff_reel,
+            "Coeff_Theo": coeff,
+            "Dernier_Brisage": obs["date"] if obs else None,
+            "Revenu_theo": rev_theo, "Benefice_theo": ben_theo, "Rent_theo": rent_theo,
+            "Revenu_reel": rev_reel, "Benefice_reel": ben_reel, "Rent_reel": rent_reel,
+            "Runes": ", ".join(f"{c}×{q:g}" for c, q in res["runes"].items()),
+        })
+
+    NEG_INF = float("-inf")
+    has_cost = any(r["Coeff_Min"] is not None for r in rows)
+    if has_cost:
+        rows = [r for r in rows if r["Coeff_Min"] is not None]
+        if min_rentabilite:
+            rows = [r for r in rows if (r["Rent_theo"] or 0) >= min_rentabilite]
+        if sort == "benefice":
+            rows.sort(key=lambda r: r["Benefice_theo"] if r["Benefice_theo"] is not None else NEG_INF,
+                      reverse=True)
+            sort_label = f"bénéfice (au coeff {coeff:g}%)"
+        elif sort == "revenu":
+            rows.sort(key=lambda r: r["Base_coeff100"], reverse=True)
+            sort_label = "revenu de brisage (coeff 100%)"
+        else:  # coeff-min
+            rows.sort(key=lambda r: r["Coeff_Min"])
+            sort_label = "Coeff Min croissant (pari le plus sûr — coeff réel inconnu)"
+    else:
+        rows.sort(key=lambda r: r["Base_coeff100"], reverse=True)
+        sort_label = "revenu de brisage coeff 100% (coût HDV inconnu)"
+    return rows, sort_label
