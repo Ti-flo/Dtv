@@ -88,6 +88,7 @@ _JS = r"""
         var names = {};      // gid → resolved item name
         var gidTypes = {};   // gid → typeId
         var typeNames = {};  // typeId → resolved type name (from ItemTypes store)
+        var levels = {};     // gid → item level (Dofus trie l'HDV par niveau)
 
         // Cursor one store, calling collect(record) per row, then `next`.
         function sweep(storeName, collect, next) {
@@ -107,6 +108,7 @@ _JS = r"""
           if (!v || v.id == null) return;
           if (typeof v.nameId === "string" && v.nameId.length) names[v.id] = v.nameId;
           if (v.typeId != null) gidTypes[v.id] = v.typeId;
+          if (typeof v.level === "number") levels[v.id] = v.level;
         }, function() {
           sweep("ItemTypes", function(v) {
             if (v && v.id != null && typeof v.nameId === "string" && v.nameId.length)
@@ -115,7 +117,7 @@ _JS = r"""
             db.close();
             resolve(JSON.stringify({ok: true, db: target,
               count: Object.keys(names).length, items: names,
-              gidTypes: gidTypes, typeNames: typeNames}));
+              gidTypes: gidTypes, typeNames: typeNames, levels: levels}));
           });
         });
       };
@@ -712,6 +714,8 @@ def dump_item_names(
                 parsed.get("gidTypes", {}), "gid→type")
     _merge_save(out_path.parent / "item_type_names.json",
                 parsed.get("typeNames", {}), "type names")
+    _merge_save(out_path.parent / "item_levels.json",
+                parsed.get("levels", {}), "levels")
 
     log.info("Saved → %s  (%.1f KB)", out_path, out_path.stat().st_size / 1024)
     return total

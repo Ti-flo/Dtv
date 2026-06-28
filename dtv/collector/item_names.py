@@ -23,10 +23,12 @@ DATA_DIR = ROOT / "data"
 DEFAULT_PATH = DATA_DIR / "item_names.json"
 GID_TYPES_PATH = DATA_DIR / "item_types_by_gid.json"
 TYPE_NAMES_PATH = DATA_DIR / "item_type_names.json"
+LEVELS_PATH = DATA_DIR / "item_levels.json"
 
 _CACHE: "dict[int, str] | None" = None
 _GID_TYPES_CACHE: "dict[int, int] | None" = None
 _TYPE_NAMES_CACHE: "dict[int, str] | None" = None
+_LEVELS_CACHE: "dict[int, int] | None" = None
 
 
 def _load_int_keyed(path: Path, value_cast) -> dict:
@@ -79,6 +81,14 @@ def load_type_names(path: Path = TYPE_NAMES_PATH) -> dict[int, str]:
     if _TYPE_NAMES_CACHE is None:
         _TYPE_NAMES_CACHE = _load_int_keyed(path, str)
     return _TYPE_NAMES_CACHE
+
+
+def load_item_levels(path: Path = LEVELS_PATH) -> dict[int, int]:
+    """Return {gid: level} — the item level (the HDV is sorted by level in-game)."""
+    global _LEVELS_CACHE
+    if _LEVELS_CACHE is None:
+        _LEVELS_CACHE = _load_int_keyed(path, int)
+    return _LEVELS_CACHE
 
 
 def get_item_name(gid: int, fallback: str = "") -> str:

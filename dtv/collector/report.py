@@ -47,7 +47,8 @@ def _price_series(conn: sqlite3.Connection) -> list[dict]:
     items: dict[int, dict] = {}
 
     def _slot(gid: int) -> dict:
-        return items.setdefault(gid, {"gid": gid, "nom": "", "type": "", "avg": [], "hdv": []})
+        return items.setdefault(gid, {"gid": gid, "nom": "", "type": "", "level": None,
+                                      "avg": [], "hdv": []})
 
     # Prix moyens (ObjectAveragePrices) — la baseline « tendance ».
     for r in conn.execute(
@@ -77,12 +78,14 @@ def _price_series(conn: sqlite3.Connection) -> list[dict]:
     names = item_names.load_item_names()
     gid_types = item_names.load_gid_types()      # gid → type_id
     type_names = item_names.load_type_names()    # type_id → libellé
+    levels = item_names.load_item_levels()       # gid → niveau
     for slot in items.values():
         if not slot["nom"]:
             slot["nom"] = names.get(slot["gid"]) or f"GID {slot['gid']}"
         tid = gid_types.get(slot["gid"])
         if tid is not None:
             slot["type"] = type_names.get(tid) or ""
+        slot["level"] = levels.get(slot["gid"])
 
     return sorted(items.values(), key=lambda s: s["nom"].lower())
 

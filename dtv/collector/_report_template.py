@@ -54,8 +54,18 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     background:var(--panel); border:1px solid var(--border); color:var(--text);
     border-radius:6px; padding:7px 10px; font-size:13px;
   }
-  input[type=search] { min-width:240px; }
+  input[type=search] { min-width:220px; }
   .controls .count { color:var(--muted); font-size:12px; }
+  .controls .sep { width:1px; align-self:stretch; background:var(--border); margin:2px 2px; }
+  .controls .chk { display:flex; align-items:center; gap:5px; cursor:pointer; }
+  .btn {
+    background:var(--panel2); border:1px solid var(--border); color:var(--text);
+    border-radius:6px; padding:6px 10px; font-size:13px; cursor:pointer;
+  }
+  .btn:hover { border-color:var(--accent); }
+  .star { cursor:pointer; color:var(--border); font-size:15px; line-height:1; }
+  .star:hover { color:var(--warn); }
+  .star.on { color:var(--warn); }
   .layout { display:grid; grid-template-columns:1fr; gap:18px; }
   @media(min-width:1100px){ .layout.with-detail { grid-template-columns:minmax(0,1.4fr) minmax(0,1fr); } }
   .tablewrap { overflow:auto; border:1px solid var(--border); border-radius:8px; max-height:70vh; }
@@ -74,7 +84,8 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   tbody tr.sel { background:#1f6feb22; outline:1px solid var(--accent); }
   th.name, td.name { max-width:140px; overflow:hidden; text-overflow:ellipsis; }
   thead th.type, tbody td.type { text-align:left; }
-  th.type, td.type { max-width:104px; overflow:hidden; text-overflow:ellipsis; color:var(--muted); }
+  th.type, td.type { max-width:74px; overflow:hidden; text-overflow:ellipsis; color:var(--muted); }
+  th.fav, td.fav { padding-left:8px; padding-right:2px; text-align:center; cursor:default; }
   th.var, td.var, th.narrow, td.narrow { padding-left:6px; padding-right:6px; }
   td.var, td.narrow { font-variant-numeric:tabular-nums; }
   .muted { color:var(--muted); }
@@ -123,6 +134,16 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
           <option value="x1000">HDV x1000</option>
         </select>
       </label>
+      <label class="muted">Type&nbsp;
+        <select id="typeFilter"><option value="">Tous</option></select>
+      </label>
+      <span class="sep"></span>
+      <label class="muted">Liste&nbsp;
+        <select id="listSel"></select>
+      </label>
+      <button class="btn" id="listNew" title="Créer une liste">+ Liste</button>
+      <button class="btn" id="listDel" title="Supprimer la liste active">🗑</button>
+      <label class="muted chk"><input type="checkbox" id="favOnly"> ★ favoris seulement</label>
       <span class="count" id="count"></span>
     </div>
     <div class="layout with-detail">
@@ -204,6 +225,32 @@ document.getElementById("tabs").addEventListener("click", e=>{
   document.querySelectorAll(".tab").forEach(s=>s.classList.toggle("active", s.dataset.tab===id));
 });
 
+// ── Favoris / listes de suivi (persistés en localStorage) ──────────────────
+// Le rapport est un fichier statique régénéré : les listes vivent côté
+// navigateur (localStorage), donc elles survivent à une régénération du HTML.
+const LS_KEY="dtv_lists", LS_ACT="dtv_active_list";
+function loadLists(){ try{ return JSON.parse(localStorage.getItem(LS_KEY))||{}; }catch(e){ return {}; } }
+function saveLists(){ try{ localStorage.setItem(LS_KEY, JSON.stringify(LISTS)); }catch(e){} }
+let LISTS = loadLists();
+if(!Object.keys(LISTS).length){ LISTS = {"Favoris": []}; saveLists(); }
+let ACTIVE = localStorage.getItem(LS_ACT) || Object.keys(LISTS)[0];
+if(!LISTS[ACTIVE]) ACTIVE = Object.keys(LISTS)[0];
+function setActive(name){ ACTIVE=name; try{ localStorage.setItem(LS_ACT, name); }catch(e){} }
+function isFav(gid){ return (LISTS[ACTIVE]||[]).includes(gid); }
+function toggleFav(gid){
+  const arr = LISTS[ACTIVE] || (LISTS[ACTIVE]=[]);
+  const i = arr.indexOf(gid);
+  if(i<0) arr.push(gid); else arr.splice(i,1);
+  saveLists();
+}
+function renderListControls(){
+  const sel = document.getElementById("listSel");
+  sel.innerHTML = Object.keys(LISTS).map(n=>{
+    const n2 = n.replace(/"/g,"&quot;");
+    return `<option value="${n2}"${n===ACTIVE?" selected":""}>${n} (${LISTS[n].length})</option>`;
+  }).join("");
+}
+
 // ── Onglet « Prix dans le temps » ──────────────────────────────────────────
 // Var j/s/m et Tendance sont TOUJOURS basées sur le prix moyen marché ;
 // Dernier/Min/Max/Moyen suivent la source sélectionnée.
@@ -251,9 +298,11 @@ function niceScale(max, target){
   return {top: Math.ceil(max/step)*step, step};
 }
 const COLS = [
+  {k:"fav",   l:"★",      cls:"fav", title:"Ajouter à la liste active", sort:false, get:r=>0,
+   fmt:r=>`<span class="star ${isFav(r.gid)?'on':''}" data-fav="${r.gid}">★</span>`},
   {k:"nom",   l:"Nom",    cls:"name", get:r=>r.nom, fmt:r=>r.nom},
   {k:"type",  l:"Type",   cls:"type", title:"Type d'objet", get:r=>r.type, fmt:r=>r.type||'<span class="muted">—</span>'},
-  {k:"gid",   l:"GID",    get:r=>r.gid, fmt:r=>r.gid},
+  {k:"niv",   l:"Niv",    cls:"narrow", title:"Niveau de l'objet (ordre HDV)", get:r=>r.level, fmt:r=>r.level==null?'<span class="muted">—</span>':r.level},
   {k:"last",  l:"Dernier",title:"Dernier prix (source sélectionnée)", get:r=>r.st?r.st.last:null, fmt:r=>fmt(r.st&&r.st.last)},
   {k:"min",   l:"Min",    get:r=>r.st?r.st.min:null,  fmt:r=>fmt(r.st&&r.st.min)},
   {k:"max",   l:"Max",    get:r=>r.st?r.st.max:null,  fmt:r=>fmt(r.st&&r.st.max)},
@@ -265,8 +314,10 @@ const COLS = [
   {k:"hdvn",  l:"R",      cls:"narrow", title:"Nombre de relevés HDV réels", get:r=>r.hdvN, fmt:r=>r.hdvN||'<span class="muted">0</span>'},
   {k:"hdvlast",l:"Dernier",cls:"narrow", title:"Date du dernier relevé HDV", get:r=>r.hdvLastT, fmt:r=>r.hdvLast?dmy(r.hdvLast):'<span class="muted">—</span>'},
   {k:"spark", l:"Tendance", title:"Prix moyen sur 7 jours (échelle 0→max)", get:r=>0, fmt:r=>sparkline(lastDays(r.avgS,7)), sort:false},
+  {k:"gid",   l:"GID",    cls:"narrow", get:r=>r.gid, fmt:r=>r.gid},
 ];
-let SOURCE="avg", SORT={k:"last",dir:-1}, FILTER="", SELECTED=null;
+// Tri par défaut : par niveau croissant (l'ordre HDV auquel Flo est habitué).
+let SOURCE="avg", SORT={k:"niv",dir:1}, FILTER="", TYPEF="", FAVONLY=false, SELECTED=null;
 
 function computeRows(){
   const q = FILTER.trim().toLowerCase();
@@ -275,17 +326,22 @@ function computeRows(){
     const st = statsOf(s);
     const avgS = seriesOf(it, "avg");
     const hdvLast = it.hdv.length ? it.hdv[it.hdv.length-1][0] : null;
-    return {gid:it.gid, nom:it.nom, type:it.type||"", item:it, s, st, avgS,
+    return {gid:it.gid, nom:it.nom, type:it.type||"", level:(it.level==null?null:it.level),
+            item:it, s, st, avgS,
             varj:varOver(avgS,1), vars:varOver(avgS,7), varm:varOver(avgS,30),
             vol:volumeIndex(avgS),
             hdvN:it.hdv.length, hdvLast, hdvLastT:hdvLast?Date.parse(hdvLast):-Infinity};
   }).filter(r=>r.st);   // n'affiche que les items qui ont des données pour cette source
   if(q) rows = rows.filter(r=>r.nom.toLowerCase().includes(q) || String(r.gid).includes(q));
-  const col = COLS.find(c=>c.k===SORT.k) || COLS[2];
+  if(TYPEF) rows = rows.filter(r=>r.type===TYPEF);
+  if(FAVONLY) rows = rows.filter(r=>isFav(r.gid));
+  const col = COLS.find(c=>c.k===SORT.k) || COLS[4];
   rows.sort((a,b)=>{
     let va=col.get(a), vb=col.get(b);
+    // null/undefined toujours en bas, quel que soit le sens du tri.
+    const an=(va==null), bn=(vb==null);
+    if(an && bn) return 0; if(an) return 1; if(bn) return -1;
     if(typeof va==="string"){ va=va.toLowerCase(); vb=vb.toLowerCase(); return va<vb?-SORT.dir:va>vb?SORT.dir:0; }
-    va=va==null?-Infinity:va; vb=vb==null?-Infinity:vb;
     return (va-vb)*SORT.dir;
   });
   return rows;
@@ -348,9 +404,10 @@ function statBlock(it){
   const blocks = ["avg","x1","x10","x100","x1000"].map(src=>{
     const st = statsOf(seriesOf(it,src)); if(!st) return "";
     const div = TIER_DIV[src];
+    // prix actuel coloré + prix unitaire à côté ; en dessous, min/max PAR LOT.
     const unit = div>1 ? ` <span class="muted">= ${fmt(st.last/div)}/u</span>` : "";
     return `<div class="stat"><div class="v" style="color:${TIER_COLORS[src]}">${fmt(st.last)}${unit}</div>`+
-           `<div class="l">${TIER_LABEL[src]}</div></div>`;
+           `<div class="l">${TIER_LABEL[src]} · min ${fmt(st.min)} / max ${fmt(st.max)}</div></div>`;
   }).join("");
   return `<div class="statgrid">${blocks||'<span class="muted">aucune donnée</span>'}</div>`;
 }
@@ -382,13 +439,13 @@ function drawChart(it){
   let y1 = sc.top;
   const sx=v=>P.l+(v-x0)/(x1-x0)*(W-P.l-P.r);
   const sy=v=>H-P.b-(v-y0)/(y1-y0)*(H-P.t-P.b);
-  // grille Y : subdivisions (demi-pas, lignes fines pointillées) puis paliers ronds.
+  // grille Y : subdivisions (demi-pas, pointillés bien visibles) puis paliers ronds.
   let grid="";
   for(let val=sc.step/2; val<y1; val+=sc.step){ const y=sy(val);
-    grid+=`<line x1="${P.l}" y1="${y.toFixed(1)}" x2="${W-P.r}" y2="${y.toFixed(1)}" stroke="var(--grid)" stroke-opacity="0.45" stroke-dasharray="3 3"/>`;
+    grid+=`<line x1="${P.l}" y1="${y.toFixed(1)}" x2="${W-P.r}" y2="${y.toFixed(1)}" stroke="#5a6675" stroke-opacity="0.85" stroke-dasharray="2 4"/>`;
   }
   for(let val=0; val<=y1+1e-6; val+=sc.step){ const y=sy(val);
-    grid+=`<line x1="${P.l}" y1="${y.toFixed(1)}" x2="${W-P.r}" y2="${y.toFixed(1)}" stroke="var(--grid)"/>`;
+    grid+=`<line x1="${P.l}" y1="${y.toFixed(1)}" x2="${W-P.r}" y2="${y.toFixed(1)}" stroke="#48515e"/>`;
     grid+=`<text x="${P.l-6}" y="${(y+3).toFixed(1)}" text-anchor="end">${fmt(val)}</text>`;
   }
   // axes X (début, milieu, fin)
@@ -397,8 +454,8 @@ function drawChart(it){
   });
   const paths = series.map(s=>{
     const div = TIER_DIV[s.src];
-    const dots = s.pts.map(p=>`<circle cx="${sx(p[0]).toFixed(1)}" cy="${sy(p[1]).toFixed(1)}" r="2.5" fill="${s.color}" data-u="${p[1]}" data-lot="${p[1]*div}" data-src="${s.src}" data-t="${p[0]}"/>`).join("");
-    const line = s.pts.length>1 ? `<polyline fill="none" stroke="${s.color}" stroke-width="1.8" points="${s.pts.map(p=>`${sx(p[0]).toFixed(1)},${sy(p[1]).toFixed(1)}`).join(" ")}"/>` : "";
+    const dots = s.pts.map(p=>`<circle cx="${sx(p[0]).toFixed(1)}" cy="${sy(p[1]).toFixed(1)}" r="3" fill="${s.color}" data-u="${p[1]}" data-lot="${p[1]*div}" data-src="${s.src}" data-t="${p[0]}"/>`).join("");
+    const line = s.pts.length>1 ? `<polyline fill="none" stroke="${s.color}" stroke-width="2.6" stroke-linejoin="round" stroke-linecap="round" points="${s.pts.map(p=>`${sx(p[0]).toFixed(1)},${sy(p[1]).toFixed(1)}`).join(" ")}"/>` : "";
     return line+dots;
   }).join("");
   host.innerHTML = `<svg width="100%" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="overflow:visible">${grid}${paths}</svg>`;
@@ -419,21 +476,51 @@ function drawChart(it){
 // ── Évènements ─────────────────────────────────────────────────────────────
 document.getElementById("q").addEventListener("input", e=>{ FILTER=e.target.value; renderRows(); });
 document.getElementById("source").addEventListener("change", e=>{ SOURCE=e.target.value; renderRows(); });
+document.getElementById("typeFilter").addEventListener("change", e=>{ TYPEF=e.target.value; renderRows(); });
+document.getElementById("favOnly").addEventListener("change", e=>{ FAVONLY=e.target.checked; renderRows(); });
+document.getElementById("listSel").addEventListener("change", e=>{ setActive(e.target.value); renderRows(); });
+document.getElementById("listNew").addEventListener("click", ()=>{
+  const name=(prompt("Nom de la nouvelle liste ?")||"").trim();
+  if(!name) return;
+  if(!LISTS[name]) LISTS[name]=[];
+  setActive(name); saveLists(); renderListControls(); renderRows();
+});
+document.getElementById("listDel").addEventListener("click", ()=>{
+  if(Object.keys(LISTS).length<=1){ alert("Garde au moins une liste."); return; }
+  if(!confirm(`Supprimer la liste « ${ACTIVE} » ?`)) return;
+  delete LISTS[ACTIVE]; setActive(Object.keys(LISTS)[0]);
+  saveLists(); renderListControls(); renderRows();
+});
 document.getElementById("head").addEventListener("click", e=>{
   const th=e.target.closest("th"); if(!th || th.dataset.sort==="false") return;
   const k=th.dataset.k;
-  if(SORT.k===k) SORT.dir*=-1; else SORT={k, dir: k==="nom"?1:-1};
+  if(SORT.k===k) SORT.dir*=-1; else SORT={k, dir: (k==="nom"||k==="type"||k==="niv")?1:-1};
   renderHead(); renderRows();
 });
 document.getElementById("rows").addEventListener("click", e=>{
+  // clic sur l'étoile favori : toggle sans ouvrir le détail
+  const star=e.target.closest(".star");
+  if(star){
+    const gid=+star.dataset.fav; toggleFav(gid);
+    star.classList.toggle("on", isFav(gid));
+    renderListControls();                 // maj du compteur dans le sélecteur
+    if(FAVONLY) renderRows();              // l'item peut sortir de la vue filtrée
+    return;
+  }
   const tr=e.target.closest("tr"); if(!tr || !tr.dataset.gid) return;
   showDetail(+tr.dataset.gid);
 });
 
 // ── Boot ───────────────────────────────────────────────────────────────────
+(function initTypeFilter(){
+  const types = [...new Set(DTV.items.map(it=>it.type).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'fr'));
+  document.getElementById("typeFilter").insertAdjacentHTML("beforeend",
+    types.map(t=>`<option value="${t.replace(/"/g,"&quot;")}">${t}</option>`).join(""));
+})();
+renderListControls();
 renderHead(); renderRows();
 if(DTV.items.length){
-  // sélectionne l'item le plus « cher » par défaut pour montrer un graphe d'emblée
+  // sélectionne le 1er item de la vue (niveau le plus bas) pour montrer un graphe d'emblée
   const first = computeRows()[0];
   if(first) showDetail(first.gid);
 }
