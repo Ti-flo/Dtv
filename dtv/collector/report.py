@@ -272,6 +272,12 @@ def build_brisage_data(conn: sqlite3.Connection, *, coeff: float = 100.0) -> dic
     for r in rows[:_BRISAGE_CAP]:
         _enrich(r)
 
+    # Entonnoir : catalogue → items avec effets brisables → chiffrables (coût connu).
+    n_breakable = sum(
+        1 for it in catalog
+        if any(l["brisable"] for l in br.parse_effects(it.get("Effets") or ""))
+    )
+
     return {
         "available": True,
         "craft_mode": use_db_craft,          # True = coût craft tiers HDV, False = avgprices
@@ -279,6 +285,7 @@ def build_brisage_data(conn: sqlite3.Connection, *, coeff: float = 100.0) -> dic
         "coeff": coeff,
         "sort_label": sort_label,
         "n_catalog": len(catalog),
+        "n_breakable": n_breakable,          # items avec ≥1 effet brisable
         "n_priced": len(item_prices),
         "n_ranked": len(rows),
         "n_real": len(real),

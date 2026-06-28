@@ -196,6 +196,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 </main>
 <div class="chart-tip" id="tip"></div>
 <div class="modal-bg" id="bmodal" style="display:none"><div class="modal" id="bmodal-box"></div></div>
+<div class="modal-bg" id="pmodal" style="display:none"><div class="modal" id="pmodal-box"></div></div>
 
 <script id="dtv-data" type="application/json">/*__DTV_DATA__*/</script>
 <script>
@@ -212,6 +213,9 @@ const UP="#f85149", DOWN="#3fb950";
 const trendColor = d => d>0 ? UP : d<0 ? DOWN : "var(--muted)";
 const dmy = ts => { const d=new Date(ts); return isNaN(d) ? "—"
   : String(d.getDate()).padStart(2,"0")+"/"+String(d.getMonth()+1).padStart(2,"0")+"/"+String(d.getFullYear()).slice(-2); };
+// Normalisation de nom (miroir simple de brisage.normalize_name) pour croiser
+// recettes ↔ items (sous-crafts, ressources utilisées, affaires).
+const normName = s => (s||"").toLowerCase().replace(/\s+/g," ").trim();
 const TIER_COLORS = { avg:"#2f81f7", x1:"#3fb950", x10:"#d29922", x100:"#a371f7", x1000:"#e85aad" };
 const TIER_LABEL  = { avg:"Prix moyen", x1:"HDV x1", x10:"HDV x10", x100:"HDV x100", x1000:"HDV x1000" };
 const HDV_IDX = { x1:1, x10:2, x100:3, x1000:4 };  // index dans la ligne hdv [ts,x1,x10,x100,x1000,nb]
@@ -414,24 +418,28 @@ function sparkline(s){
 
 // ── Graphe détaillé (SVG maison) ───────────────────────────────────────────
 let DETAIL_ON = {avg:true, x1:true, x10:true, x100:true, x1000:true};
-function showDetail(gid){
-  SELECTED = gid;
+function showDetail(gid, root){
   const it = DTV.items.find(i=>i.gid===gid);
   if(!it){ return; }
+  root = root || document.getElementById("detail");
+  const inPriceTab = root.id === "detail";
+  if(inPriceTab) SELECTED = gid;
   const avail = {};
   ["avg","x1","x10","x100","x1000"].forEach(src=>{ avail[src]=seriesOf(it,src).length>=1; });
-  const cur = seriesOf(it, SOURCE.length?SOURCE:"avg");
-  const st = statsOf(seriesOf(it, "avg")) || statsOf(cur);
-  const d = document.getElementById("detail");
-  d.innerHTML =
-    `<h3>${it.nom}</h3><div class="sub">GID ${it.gid}</div>` +
+  const vol = volumeIndex(seriesOf(it,"avg"));
+  root.innerHTML =
+    `<h3>${it.nom}</h3><div class="sub">GID ${it.gid}${it.type?' · '+it.type:''}${it.level!=null?' · niv '+it.level:''} · `+
+      `<span title="Indice de volume 0–10">Volume V ${vol==null?'—':vol}</span></div>` +
     statBlock(it) +
-    `<div id="chart"></div>` +
+    `<div class="chart"></div>` +
     `<div class="sub" style="margin-top:6px">Graphe en prix unitaire (lots ÷ 10/100/1000) — comparable au x1 et au prix moyen.</div>` +
-    `<div class="legend" id="legend"></div>`;
-  drawLegend(it, avail);
-  drawChart(it);
-  document.querySelectorAll("#rows tr").forEach(tr=>tr.classList.toggle("sel", +tr.dataset.gid===gid));
+    `<div class="legend"></div>` +
+    `<div class="usedin"></div>`;
+  drawLegend(it, avail, root);
+  drawChart(it, root);
+  renderUsedIn(it, root.querySelector(".usedin"));
+  if(inPriceTab)
+    document.querySelectorAll("#rows tr").forEach(tr=>tr.classList.toggle("sel", +tr.dataset.gid===gid));
 }
 function statBlock(it){
   // Compact : prix actuel coloré + prix unitaire à côté (rien d'autre, pour
@@ -446,18 +454,18 @@ function statBlock(it){
   }).join("");
   return `<div class="statgrid">${blocks||'<span class="muted">aucune donnée</span>'}</div>`;
 }
-function drawLegend(it, avail){
-  const lg = document.getElementById("legend");
+function drawLegend(it, avail, root){
+  const lg = (root||document).querySelector(".legend");
   lg.innerHTML = ["avg","x1","x10","x100","x1000"].filter(s=>avail[s]).map(src=>
     `<label class="${DETAIL_ON[src]?'on':''}" data-src="${src}"><span class="dot" style="background:${TIER_COLORS[src]}"></span>${TIER_LABEL[src]}</label>`
   ).join("");
   lg.querySelectorAll("label").forEach(l=>l.onclick=()=>{
     const s=l.dataset.src; DETAIL_ON[s]=!DETAIL_ON[s];
-    l.classList.toggle("on", DETAIL_ON[s]); drawChart(it);
+    l.classList.toggle("on", DETAIL_ON[s]); drawChart(it, root);
   });
 }
-function drawChart(it){
-  const host = document.getElementById("chart");
+function drawChart(it, root){
+  const host = (root||document).querySelector(".chart");
   const sources = ["avg","x1","x10","x100","x1000"].filter(s=>DETAIL_ON[s]);
   // Prix ramené à l'UNITÉ (lot /10/100/1000) → les tiers se comparent au x1 / moyen.
   const series = sources.map(src=>({src, color:TIER_COLORS[src], pts:unitSeriesOf(it,src)
@@ -549,7 +557,8 @@ document.getElementById("rows").addEventListener("click", e=>{
 // ── Onglet « Craft & Brisage » ─────────────────────────────────────────────
 const B = DTV.brisage || {available:false, reason:"(pas de données)"};
 let BATCH = "auto";   // taille de lot de craft : "auto" | "1" | "10" | "100" | "1000"
-const BATCHES = ["auto","1","10","100","1000"];
+const BATCHES = ["smart","auto","1","10","100","1000"];
+let BFAVONLY=false, RUNETARGET="";   // favoris seulement / rune ciblée (code)
 // Bénéfice : vert si positif (gain), rouge si négatif (perte).
 const benFmt = v => v==null ? '<span class="muted">—</span>'
   : `<span style="color:${v>0?'var(--accent2)':v<0?'var(--bad)':'inherit'}">${(v>0?'+':'')+fmt(v)}</span>`;
@@ -569,12 +578,33 @@ function bestTier(tiers, totalNeeded){
   return {tier:t, unit:avail[t]/t};
 }
 
-// Coût de craft du batch courant (cpc précalculé par Python = source unique).
-function bCost(r){ return r.craft ? (r.craft.cpc[BATCH] ?? null) : r.Cout_HDV; }
-function bBatchN(r){
-  if(BATCH!=="auto") return Number(BATCH);
-  return r.craft ? (r.craft.n_auto ?? null) : null;
+// Mode « smart » : batch (parmi x1/x10/x100/x1000) au coût de craft le + bas
+// → revenu fixe ⇒ coût mini = bénéfice maxi pour l'item.
+function smartBatch(r){
+  if(!r.craft) return null;
+  let best=null;
+  for(const b of ["1","10","100","1000"]){
+    const c=r.craft.cpc[b]; if(c==null) continue;
+    if(best==null || c<best.cost) best={batch:b, cost:c};
+  }
+  return best;
 }
+// Coût de craft du batch courant (cpc précalculé par Python = source unique).
+function bCost(r){
+  if(!r.craft) return r.Cout_HDV;
+  if(BATCH==="smart"){ const s=smartBatch(r); return s?s.cost:null; }
+  return r.craft.cpc[BATCH] ?? null;
+}
+function bBatchN(r){
+  if(BATCH==="smart"){ const s=r.craft?smartBatch(r):null; return s?Number(s.batch):null; }
+  if(BATCH==="auto") return r.craft ? (r.craft.n_auto ?? null) : null;
+  return Number(BATCH);
+}
+// Runes : qté d'une rune ciblée, total de runes prédites par craft.
+function runeQty(r, code){ const x=(r.runes_detail||[]).find(u=>u.code===code); return x?x.qty:null; }
+function totalRunes(r){ const d=r.runes_detail||[]; return d.length?d.reduce((a,u)=>a+u.qty,0):null; }
+// Coeff appliqué à une ligne : réel s'il existe, sinon théorique.
+function bCoeff(r){ return r.Coeff_Reel!=null ? r.Coeff_Reel : B.coeff; }
 // Métriques recalculées pour le batch courant (revenu indépendant du batch).
 function deriveB(r, real){
   const rev = real ? r.Revenu_reel : r.Revenu_theo;
@@ -589,10 +619,43 @@ function deriveB(r, real){
   };
 }
 const num = (v,suf="") => v==null ? '<span class="muted">—</span>' : fmt(v)+suf;
+const dec2 = v => v==null ? '<span class="muted">—</span>' : (Math.round(v*100)/100).toFixed(2);
+// Runes distinctes (pour le ciblage) et index ressource→crafts (pour « utilisé dans »).
+const RUNES_AVAIL = (()=>{ const m={};
+  (B.theo||[]).concat(B.real||[]).forEach(r=>(r.runes_detail||[]).forEach(u=>{ m[u.code]=u.nom; }));
+  return Object.entries(m).sort((a,b)=>a[1].localeCompare(b[1],'fr')); })();
+const USEDIN = (()=>{ const m={};
+  (B.theo||[]).forEach(r=>{ if(r.craft&&r.craft.recipe) r.craft.recipe.forEach(ing=>{
+    const k=normName(ing.nom); (m[k]=m[k]||[]).push(r); }); });
+  return m; })();
+
+// Crafts les + rentables qui utilisent un item comme ingrédient (popup prix / détail).
+function renderUsedIn(it, host){
+  if(!host) return;
+  const users = USEDIN[normName(it.nom)] || [];
+  if(!users.length){ host.innerHTML=""; return; }
+  const rows = users.map(r=>({r, d:deriveB(r, false)}))
+    .filter(x=>x.d.cost!=null)
+    .sort((a,b)=>(b.d.benef==null?-1e18:b.d.benef)-(a.d.benef==null?-1e18:a.d.benef))
+    .slice(0, 6);
+  if(!rows.length){ host.innerHTML=""; return; }
+  host.innerHTML =
+    `<h3 class="sec">⚒️ Crafts qui utilisent ${it.nom} <span class="muted">— les + rentables à briser</span></h3>`+
+    `<table><thead><tr><th class="name">Item</th><th class="narrow">Bénéf</th><th class="narrow">C.min</th><th class="narrow">Rent</th></tr></thead><tbody>`+
+    rows.map(x=>`<tr class="op" data-gid="${x.r.GID}" style="cursor:pointer"><td class="name">${x.r.Nom}</td>`+
+      `<td class="narrow">${benFmt(x.d.benef)}</td><td class="narrow">${x.d.cmin==null?'—':fmt(x.d.cmin)+'%'}</td>`+
+      `<td class="narrow">${x.d.rent==null?'—':x.d.rent.toFixed(2)}</td></tr>`).join("")+
+    `</tbody></table>`;
+  host.querySelectorAll("tr.op").forEach(tr=>tr.onclick=()=>{
+    const r=B.theo.find(x=>x.GID==tr.dataset.gid); if(r) openBModal(r, false);
+  });
+}
 
 function brisageCols(real){
   const revLbl = real ? "Rev@réel" : `Rev@${B.coeff||100}%`;
   const cols = [];
+  cols.push({k:"fav", l:"★", cls:"fav", sort:false, get:r=>0,
+    fmt:r=>`<span class="star ${isFav(r.GID)?'on':''}" data-fav="${r.GID}">★</span>`});
   if(real) cols.push({k:"_mark", l:"", cls:"narrow", sort:false, get:r=>0,
     fmt:r=>(r._d.benef||0)>0?'<span style="color:var(--accent2)">✓</span>':'<span style="color:var(--bad)">✗</span>'});
   cols.push(
@@ -612,12 +675,20 @@ function brisageCols(real){
     {k:"Coeff_Reel", l:"C.réel", cls:"narrow", get:r=>r.Coeff_Reel, fmt:r=>r.Coeff_Reel==null?'—':fmt(r.Coeff_Reel)+"%"},
     {k:"Dernier_Brisage", l:"Brisé", cls:"narrow", get:r=>r.Dernier_Brisage||"", fmt:r=>r.Dernier_Brisage?dmy(r.Dernier_Brisage):'<span class="muted">—</span>'},
   );
+  if(RUNETARGET){
+    const lbl = (RUNES_AVAIL.find(x=>x[0]===RUNETARGET)||[,RUNETARGET])[1];
+    cols.push({k:"runeq", l:lbl, cls:"narrow", title:"Quantité de la rune ciblée par craft (à 100%)",
+      get:r=>runeQty(r,RUNETARGET), fmt:r=>dec2(runeQty(r,RUNETARGET))});
+  }
   cols.push({k:"Runes", l:"Runes obtenues", cls:"runesb", sort:false, get:r=>r.Runes||"",
     fmt:r=>r.Runes||'<span class="muted">—</span>'});
   return cols;
 }
 const BSORT = {};
-function renderBTable(hostId, rows, real, defaultSort){
+function renderBTable(hostId, allRows, real, defaultSort){
+  let rows = allRows;
+  if(BFAVONLY) rows = rows.filter(r=>isFav(r.GID));
+  if(RUNETARGET) rows = rows.filter(r=>runeQty(r,RUNETARGET)!=null);
   rows.forEach(r=>{ r._d = deriveB(r, real); });   // recalcul au batch courant
   const cols = brisageCols(real);
   if(!BSORT[hostId]) BSORT[hostId] = defaultSort;
@@ -642,17 +713,21 @@ function renderBTable(hostId, rows, real, defaultSort){
     const th=e.target.closest("th"); if(!th||th.dataset.sort==="false"||!th.dataset.k) return;
     const k=th.dataset.k;
     if(srt.k===k) srt.dir*=-1; else BSORT[hostId]={k, dir:(k==="Nom"||k==="Type")?1:-1};
-    renderBTable(hostId, rows, real, defaultSort);
+    renderBTable(hostId, allRows, real, defaultSort);
   });
   document.querySelector(`#${hostId} tbody`).addEventListener("click", e=>{
+    const star=e.target.closest(".star");
+    if(star){ const gid=+star.dataset.fav; toggleFav(gid); star.classList.toggle("on",isFav(gid));
+      renderListControls(); if(BFAVONLY) renderBTable(hostId, allRows, real, defaultSort); return; }
     const tr=e.target.closest("tr"); if(!tr||!tr.dataset.gid) return;
-    openBModal(rows.find(x=>x.GID==tr.dataset.gid), real);
+    openBModal(allRows.find(x=>x.GID==tr.dataset.gid), real);
   });
 }
 let MODAL_CTX = null;
 function batchSelectorHTML(){
+  const lbl = b => b==="auto" ? "auto" : b==="smart" ? "🧠 smart" : "x"+b;
   return '<span class="batchsel">'+BATCHES.map(b=>
-    `<button data-b="${b}" class="${b===BATCH?'on':''}">${b==="auto"?"auto":"x"+b}</button>`).join("")+'</span>';
+    `<button data-b="${b}" class="${b===BATCH?'on':''}" title="${b==='smart'?'batch le plus rentable par item':''}">${lbl(b)}</button>`).join("")+'</span>';
 }
 function renderBrisage(){
   const root=document.getElementById("craft-root");
@@ -665,11 +740,16 @@ function renderBrisage(){
   const runeTag = B.rune_live ? '<span class="tag ok">prix runes HDV</span>'
                               : '<span class="tag warn">prix runes = exemples</span>';
   const hasReal = B.real && B.real.length;
+  const runeOpts = `<option value="">toutes</option>`+RUNES_AVAIL.map(([c,n])=>
+    `<option value="${c}"${c===RUNETARGET?' selected':''}>${n}</option>`).join("");
   root.innerHTML =
     `<div class="notice">`+
-    `<span><b>${fmt(B.n_ranked)}</b> items chiffrables / ${fmt(B.n_catalog)} au catalogue</span>`+
+    `<span title="Entonnoir : catalogue → items avec un effet brisable → chiffrables (revenu runes ET coût de craft connus)">`+
+      `<b>${fmt(B.n_ranked)}</b> chiffrables · ${fmt(B.n_breakable!=null?B.n_breakable:B.n_ranked)} brisables · ${fmt(B.n_catalog)} catalogue</span>`+
     `<span>${costTag}</span><span>${runeTag}</span>`+
-    `<span>coeff théorique <b>${B.coeff}%</b></span>`+
+    `<span>coeff théo <b>${B.coeff}%</b></span>`+
+    `<label class="chk muted"><input type="checkbox" id="bFav"${BFAVONLY?' checked':''}> ★ favoris</label>`+
+    `<label class="muted">Rune ciblée <select id="bRune">${runeOpts}</select></label>`+
     `<span style="margin-left:auto">Batch ${batchSelectorHTML()}</span></div>`+
     // Brisages réels EN PREMIER (watchlist : ce qui est rentable maintenant).
     (hasReal
@@ -680,6 +760,8 @@ function renderBrisage(){
     const btn=e.target.closest("button"); if(!btn) return;
     BATCH=btn.dataset.b; renderBrisage(); if(MODAL_CTX) openBModal(MODAL_CTX.r, MODAL_CTX.real);
   });
+  document.getElementById("bFav").addEventListener("change", e=>{ BFAVONLY=e.target.checked; renderBrisage(); });
+  document.getElementById("bRune").addEventListener("change", e=>{ RUNETARGET=e.target.value; renderBrisage(); });
   if(hasReal) renderBTable("breal", B.real, true, {k:"benef", dir:-1});
   renderBTable("btheo", B.theo, false, {k:"cmin", dir:1});
 }
@@ -707,9 +789,15 @@ function openBModal(r, real){
              `<td>${tier}</td><td>${fmt(unit)}</td><td>${fmt(ing.qty*unit)} <span class="muted">${info}</span></td></tr>`;
     }).join("");
   }
+  // Coeff appliqué dans ce contexte de table (réel si tableau réel, sinon théo).
+  const mcoeff = real ? r.Coeff_Reel : B.coeff;
   const runeRows = (r.runes_detail&&r.runes_detail.length)
-    ? r.runes_detail.map(x=>`<tr><td>${x.nom} <span class="muted">(${x.code})</span></td><td>${fmt(x.qty)}</td><td>${fmt(x.price)}</td><td>${fmt(x.qty*x.price)}</td></tr>`).join("")
-    : '<tr><td colspan="4" class="muted">—</td></tr>';
+    ? r.runes_detail.map(x=>{
+        const qc = mcoeff!=null ? x.qty*mcoeff/100 : null;
+        return `<tr><td>${x.nom} <span class="muted">(${x.code})</span></td><td>${dec2(x.qty)}</td>`+
+               `<td>${dec2(qc)}</td><td>${fmt(x.price)}</td><td>${qc==null?'—':fmt(qc*x.price)}</td></tr>`;
+      }).join("")
+    : '<tr><td colspan="5" class="muted">—</td></tr>';
   // Verdict craft vs achat.
   let verdict = "";
   if(r.Prix_Moyen!=null && d.cost!=null){
@@ -724,19 +812,25 @@ function openBModal(r, real){
     `<h3>${r.Nom||("GID "+r.GID)}</h3>`+
     `<div class="sub">GID ${r.GID} · niv ${r.Niveau}${r.Type?' · '+r.Type:''}${real?` · coeff réel ${r.Coeff_Reel}%`:` · coeff théo ${B.coeff}%`}</div>`+
     `<div class="kv">`+
-      `<div class="b"><div class="v">${num(d.rev)}</div><div class="l">Revenu runes</div></div>`+
-      `<div class="b"><div class="v">${num(d.cost)}</div><div class="l">Coût craft</div></div>`+
+      `<div class="b"><div class="v">${num(d.rev)}</div><div class="l">Revenu runes / unité</div></div>`+
+      `<div class="b"><div class="v">${num(d.cost)}</div><div class="l">Coût craft / unité</div></div>`+
       `<div class="b"><div class="v">${num(r.Prix_Moyen)}</div><div class="l">Prix moyen (achat)</div></div>`+
-      `<div class="b"><div class="v">${benFmt(d.benef)}</div><div class="l">Bénéfice</div></div>`+
+      `<div class="b"><div class="v">${benFmt(d.benef)}</div><div class="l">Bénéfice / unité</div></div>`+
       `<div class="b"><div class="v">${d.rent==null?'—':d.rent.toFixed(2)}</div><div class="l">Rent (craft)</div></div>`+
       `<div class="b"><div class="v">${d.cmin==null?'—':fmt(d.cmin)+'%'}</div><div class="l">Coeff min</div></div>`+
     `</div>`+
     verdict+
     `<div class="kv" style="align-items:center"><span class="muted">Batch :</span> ${batchSelectorHTML()} <span class="muted">${batchN?('= '+fmt(batchN)+' crafts'):''}</span></div>`+
+    // Totaux du batch (× nombre de crafts).
+    `<div class="kv">`+
+      `<div class="b"><div class="v">${batchN&&d.cost!=null?fmt(d.cost*batchN):'—'}</div><div class="l">Coût TOTAL du batch</div></div>`+
+      `<div class="b"><div class="v">${batchN&&d.benef!=null?benFmt(d.benef*batchN):'—'}</div><div class="l">Bénéfice TOTAL du batch</div></div>`+
+      `<div class="b"><div class="v">${batchN&&d.rev!=null?fmt(d.rev*batchN):'—'}</div><div class="l">Revenu TOTAL du batch</div></div>`+
+    `</div>`+
     `<h3 class="sec">Recette ${c&&!c.db?'<span class="muted">(prix moyen, sans optim. tiers)</span>':''}</h3>`+
     `<table><thead><tr><th class="name">Ingrédient</th><th>Qté/craft</th><th>Besoin</th><th>Tier</th><th>PU</th><th>Coût ligne</th></tr></thead><tbody>${recipeRows}</tbody></table>`+
-    `<h3 class="sec">Runes obtenues</h3>`+
-    `<table><thead><tr><th class="name">Rune</th><th>Qté</th><th>Prix u.</th><th>Valeur</th></tr></thead><tbody>${runeRows}</tbody></table>`;
+    `<h3 class="sec">Runes obtenues <span class="muted">— Qté 100% / au coeff ${mcoeff!=null?mcoeff+'%':'?'}</span></h3>`+
+    `<table><thead><tr><th class="name">Rune</th><th>Qté @100%</th><th>Qté @coeff</th><th>Prix u.</th><th>Valeur</th></tr></thead><tbody>${runeRows}</tbody></table>`;
   box.querySelector(".batchsel").addEventListener("click", e=>{
     const btn=e.target.closest("button"); if(!btn) return;
     BATCH=btn.dataset.b; renderBrisage(); openBModal(r, real);
@@ -746,10 +840,9 @@ function openBModal(r, real){
 }
 function closeBModal(){ document.getElementById("bmodal").style.display="none"; MODAL_CTX=null; }
 document.getElementById("bmodal").addEventListener("click", e=>{ if(e.target.id==="bmodal") closeBModal(); });
-document.addEventListener("keydown", e=>{ if(e.key==="Escape") closeBModal(); });
+document.addEventListener("keydown", e=>{ if(e.key==="Escape"){ closeBModal(); if(typeof closePriceModal==="function") closePriceModal(); } });
 
 // ── Onglet « Bonnes affaires du moment » ───────────────────────────────────
-const normName = s => (s||"").toLowerCase().replace(/\s+/g," ").trim();
 function median(a){ const b=a.slice().sort((x,y)=>x-y), n=b.length;
   return n ? (n%2 ? b[(n-1)/2] : (b[n/2-1]+b[n/2])/2) : null; }
 // Statistiques « affaire » d'un item à partir de sa série de prix moyen.
@@ -820,11 +913,17 @@ function renderAffaires(){
   }
   const opBody = ops.length ? ops.map(o=>{
     const ings=o.promo.map(x=>`${x.ing.nom} <span style="color:${ecartColor(x.deal.st.ecart)}">${pct(x.deal.st.ecart)}</span>`).join(", ");
-    return `<tr data-gid="${o.r.GID}"><td class="name">${o.r.Nom}</td><td class="type">${o.r.Type||'—'}</td>`+
+    const coeff = o.r.Coeff_Reel!=null ? o.r.Coeff_Reel : B.coeff;
+    const coeffStr = o.r.Coeff_Reel!=null ? `${fmt(o.r.Coeff_Reel)}% <span class="muted">réel</span>`
+                                          : `${fmt(B.coeff)}% <span class="muted">théo</span>`;
+    const tr_=totalRunes(o.r), runesPred = tr_!=null ? dec2(tr_*coeff/100) : '—';
+    return `<tr data-gid="${o.r.GID}" style="cursor:pointer"><td class="name">${o.r.Nom}</td><td class="type">${o.r.Type||'—'}</td>`+
       `<td class="runesb">${ings}</td><td class="narrow">${num(o.d.cost)}</td>`+
+      `<td class="narrow">${o.d.batchN==null?'—':fmt(o.d.batchN)}</td>`+
+      `<td class="narrow">${coeffStr}</td><td class="narrow">${runesPred}</td>`+
       `<td class="narrow">${benFmt(o.d.benef)}</td><td class="narrow">${o.d.cmin==null?'—':fmt(o.d.cmin)+'%'}</td>`+
       `<td class="narrow">${o.d.rent==null?'—':o.d.rent.toFixed(2)}</td></tr>`;
-  }).join("") : `<tr><td colspan="7"><div class="empty">${B.available?"Aucune recette dont un ingrédient est en promo à ce seuil.":"Catalogue craft indisponible."}</div></td></tr>`;
+  }).join("") : `<tr><td colspan="10"><div class="empty">${B.available?"Aucune recette dont un ingrédient est en promo à ce seuil.":"Catalogue craft indisponible."}</div></td></tr>`;
 
   root.innerHTML =
     `<div class="controls"><label class="muted">Affaires <b id="affCount"></b></label>`+
@@ -833,8 +932,8 @@ function renderAffaires(){
     `<span class="muted">prix actuel vs médiane historique du prix moyen</span></div>`+
     `<h3 class="sec">💸 Prix bas du moment <span class="muted">— clique une ligne pour voir le graphe</span></h3>`+
     `<div class="tablewrap"><table id="affTbl"><thead><tr>${head}</tr></thead><tbody id="affRows">${body}</tbody></table></div>`+
-    `<h3 class="sec">⚒️ Opportunités craft/brisage induites <span class="muted">— rentables maintenant ET un ingrédient est en promo</span></h3>`+
-    `<div class="tablewrap"><table><thead><tr><th class="name">Item</th><th class="type">Type</th><th class="runesb">Ingrédient(s) en promo</th><th class="narrow">Craft</th><th class="narrow">Bénéf</th><th class="narrow">C.min</th><th class="narrow">Rent</th></tr></thead><tbody id="opRows">${opBody}</tbody></table></div>`;
+    `<h3 class="sec">⚒️ Opportunités craft/brisage induites <span class="muted">— rentables maintenant ET un ingrédient est en promo · clique pour le détail</span></h3>`+
+    `<div class="tablewrap"><table><thead><tr><th class="name">Item</th><th class="type">Type</th><th class="runesb">Ingrédient(s) en promo</th><th class="narrow">Craft</th><th class="narrow" title="Batch utilisé">Batch</th><th class="narrow" title="Coeff réel sinon théorique">Coeff</th><th class="narrow" title="Runes totales prédites au coeff">Runes préd.</th><th class="narrow">Bénéf</th><th class="narrow">C.min</th><th class="narrow">Rent</th></tr></thead><tbody id="opRows">${opBody}</tbody></table></div>`;
   document.getElementById("affCount").textContent = rows.length;
   document.getElementById("affSeuil").addEventListener("change", e=>{ AFF_SEUIL=Number(e.target.value); renderAffaires(); });
   document.getElementById("affSens").addEventListener("change", e=>{ AFF_SENS=e.target.value; AFF_SORT={k:"ecart",dir:AFF_SENS==="buy"?1:-1}; renderAffaires(); });
@@ -847,21 +946,24 @@ function renderAffaires(){
     const star=e.target.closest(".star");
     if(star){ const gid=+star.dataset.fav; toggleFav(gid); star.classList.toggle("on",isFav(gid)); renderListControls(); return; }
     const tr=e.target.closest("tr"); if(!tr||!tr.dataset.gid) return;
-    gotoPrice(+tr.dataset.gid);
+    openPriceModal(+tr.dataset.gid);
   });
   document.getElementById("opRows").addEventListener("click", e=>{
     const tr=e.target.closest("tr"); if(!tr||!tr.dataset.gid) return;
     const r=B.theo.find(x=>x.GID==tr.dataset.gid); if(r) openBModal(r,false);
   });
 }
-// Cliquer une affaire → bascule sur l'onglet Prix dans le temps et ouvre le graphe.
-function gotoPrice(gid){
-  document.querySelector('nav.tabs button[data-go="prix"]').click();
-  FILTER=""; document.getElementById("q").value="";
-  if(SOURCE!=="avg"){ SOURCE="avg"; document.getElementById("source").value="avg"; }
-  renderRows(); showDetail(gid);
-  document.querySelector(".tablewrap").scrollTop=0;
+// Popup graphe de prix d'un item (réutilise showDetail : graphe + Volume V +
+// crafts qui utilisent la ressource).
+function openPriceModal(gid){
+  const box=document.getElementById("pmodal-box");
+  box.innerHTML = `<span class="x" id="pmodal-x">✕</span><div class="pdetail"></div>`;
+  showDetail(gid, box.querySelector(".pdetail"));
+  document.getElementById("pmodal-x").onclick = closePriceModal;
+  document.getElementById("pmodal").style.display = "flex";
 }
+function closePriceModal(){ document.getElementById("pmodal").style.display="none"; }
+document.getElementById("pmodal").addEventListener("click", e=>{ if(e.target.id==="pmodal") closePriceModal(); });
 
 // ── Boot ───────────────────────────────────────────────────────────────────
 (function initTypeFilter(){
