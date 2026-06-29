@@ -300,8 +300,13 @@ function varOver(series, days){
   if(!series || series.length<2) return null;
   const lastT = Date.parse(series[series.length-1][0]), last = series[series.length-1][1];
   const target = lastT - days*DAY;
-  let past=null;
-  for(let i=series.length-1;i>=0;i--){ if(Date.parse(series[i][0])<=target){ past=series[i][1]; break; } }
+  // Trouve le point le plus proche de target (hors dernier point) pour éviter
+  // de comparer contre un point trop ancien quand les captures sont irrégulières.
+  let past=null, bestDist=Infinity;
+  for(let i=0;i<series.length-1;i++){
+    const dist=Math.abs(Date.parse(series[i][0])-target);
+    if(dist<bestDist){ bestDist=dist; past=series[i][1]; }
+  }
   if(past==null || past===0) return null;
   return (last-past)/past*100;
 }
@@ -319,7 +324,7 @@ function volumeIndex(series){
   if(!s || s.length<2) return null;
   let changes=0;
   for(let i=1;i<s.length;i++){ if(s[i][1]!==s[i-1][1]) changes++; }
-  return Math.round(changes/(s.length-1)*10);
+  return Math.round(changes/(s.length-1)*100)/10;
 }
 const varCell = v => v==null ? '<span class="muted">—</span>'
   : `<span style="color:${trendColor(v)}">${pct(v)}</span>`;
@@ -339,21 +344,21 @@ function niceScale(max, target){
 const COLS = [
   {k:"fav",   l:"★",      cls:"fav", title:"Ajouter à la liste active", sort:false, get:r=>0,
    fmt:r=>`<span class="star ${isFav(r.gid)?'on':''}" data-fav="${r.gid}">★</span>`},
-  {k:"nom",   l:"Nom",    cls:"name", get:r=>r.nom, fmt:r=>r.nom},
+  {k:"nom",   l:"Nom",    cls:"name", title:"Nom de l'item", get:r=>r.nom, fmt:r=>r.nom},
   {k:"type",  l:"Type",   cls:"type", title:"Type d'objet", get:r=>r.type, fmt:r=>r.type||'<span class="muted">—</span>'},
   {k:"niv",   l:"Niv",    cls:"narrow", title:"Niveau de l'objet (ordre HDV)", get:r=>r.level, fmt:r=>r.level==null?'<span class="muted">—</span>':r.level},
-  {k:"last",  l:"Dernier",title:"Dernier prix (source sélectionnée)", get:r=>r.st?r.st.last:null, fmt:r=>fmt(r.st&&r.st.last)},
-  {k:"min",   l:"Min",    get:r=>r.st?r.st.min:null,  fmt:r=>fmt(r.st&&r.st.min)},
-  {k:"max",   l:"Max",    get:r=>r.st?r.st.max:null,  fmt:r=>fmt(r.st&&r.st.max)},
-  {k:"avg",   l:"Moyen",  get:r=>r.st?r.st.avg:null,  fmt:r=>fmt(r.st&&r.st.avg)},
+  {k:"last",  l:"Dernier",title:"Dernier prix connu (source sélectionnée)", get:r=>r.st?r.st.last:null, fmt:r=>fmt(r.st&&r.st.last)},
+  {k:"min",   l:"Min",    title:"Prix minimum observé (source sélectionnée)", get:r=>r.st?r.st.min:null,  fmt:r=>fmt(r.st&&r.st.min)},
+  {k:"max",   l:"Max",    title:"Prix maximum observé (source sélectionnée)", get:r=>r.st?r.st.max:null,  fmt:r=>fmt(r.st&&r.st.max)},
+  {k:"avg",   l:"Moyen",  title:"Prix moyen sur tous les relevés (source sélectionnée)", get:r=>r.st?r.st.avg:null,  fmt:r=>fmt(r.st&&r.st.avg)},
   {k:"varj",  l:"Var j",  cls:"var", title:"Variation du prix moyen sur 24h", get:r=>r.varj, fmt:r=>varCell(r.varj)},
   {k:"vars",  l:"Var s",  cls:"var", title:"Variation du prix moyen sur 1 semaine", get:r=>r.vars, fmt:r=>varCell(r.vars)},
   {k:"varm",  l:"Var m",  cls:"var", title:"Variation du prix moyen sur 1 mois", get:r=>r.varm, fmt:r=>varCell(r.varm)},
   {k:"spark", l:"Tendance", title:"Prix moyen sur 7 jours (échelle 0→max)", get:r=>0, fmt:r=>sparkline(lastDays(r.avgS,7)), sort:false},
-  {k:"vol",   l:"V",      cls:"narrow", title:"Indice de volume 0–10 : fréquence de changement du prix moyen sur 10 jours", get:r=>r.vol, fmt:r=>r.vol==null?'<span class="muted">—</span>':r.vol},
+  {k:"vol",   l:"V",      cls:"narrow", title:"Indice de volume 0–10 : fréquence de changement du prix moyen sur 10 jours (avec décimale)", get:r=>r.vol, fmt:r=>r.vol==null?'<span class="muted">—</span>':(+r.vol).toFixed(1)},
   {k:"hdvn",  l:"R",      cls:"narrow", title:"Nombre de relevés HDV réels", get:r=>r.hdvN, fmt:r=>r.hdvN||'<span class="muted">0</span>'},
   {k:"hdvlast",l:"Dernier",cls:"narrow", title:"Date du dernier relevé HDV", get:r=>r.hdvLastT, fmt:r=>r.hdvLast?dmy(r.hdvLast):'<span class="muted">—</span>'},
-  {k:"gid",   l:"GID",    cls:"narrow", get:r=>r.gid, fmt:r=>r.gid},
+  {k:"gid",   l:"GID",    cls:"narrow", title:"Identifiant unique de l'item dans le jeu", get:r=>r.gid, fmt:r=>r.gid},
 ];
 // Tri par défaut : par niveau croissant (l'ordre HDV auquel Flo est habitué).
 let SOURCE="avg", SORT={k:"niv",dir:1}, FILTER="", TYPEF="", FAVONLY=false, SELECTED=null;
@@ -429,7 +434,7 @@ function showDetail(gid, root){
   const vol = volumeIndex(seriesOf(it,"avg"));
   root.innerHTML =
     `<h3>${it.nom}</h3><div class="sub">GID ${it.gid}${it.type?' · '+it.type:''}${it.level!=null?' · niv '+it.level:''} · `+
-      `<span title="Indice de volume 0–10">Volume V ${vol==null?'—':vol}</span></div>` +
+      `<span title="Indice de volume 0–10 : fréquence de changement du prix moyen sur 10 jours">Volume V ${vol==null?'—':(+vol).toFixed(1)}</span></div>` +
     statBlock(it) +
     `<div class="chart"></div>` +
     `<div class="sub" style="margin-top:6px">Graphe en prix unitaire (lots ÷ 10/100/1000) — comparable au x1 et au prix moyen.</div>` +
@@ -784,8 +789,13 @@ function openBModal(r, real){
       let tier, unit, info;
       if(buy!=null && (alt==null || buy<=alt)){ tier="x"+bt.tier; unit=buy; info=`(${Math.ceil(need/bt.tier)} ach.)`; }
       else if(alt!=null){ tier='<span style="color:var(--accent2)">craft</span>'; unit=alt; info=""; }
-      else return `<tr><td>${ing.nom}</td><td>${ing.qty}</td><td>${fmt(need)}</td><td colspan="3" class="bad">prix inconnu</td></tr>`;
-      return `<tr><td>${ing.nom}</td><td>${ing.qty}</td><td>${fmt(need)}</td>`+
+      const ingKey = normName(ing.nom);
+      const ingGid = NAMEGID[ingKey];
+      const ingStyle = ingGid ? ' style="cursor:pointer" title="Cliquer pour voir le graphe de prix"' : '';
+      const ingAttr = ingGid ? ` data-ing="${ingGid}"` : '';
+      if(buy==null && alt==null)
+        return `<tr${ingAttr}${ingStyle}><td>${ing.nom}</td><td>${ing.qty}</td><td>${fmt(need)}</td><td colspan="3" class="bad">prix inconnu</td></tr>`;
+      return `<tr${ingAttr}${ingStyle}><td>${ing.nom}</td><td>${ing.qty}</td><td>${fmt(need)}</td>`+
              `<td>${tier}</td><td>${fmt(unit)}</td><td>${fmt(ing.qty*unit)} <span class="muted">${info}</span></td></tr>`;
     }).join("");
   }
@@ -835,6 +845,11 @@ function openBModal(r, real){
     const btn=e.target.closest("button"); if(!btn) return;
     BATCH=btn.dataset.b; renderBrisage(); openBModal(r, real);
   });
+  // Clic sur un ingrédient → ouvre le graphe de prix dans la popup modale.
+  box.addEventListener("click", e=>{
+    const tr=e.target.closest("tr[data-ing]"); if(!tr) return;
+    openPriceModal(+tr.dataset.ing);
+  });
   document.getElementById("bmodal-x").onclick = closeBModal;
   document.getElementById("bmodal").style.display = "flex";
 }
@@ -865,6 +880,8 @@ const DEALS = (()=>{
   return out;
 })();
 const DEALMAP = (()=>{ const m={}; DEALS.forEach(d=>{ m[normName(d.nom)]=d; }); return m; })();
+// Lookup nom→gid sur tous les items connus (pour rendre les ingrédients cliquables).
+const NAMEGID = (()=>{ const m={}; DTV.items.forEach(it=>{ m[normName(it.nom)]=it.gid; }); return m; })();
 let AFF_SEUIL=-10, AFF_SENS="buy", AFF_SORT={k:"ecart",dir:1};
 const ecartColor = e => e<0 ? 'var(--accent2)' : e>0 ? 'var(--bad)' : 'var(--muted)';
 
