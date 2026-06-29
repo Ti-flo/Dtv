@@ -118,6 +118,8 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .modal-bg.dual-right { justify-content:flex-end; background:transparent; pointer-events:none; }
   .modal-bg.dual-left .modal, .modal-bg.dual-right .modal { max-width:48vw; }
   .modal-bg.dual-right .modal { pointer-events:auto; }
+  .modtitle { cursor:pointer; } .modtitle:hover { text-decoration:underline; }
+  .goicon { font-size:14px; opacity:.65; } .modtitle:hover .goicon { opacity:1; }
   .modal h3 { margin:0 0 2px; font-size:18px; }
   .modal .x { float:right; cursor:pointer; color:var(--muted); font-size:20px; line-height:1; }
   .modal .x:hover { color:var(--text); }
@@ -535,8 +537,12 @@ function showDetail(gid, root){
   const avail = {};
   ["avg","x1","x10","x100","x1000"].forEach(src=>{ avail[src]=seriesOf(it,src).length>=1; });
   const vol = volumeIndex(seriesOf(it,"avg"));
+  // Lien vers le craft/brisage de l'item (icône ⚒️) s'il en a un.
+  const craftRow = (typeof BRISMAP!=="undefined" && BRISMAP[gid])
+                || ((typeof RD!=="undefined" && RD.concassage) ? RD.concassage.find(x=>x.GID===gid) : null);
   root.innerHTML =
-    `<h3>${it.nom}</h3><div class="sub">GID ${it.gid}${it.type?' · '+it.type:''}${it.level!=null?' · niv '+it.level:''} · `+
+    `<h3${craftRow?' class="modtitle" title="Voir le craft / brisage"':''}>${it.nom}${craftRow?' <span class="goicon">⚒️</span>':''}</h3>`+
+    `<div class="sub">GID ${it.gid}${it.type?' · '+it.type:''}${it.level!=null?' · niv '+it.level:''} · `+
       `<span title="Indice de volume 0–10 : fréquence de changement du prix moyen sur 10 jours">Volume V ${vol==null?'—':(+vol).toFixed(1)}</span></div>` +
     sellLotCtrlHTML(it.gid) +
     statBlock(it) +
@@ -552,6 +558,8 @@ function showDetail(gid, root){
   root.querySelectorAll("input[data-sell]").forEach(cb=>cb.onchange=()=>{
     toggleSell(+cb.dataset.gid, cb.dataset.sell); refreshSellViews(gid, root);
   });
+  const dc=root.querySelector(".modtitle");
+  if(dc && craftRow) dc.onclick=()=>openBModal(craftRow, false);   // ⚒️ → popup craft (à gauche)
   if(inPriceTab)
     document.querySelectorAll("#rows tr").forEach(tr=>tr.classList.toggle("sel", +tr.dataset.gid===gid));
 }
@@ -700,12 +708,16 @@ function bestTier(tiers, totalNeeded){
 // → revenu fixe ⇒ coût mini = bénéfice maxi pour l'item.
 function smartBatch(r){
   if(!r.craft) return null;
-  let best=null;
+  // Smart = meilleure marge (cpc le + bas) qui RESPECTE le plafond d'investissement.
+  // Ex : plafond 20k → on descend de x100 (180k) à x10 (19k) au lieu d'exclure l'item.
+  let best=null, fallback=null;
   for(const b of ["10","100","1000"]){   // x1 exclu : lot irréaliste
     const c=r.craft.cpc[b]; if(c==null) continue;
+    if(fallback==null || c<fallback.cost) fallback={batch:b, cost:c};
+    if(MAX_INVEST!=null && c*Number(b) > MAX_INVEST) continue;   // dépasse le capital max
     if(best==null || c<best.cost) best={batch:b, cost:c};
   }
-  return best;
+  return best || fallback;   // si rien ne tient sous le plafond, le + petit (sera filtré)
 }
 // Coût de craft du batch courant (cpc précalculé par Python = source unique).
 function bCost(r){
@@ -738,6 +750,8 @@ function deriveB(r, real){
 }
 const num = (v,suf="") => v==null ? '<span class="muted">—</span>' : fmt(v)+suf;
 const dec2 = v => v==null ? '<span class="muted">—</span>' : (Math.round(v*100)/100).toFixed(2);
+// CA (chiffre d'affaires) : prix de vente / revenu, en blanc gras pour repérer vite.
+const caFmt = v => v==null ? '<span class="muted">—</span>' : `<b style="color:#fff">${fmt(v)}</b>`;
 // Runes distinctes (pour le ciblage) et index ressource→crafts (pour « utilisé dans »).
 const RUNES_AVAIL = (()=>{ const m={};
   (B.theo||[]).concat(B.real||[]).forEach(r=>(r.runes_detail||[]).forEach(u=>{ m[u.code]=u.nom; }));
@@ -811,6 +825,7 @@ function brisageCols(real){
     {k:"cost", l:"Craft", cls:"narrow", title:"Coût de craft au batch courant (Σ ingrédients au meilleur tier)", get:r=>r._d.cost, fmt:r=>num(r._d.cost)},
     {k:"batchN", l:"Batch", cls:"narrow", title:"Nombre de crafts utilisé pour le coût (auto = estimé selon le coût)", get:r=>r._d.batchN, fmt:r=>r._d.batchN==null?'<span class="muted">—</span>':fmt(r._d.batchN)},
     {k:"cbatch", l:"C/Batch", cls:"narrow", title:"Coût total du batch (Craft × Batch) — capital à avancer", get:r=>r._d.cost==null||r._d.batchN==null?null:r._d.cost*r._d.batchN, fmt:r=>r._d.cost==null||r._d.batchN==null?'<span class="muted">—</span>':num(r._d.cost*r._d.batchN)},
+    {k:"ca", l:"CA", cls:"narrow", title:"Chiffre d'affaires : valeur totale des runes du batch (revenu × Batch) — ce que tu encaisses", get:r=>r._d.rev==null||r._d.batchN==null?null:r._d.rev*r._d.batchN, fmt:r=>caFmt(r._d.rev==null||r._d.batchN==null?null:r._d.rev*r._d.batchN)},
     {k:"cmin", l:"C.min", cls:"narrow", title:"Coeff serveur minimal pour être rentable (plus bas = plus sûr)", get:r=>r._d.cmin, fmt:r=>r._d.cmin==null?'<span class="muted">—</span>':fmt(r._d.cmin)+"%"},
     {k:"benef", l:"Bénéf", cls:"narrow", title:"Bénéfice par unité (revenu runes − coût craft)", get:r=>r._d.benef, fmt:r=>benFmt(r._d.benef)},
     {k:"bbatch", l:"B×Batch", cls:"narrow", title:"Bénéfice total du batch (Bénéf × Batch)", get:r=>r._d.benef==null||r._d.batchN==null?null:r._d.benef*r._d.batchN, fmt:r=>benFmt(r._d.benef==null||r._d.batchN==null?null:r._d.benef*r._d.batchN)},
@@ -1029,7 +1044,7 @@ function openBModal(r, real){
   const box=document.getElementById("bmodal-box");
   box.innerHTML =
     `<span class="x" id="bmodal-x">✕</span>`+
-    `<h3>${r.Nom||("GID "+r.GID)}</h3>`+
+    `<h3${r.GID?' class="modtitle" id="bmodal-title" title="Voir le graphe de prix"':''}>${r.Nom||("GID "+r.GID)}${r.GID?' <span class="goicon">📈</span>':''}</h3>`+
     `<div class="sub">${subLine}</div>`+
     (r.GID ? sellLotCtrlHTML(r.GID) : '')+
     `<div class="kv">`+
@@ -1067,19 +1082,30 @@ function openBModal(r, real){
     const dual = document.getElementById("bmodal").classList.contains("dual-left");
     openPriceModal(+tr.dataset.ing, dual);
   });
+  const mt=document.getElementById("bmodal-title");
+  if(mt && r.GID) mt.onclick=()=>openPriceModal(r.GID);   // nom/icône → graphe (à droite)
   document.getElementById("bmodal-x").onclick = closeBModal;
   document.getElementById("bmodal").style.display = "flex";
+  layoutModals();
+}
+// Place les modales : côte à côte si les DEUX sont ouvertes, centrée sinon.
+// Garantit qu'elles ne se superposent jamais, quel que soit l'onglet.
+function layoutModals(){
+  const bm=document.getElementById("bmodal"), pm=document.getElementById("pmodal");
+  const bv=bm.style.display && bm.style.display!=="none";
+  const pv=pm.style.display && pm.style.display!=="none";
+  const dual=bv&&pv;
+  bm.classList.toggle("dual-left", dual);
+  pm.classList.toggle("dual-right", dual);
 }
 // Ouvre le détail (craft/brisage/concassage) à GAUCHE et le graphe de l'item
 // à DROITE, côte à côte. Cliquer un ingrédient ne change que le graphe de droite.
 function openItemDetail(r, real){
   openBModal(r, real);
-  document.getElementById("bmodal").classList.add("dual-left");
-  if(r.GID) openPriceModal(r.GID, true);
+  if(r.GID) openPriceModal(r.GID);
 }
 function closeBModal(){
-  const bm=document.getElementById("bmodal"); bm.style.display="none"; bm.classList.remove("dual-left"); MODAL_CTX=null;
-  const pm=document.getElementById("pmodal"); if(pm.classList.contains("dual-right")) closePriceModal();
+  document.getElementById("bmodal").style.display="none"; MODAL_CTX=null; layoutModals();
 }
 document.getElementById("bmodal").addEventListener("click", e=>{ if(e.target.id==="bmodal") closeBModal(); });
 document.addEventListener("keydown", e=>{ if(e.key==="Escape"){ closeBModal(); if(typeof closePriceModal==="function") closePriceModal(); } });
@@ -1227,11 +1253,10 @@ function openPriceModal(gid, dual){
   box.innerHTML = `<span class="x" id="pmodal-x">✕</span><div class="pdetail"></div>`;
   showDetail(gid, box.querySelector(".pdetail"));
   document.getElementById("pmodal-x").onclick = closePriceModal;
-  const pm=document.getElementById("pmodal");
-  pm.classList.toggle("dual-right", !!dual);   // mode côte à côte avec le concassage
-  pm.style.display = "flex";
+  document.getElementById("pmodal").style.display = "flex";
+  layoutModals();   // côte à côte si le détail craft est aussi ouvert
 }
-function closePriceModal(){ const pm=document.getElementById("pmodal"); pm.style.display="none"; pm.classList.remove("dual-right"); }
+function closePriceModal(){ document.getElementById("pmodal").style.display="none"; layoutModals(); }
 document.getElementById("pmodal").addEventListener("click", e=>{ if(e.target.id==="pmodal") closePriceModal(); });
 
 // ── Onglet « Achat / Vente » (arbitrage entre tailles de lot) ──────────────
@@ -1279,6 +1304,7 @@ function renderArbitrage(){
       get:r=>r.t[r.buy].unit, fmt:r=>`<span title="lot ${fmt(r.t[r.buy].lot)}">${r.buy} · ${fmt(r.t[r.buy].unit)}/u</span>`},
     {k:"sell",  l:"Vente", cls:"narrow", title:"Meilleur lot de vente autorisé · prix unitaire",
       get:r=>r.t[r.sell].unit, fmt:r=>`<span title="lot ${fmt(r.t[r.sell].lot)}">${r.sell} · ${fmt(r.t[r.sell].unit)}/u</span>`},
+    {k:"ca", l:"CA", cls:"narrow", title:"Chiffre d'affaires : prix de vente du lot (ce que tu encaisses par lot vendu)", get:r=>r.t[r.sell].lot, fmt:r=>caFmt(r.t[r.sell].lot)},
     {k:"ecart", l:"Écart/u", cls:"narrow", title:"Bénéfice par unité = vente/u − achat/u", get:r=>r.ecartU, fmt:r=>benFmt(r.ecartU)},
     {k:"ecartPct", l:"Écart %", cls:"var", title:"Marge en % du prix d'achat", get:r=>r.ecartPct, fmt:r=>r.ecartPct==null?'—':varCell(r.ecartPct)},
     {k:"benefLot", l:"Bénéf/lot", cls:"narrow", title:"Bénéfice net pour 1 lot vendu (prix lot vente − achat des unités)", get:r=>r.benefLot, fmt:r=>benFmt(r.benefLot)},
@@ -1374,6 +1400,9 @@ function concassageCols(real){
     {k:"cbatch",  l:"C/Batch",  cls:"narrow", title:"Coût total du batch courant (C/u × Batch)",
       get:r=>r._d.cost==null||r._d.batchN==null?null:r._d.cost*r._d.batchN,
       fmt:r=>r._d.cost==null||r._d.batchN==null?'<span class="muted">—</span>':num(r._d.cost*r._d.batchN)},
+    {k:"ca",      l:"CA",       cls:"narrow", title:"Chiffre d'affaires : revenu de vente du batch au meilleur lot (vente/u × Batch) — ce que tu encaisses",
+      get:r=>{ const b=best(r); return b&&r._d.batchN!=null?b.unit*r._d.batchN:null; },
+      fmt:r=>{ const b=best(r); return caFmt(b&&r._d.batchN!=null?b.unit*r._d.batchN:null); }},
     {k:"bbatch",  l:"B×Batch",  cls:"narrow", title:"Bénéfice total du batch au meilleur lot autorisé (règle relevé <3j)",
       get:r=>{ const b=best(r); return b&&r._d.cost!=null&&r._d.batchN!=null?(b.unit-r._d.cost)*r._d.batchN:null; },
       fmt:r=>{ const b=best(r); return benFmt(b&&r._d.cost!=null&&r._d.batchN!=null?(b.unit-r._d.cost)*r._d.batchN:null); }},
@@ -1394,7 +1423,7 @@ function concassageCols(real){
   ];
   // Vue simplifiée : l'essentiel pour décider, en gardant Batch et coûts/bénéf clés.
   if(!CONC_DETAIL){
-    const ESS = new Set(["fav","Nom","from_nom","vol","fresh","batchN","cost","cbatch","bbatch","rbatch","b10","b100"]);
+    const ESS = new Set(["fav","Nom","from_nom","vol","fresh","batchN","cost","cbatch","ca","bbatch","rbatch","b10","b100"]);
     return cols.filter(c=>ESS.has(c.k));
   }
   return cols;

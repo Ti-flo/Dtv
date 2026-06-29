@@ -73,6 +73,28 @@ def build_recipes(catalog_dir) -> dict:
     return out
 
 
+def build_gid_meta(catalog_dir) -> dict:
+    """
+    {GID → {nom, type, niveau}} depuis les 3 catalogues scrapés COMPLETS.
+
+    Sert à enrichir les fiches du rapport (nom/type/niveau en français) pour
+    TOUS les items connus du scraper, indépendamment du cache de jeu (qui ne
+    contient que les items déjà rencontrés en jouant).
+    """
+    out: dict[int, dict] = {}
+    for it in _iter_ingredient_items(catalog_dir):
+        gid = br.to_gid(it.get("GID"))
+        if gid is None or gid in out:
+            continue
+        lvl = br.to_level(it.get("Niveau"))
+        out[gid] = {
+            "nom": (it.get("Nom_FR") or "").strip(),
+            "type": (it.get("Type") or "").strip(),
+            "niveau": int(lvl) if lvl else None,
+        }
+    return out
+
+
 def build_name_prices(item_prices: dict, catalog_dir) -> dict:
     """
     {nom d'ingrédient normalisé → prix} en croisant les catalogues (Nom_FR → GID)

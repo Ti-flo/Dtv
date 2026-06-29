@@ -81,13 +81,27 @@ def _price_series(conn: sqlite3.Connection) -> list[dict]:
     gid_types = item_names.load_gid_types()      # gid → type_id
     type_names = item_names.load_type_names()    # type_id → libellé
     levels = item_names.load_item_levels()       # gid → niveau
+    # Enrichissement depuis les catalogues scrapés COMPLETS (nom/type/niveau FR),
+    # en repli du cache de jeu qui n'a que les items déjà rencontrés.
+    cat_meta: dict = {}
+    try:
+        cat_meta = catalog_mod.build_gid_meta(config.scraper_dir())
+    except Exception:
+        cat_meta = {}
     for slot in items.values():
+        m = cat_meta.get(slot["gid"])
         if not slot["nom"]:
-            slot["nom"] = names.get(slot["gid"]) or f"GID {slot['gid']}"
+            slot["nom"] = names.get(slot["gid"]) or (m["nom"] if m and m["nom"] else "") \
+                          or f"GID {slot['gid']}"
         tid = gid_types.get(slot["gid"])
         if tid is not None:
             slot["type"] = type_names.get(tid) or ""
-        slot["level"] = levels.get(slot["gid"])
+        if not slot["type"] and m and m["type"]:
+            slot["type"] = m["type"]
+        lvl = levels.get(slot["gid"])
+        if lvl is None and m:
+            lvl = m["niveau"]
+        slot["level"] = lvl
 
     return sorted(items.values(), key=lambda s: s["nom"].lower())
 
