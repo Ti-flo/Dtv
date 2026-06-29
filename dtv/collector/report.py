@@ -277,6 +277,14 @@ def build_brisage_data(conn: sqlite3.Connection, *, coeff: float = 100.0) -> dic
         1 for it in catalog
         if any(l["brisable"] for l in br.parse_effects(it.get("Effets") or ""))
     )
+    # Couverture des recettes : combien d'items ont une recette exploitable, et
+    # combien d'items BRISABLES n'en ont pas (= trou de scraping à combler).
+    n_recipes = sum(1 for it in catalog if br.parse_recipe(it.get("Recette") or ""))
+    n_breakable_norecipe = sum(
+        1 for it in catalog
+        if any(l["brisable"] for l in br.parse_effects(it.get("Effets") or ""))
+        and not br.parse_recipe(it.get("Recette") or "")
+    )
 
     return {
         "available": True,
@@ -286,6 +294,8 @@ def build_brisage_data(conn: sqlite3.Connection, *, coeff: float = 100.0) -> dic
         "sort_label": sort_label,
         "n_catalog": len(catalog),
         "n_breakable": n_breakable,          # items avec ≥1 effet brisable
+        "n_recipes": n_recipes,              # items avec une recette exploitable
+        "n_breakable_norecipe": n_breakable_norecipe,  # brisables SANS recette (trou scraping)
         "n_priced": len(item_prices),
         "n_ranked": len(rows),
         "n_real": len(real),

@@ -337,6 +337,13 @@ function bestSell(it, gid){
     if(best==null || u>best.unit) best={src, unit:u}; });
   return best;   // {src,unit} ou null
 }
+// ── Fraîcheur (F) : ancienneté du dernier relevé ───────────────────────────
+function seriesFreshDays(s){ return (s&&s.length) ? (DATA_NOW - Date.parse(s[s.length-1][0]))/DAY : null; }
+function freshCell(d){
+  if(d==null) return '<span class="muted">—</span>';
+  const c = d<3 ? 'var(--accent2)' : d<10 ? 'var(--warn)' : 'var(--bad)';
+  return `<span title="dernier relevé il y a ${d.toFixed(1)} j" style="color:${c}">●</span>`;
+}
 function renderListControls(){
   const sel = document.getElementById("listSel");
   sel.innerHTML = Object.keys(LISTS).map(n=>{
@@ -411,6 +418,7 @@ const COLS = [
   {k:"varm",  l:"Var m",  cls:"var", title:"Variation du prix moyen sur 1 mois", get:r=>r.varm, fmt:r=>varCell(r.varm)},
   {k:"spark", l:"Tendance", title:"Prix moyen sur 7 jours (échelle 0→max)", get:r=>0, fmt:r=>sparkline(lastDays(r.avgS,7)), sort:false},
   {k:"vol",   l:"V",      cls:"narrow", title:"Indice de volume 0–10 : fréquence de changement du prix moyen sur 10 jours (avec décimale)", get:r=>r.vol, fmt:r=>r.vol==null?'<span class="muted">—</span>':(+r.vol).toFixed(1)},
+  {k:"fresh", l:"F",      cls:"narrow", title:"Fraîcheur : ancienneté du dernier relevé (source affichée). ● vert <3j · orange <10j · rouge au-delà", get:r=>seriesFreshDays(r.s), fmt:r=>freshCell(seriesFreshDays(r.s))},
   {k:"hdvn",  l:"R",      cls:"narrow", title:"Nombre de relevés HDV réels", get:r=>r.hdvN, fmt:r=>r.hdvN||'<span class="muted">0</span>'},
   {k:"hdvlast",l:"Dernier",cls:"narrow", title:"Date du dernier relevé HDV", get:r=>r.hdvLastT, fmt:r=>r.hdvLast?dmy(r.hdvLast):'<span class="muted">—</span>'},
   {k:"gid",   l:"GID",    cls:"narrow", title:"Identifiant unique de l'item dans le jeu", get:r=>r.gid, fmt:r=>r.gid},
@@ -741,6 +749,7 @@ function renderConcIn(it, host){
 
 function brisageCols(real){
   const revLbl = real ? "Rev@réel" : `Rev@${B.coeff||100}%`;
+  const bItem = r => DTV.items.find(it=>it.gid===r.GID);
   const cols = [];
   cols.push({k:"fav", l:"★", cls:"fav", sort:false, get:r=>0,
     fmt:r=>`<span class="star ${isFav(r.GID)?'on':''}" data-fav="${r.GID}">★</span>`});
@@ -750,6 +759,12 @@ function brisageCols(real){
     {k:"Nom", l:"Nom", cls:"name", get:r=>r.Nom||("GID "+r.GID), fmt:r=>r.Nom||("GID "+r.GID)},
     {k:"Type", l:"Type", cls:"type", get:r=>r.Type||"", fmt:r=>r.Type||'<span class="muted">—</span>'},
     {k:"Niveau", l:"Niv", cls:"narrow", get:r=>r.Niveau, fmt:r=>r.Niveau},
+    {k:"vol", l:"V", cls:"narrow", title:"Volume V : activité marché de l'item (0–10)",
+      get:r=>{ const it=bItem(r); return it?volumeIndex(seriesOf(it,"avg")):null; },
+      fmt:r=>{ const it=bItem(r); if(!it) return'<span class="muted">—</span>'; const v=volumeIndex(seriesOf(it,"avg")); return v==null?'<span class="muted">—</span>':(+v).toFixed(1); }},
+    {k:"fresh", l:"F", cls:"narrow", title:"Fraîcheur du dernier prix moyen de l'item. ● vert <3j · orange <10j · rouge au-delà",
+      get:r=>{ const it=bItem(r); return it?seriesFreshDays(seriesOf(it,"avg")):null; },
+      fmt:r=>{ const it=bItem(r); return freshCell(it?seriesFreshDays(seriesOf(it,"avg")):null); }},
     {k:"rev", l:revLbl, cls:"narrow", title:"Valeur des runes obtenues", get:r=>r._d.rev, fmt:r=>num(r._d.rev)},
     {k:"Prix_Moyen", l:"Prix moy", cls:"narrow", title:"Prix moyen de l'item fini à l'HDV (achat direct)", get:r=>r.Prix_Moyen, fmt:r=>num(r.Prix_Moyen)},
     {k:"cost", l:"Craft", cls:"narrow", title:"Coût de craft au batch courant (Σ ingrédients au meilleur tier)", get:r=>r._d.cost, fmt:r=>num(r._d.cost)},
@@ -839,6 +854,7 @@ function renderBrisage(){
     `<div class="notice">`+
     `<span title="Entonnoir : catalogue → items avec un effet brisable → chiffrables (revenu runes ET coût de craft connus)">`+
       `<b>${fmt(B.n_ranked)}</b> chiffrables · ${fmt(B.n_breakable!=null?B.n_breakable:B.n_ranked)} brisables · ${fmt(B.n_catalog)} catalogue</span>`+
+    (B.n_recipes!=null?`<span title="Items du catalogue ayant une recette exploitable. Le 2e nombre = items brisables SANS recette (trou de scraping à combler côté catalogue).">📋 <b>${fmt(B.n_recipes)}</b> recettes${B.n_breakable_norecipe?` · <span class="bad">${fmt(B.n_breakable_norecipe)} brisables sans recette</span>`:''}</span>`:'')+
     `<span>${costTag}</span><span>${runeTag}</span>`+
     `<span>coeff théo <b>${B.coeff}%</b></span>`+
     `<label class="chk muted"><input type="checkbox" id="bFav"${BFAVONLY?' checked':''}> ★ favoris</label>`+
@@ -1023,6 +1039,22 @@ const DEALS = (()=>{
 const DEALMAP = (()=>{ const m={}; DEALS.forEach(d=>{ m[normName(d.nom)]=d; }); return m; })();
 // Lookup nom→gid sur tous les items connus (pour rendre les ingrédients cliquables).
 const NAMEGID = (()=>{ const m={}; DTV.items.forEach(it=>{ m[normName(it.nom)]=it.gid; }); return m; })();
+// Index GID → ligne brisage (pour proposer « briser » sur un item bon marché).
+const BRISMAP = (()=>{ const m={}; (B.theo||[]).forEach(r=>{ if(r.GID!=null && m[r.GID]==null) m[r.GID]=r; }); return m; })();
+// Meilleure action sur un item : le briser, le concasser, ou le revendre en lot
+// supérieur (arbitrage). Renvoie l'option au bénéfice le + élevé (au batch courant).
+function bestAction(gid){
+  const it = DTV.items.find(x=>x.gid===gid);
+  const opts=[];
+  const brz = BRISMAP[gid];
+  if(brz){ const d=deriveB(brz,false); if(d.benef!=null) opts.push({kind:"⚒️ Briser", benef:d.benef}); }
+  ((typeof _CONC_ING_MAP!=="undefined"&&_CONC_ING_MAP[gid])||[]).forEach(r=>{
+    const d=deriveB(r,false); if(d.benef!=null) opts.push({kind:"🔨 Concasser", benef:d.benef}); });
+  if(it && typeof arbRow==="function"){ const a=arbRow(it); if(a) opts.push({kind:"💱 Revendre "+a.sell, benef:a.benefLot}); }
+  if(!opts.length) return null;
+  opts.sort((x,y)=>(y.benef??-1e18)-(x.benef??-1e18));
+  return opts[0];
+}
 let AFF_SEUIL=-10, AFF_SENS="buy", AFF_SORT={k:"ecart",dir:1};
 const ecartColor = e => e<0 ? 'var(--accent2)' : e>0 ? 'var(--bad)' : 'var(--muted)';
 
@@ -1037,6 +1069,10 @@ function affDealCols(){
     {k:"ecart", l:"Écart", cls:"narrow", title:"Écart du prix actuel vs médiane historique", get:r=>r.st.ecart, fmt:r=>`<span style="color:${ecartColor(r.st.ecart)}">${pct(r.st.ecart)}</span>`},
     {k:"z", l:"z", cls:"narrow", title:"z-score = (actuel − moyenne) / écart-type", get:r=>r.st.z, fmt:r=>r.st.z==null?'—':r.st.z.toFixed(2)},
     {k:"n", l:"#pts", cls:"narrow", get:r=>r.st.n, fmt:r=>r.st.n},
+    {k:"fresh", l:"F", cls:"narrow", title:"Fraîcheur du dernier prix moyen. ● vert <3j · orange <10j · rouge au-delà", get:r=>seriesFreshDays(r.st.series), fmt:r=>freshCell(seriesFreshDays(r.st.series))},
+    {k:"action", l:"Meilleure action", cls:"narrow", title:"Usage le plus rentable de cet item bon marché : brisage, concassage ou revente en lot supérieur (au batch courant)",
+      get:r=>{ const a=bestAction(r.gid); return a?a.benef:null; },
+      fmt:r=>{ const a=bestAction(r.gid); return a?`${a.kind} ${benFmt(a.benef)}`:'<span class="muted">—</span>'; }},
     {k:"spark", l:"Tendance", sort:false, get:r=>0, fmt:r=>sparkline(lastDays(r.st.series,7))},
   ];
 }
@@ -1251,6 +1287,9 @@ function concassageCols(real){
       get:r=>{ const it=resIt(r); return it?volumeIndex(seriesOf(it,"avg")):null; },
       fmt:r=>{ const it=resIt(r); if(!it) return'<span class="muted">—</span>';
                const v=volumeIndex(seriesOf(it,"avg")); return v==null?'<span class="muted">—</span>':(+v).toFixed(1); }},
+    {k:"fresh",    l:"F",         cls:"narrow", title:"Fraîcheur du dernier prix de la rune résultante. ● vert <3j · orange <10j · rouge au-delà",
+      get:r=>{ const it=resIt(r); return it?seriesFreshDays(seriesOf(it,"avg")):null; },
+      fmt:r=>{ const it=resIt(r); return freshCell(it?seriesFreshDays(seriesOf(it,"avg")):null); }},
     {k:"batchN",  l:"Batch",    cls:"narrow", title:"Nombre de concassages au batch courant",
       get:r=>r._d.batchN, fmt:r=>r._d.batchN==null?'<span class="muted">—</span>':fmt(r._d.batchN)},
     {k:"cost",    l:"C/u",      cls:"narrow", title:"Coût de concassage d'1 rune (batch courant)",
