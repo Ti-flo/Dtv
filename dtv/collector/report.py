@@ -294,6 +294,85 @@ def build_brisage_data(conn: sqlite3.Connection, *, coeff: float = 100.0) -> dic
     }
 
 
+def build_rune_data(conn: sqlite3.Connection) -> dict:
+    """
+    Données de l'onglet Runes : prix par tier + rentabilité du concassage.
+
+    Clés rune_gids.json supportées :
+      code        → GID de la rune simple (ex. "ag" → GID de Rune Age)
+      code_pa     → GID de la rune Pa (ex. "ag_pa" → GID de Rune Pa Age)
+      code_ra     → GID de la rune Ra (ex. "ag_ra" → GID de Rune Ra Age)
+    Les tiers sans GID sont estimés par mult_base × prix_simple (marqués live=False).
+    """
+    rg_path = config.rune_gids_path()
+    code2gid: dict = {}
+    if rg_path.exists():
+        try:
+            code2gid = json.loads(rg_path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+
+    item_prices = _latest_avg_prices(conn)
+
+    def _lookup(key: str):
+        gid = code2gid.get(key)
+        if gid is not None:
+            p = item_prices.get(int(gid))
+            if p:
+                return p, int(gid)
+        return None, None
+
+    result: dict = {}
+    live_count = 0
+
+    for code, rune in br.RUNES.items():
+        tiers_out = []
+        simple_price: float | None = None
+
+        for t in rune["tiers"]:
+            tier_name = t["tier"]
+            # "simple" et "ga" utilisent le code direct, "pa" → code_pa, "ra" → code_ra
+            key = code if tier_name in ("simple", "ga") else f"{code}_{tier_name}"
+            prix, gid = _lookup(key)
+            live = prix is not None
+
+            if not live:
+                # Repli : prix_exemple pour simple, simple × mult pour pa/ra
+                if tier_name in ("simple", "ga"):
+                    prix = rune.get("prix_exemple")
+                elif simple_price is not None:
+                    prix = round(simple_price * t["mult_base"])
+
+            if tier_name in ("simple", "ga") and prix is not None:
+                simple_price = prix
+
+            if live:
+                live_count += 1
+
+            tiers_out.append({
+                "tier": tier_name,
+                "nom": t["nom"],
+                "mult": t["mult_base"],
+                "gid": gid,
+                "prix": prix,
+                "live": live,
+            })
+
+        result[code] = {
+            "code": code,
+            "nom": rune["nom"],
+            "display": rune["display"],
+            "nom_rune": rune.get("nom_rune", rune["display"]),
+            "poids": rune["poids"],
+            "special": rune.get("special", False),
+            "concassable": rune.get("concassable", False),
+            "giant_only": rune.get("giant_only", False),
+            "tiers": tiers_out,
+        }
+
+    return {"runes": result, "live_prices": live_count > 0}
+
+
 def build_report_data(conn: sqlite3.Connection) -> dict:
     """Assemble le dict complet (sérialisable JSON) consommé par la page."""
     st = store.stats(conn)
@@ -307,6 +386,7 @@ def build_report_data(conn: sqlite3.Connection) -> dict:
         "snapshots": [{"id": r["snapshot"], "ts": r["ts"]} for r in snaps],
         "items": _price_series(conn),
         "brisage": build_brisage_data(conn),
+        "runes": build_rune_data(conn),
     }
 
 

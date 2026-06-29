@@ -193,6 +193,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   <section class="tab" data-tab="achats"><div class="soon"><div class="big">🛒</div><p>Onglet « Ressources achetées » — à venir (dépend de <code>transactions_observations.csv</code>).</p></div></section>
   <section class="tab" data-tab="craft"><div id="craft-root"></div></section>
   <section class="tab" data-tab="affaires"><div id="affaires-root"></div></section>
+  <section class="tab" data-tab="runes"><div id="runes-root"></div></section>
 </main>
 <div class="chart-tip" id="tip"></div>
 <div class="modal-bg" id="bmodal" style="display:none"><div class="modal" id="bmodal-box"></div></div>
@@ -254,7 +255,8 @@ document.getElementById("hdr-meta").textContent =
     k.map(([l,v])=>`<div class="kpi"><div class="v">${v}</div><div class="l">${l}</div></div>`).join("");
 })();
 const TABS = [["prix","📈 Prix dans le temps"],["achats","🛒 Ressources achetées"],
-              ["craft","⚒️ Craft & Brisage"],["affaires","💎 Bonnes affaires"]];
+              ["craft","⚒️ Craft & Brisage"],["affaires","💎 Bonnes affaires"],
+              ["runes","🔮 Runes"]];
 document.getElementById("tabs").innerHTML =
   TABS.map(([id,l],i)=>`<button data-go="${id}"${i===0?' class="active"':''}>${l}</button>`).join("");
 document.getElementById("tabs").addEventListener("click", e=>{
@@ -982,6 +984,122 @@ function openPriceModal(gid){
 function closePriceModal(){ document.getElementById("pmodal").style.display="none"; }
 document.getElementById("pmodal").addEventListener("click", e=>{ if(e.target.id==="pmodal") closePriceModal(); });
 
+// ── Onglet « Runes » ───────────────────────────────────────────────────────
+const RD = DTV.runes || {runes:{}, live_prices:false};
+// Liste triée par poids croissant (ordre naturel du marché).
+const RUNE_LIST = Object.values(RD.runes).sort((a,b)=>a.poids-b.poids||a.nom.localeCompare(b.nom,'fr'));
+
+let RUNE_FILTER_CONC = false;  // true = afficher seulement les concassables
+
+function renderRunes(){
+  const root = document.getElementById("runes-root");
+  if(!RUNE_LIST.length){
+    root.innerHTML = '<div class="empty">Pas de données de runes (runes.json introuvable).</div>';
+    return;
+  }
+
+  const liveTag = RD.live_prices
+    ? '<span style="color:var(--accent2)">● prix HDV live</span>'
+    : '<span class="muted" title="Remplir dtv/data/rune_gids.json pour les prix HDV">● prix exemple</span>';
+
+  const concBtn = `<button class="${RUNE_FILTER_CONC?'active':''}" id="rune-conc-btn">Concassables uniquement</button>`;
+
+  // ── Table 1 : prix par tier ─────────────────────────────────────────────
+  const visible = RUNE_FILTER_CONC ? RUNE_LIST.filter(r=>r.concassable&&!r.giant_only) : RUNE_LIST.filter(r=>!r.giant_only);
+  const giants  = RUNE_LIST.filter(r=>r.giant_only);
+
+  function runeRow(r){
+    const tmap = {}; r.tiers.forEach(t=>{ tmap[t.tier]=t; });
+    const fmtT = (t) => t
+      ? `<span${t.live?'':' class="muted"'} title="${t.live?'Prix HDV':'Prix estimé'}">${fmt(t.prix)}</span>`
+      : '<span class="muted">—</span>';
+    const concMark = r.concassable ? '' : '<span class="muted" title="Pas de palier supérieur">—</span>';
+    return `<tr>
+      <td class="name">${r.nom_rune}</td>
+      <td class="type">${r.nom}</td>
+      <td class="narrow" title="Poids dans la formule de brisage">${r.poids}</td>
+      <td class="narrow">${fmtT(tmap['simple'])}</td>
+      <td class="narrow">${fmtT(tmap['pa'])||concMark}</td>
+      <td class="narrow">${fmtT(tmap['ra'])||'<span class="muted">—</span>'}</td>
+    </tr>`;
+  }
+
+  const head1 = `<tr>
+    <th class="name">Rune</th>
+    <th class="type" title="Stat correspondant">Effet</th>
+    <th class="narrow" title="Poids dans la formule de brisage — plus le poids est élevé, plus la rune rapporte peu d'exemplaires">Poids</th>
+    <th class="narrow" title="Prix d'une rune simple (1×)">Simple</th>
+    <th class="narrow" title="Prix d'une rune Pa (≈ 3 simples)">Pa</th>
+    <th class="narrow" title="Prix d'une rune Ra (≈ 9 simples)">Ra</th>
+  </tr>`;
+  const body1 = visible.map(runeRow).join("");
+
+  // Runes géantes séparées (GID unique, pas de tiers).
+  const giantRows = giants.map(r=>{
+    const t = r.tiers[0];
+    const p = t ? (t.live ? fmt(t.prix) : `<span class="muted">${fmt(t.prix)}</span>`) : '—';
+    return `<tr><td class="name">${r.nom_rune}</td><td class="type">${r.nom}</td><td class="narrow">${r.poids}</td><td class="narrow" colspan="3">${p}</td></tr>`;
+  }).join("");
+
+  // ── Table 2 : rentabilité du concassage ────────────────────────────────
+  // Opération : acheter 3 runes du tier inférieur, concasser → 1 tier supérieur.
+  // Rentable si prix_supérieur > 3 × prix_inférieur.
+  const ops = [];
+  for(const r of RUNE_LIST){
+    if(!r.concassable || r.giant_only) continue;
+    for(let i=0; i<r.tiers.length-1; i++){
+      const from = r.tiers[i], to = r.tiers[i+1];
+      if(from.prix==null || to.prix==null) continue;
+      const cost = 3 * from.prix;
+      const gain = to.prix;
+      const benef = gain - cost;
+      const ratio = cost > 0 ? gain/cost : null;
+      ops.push({r, from, to, cost, gain, benef, ratio,
+                live: from.live && to.live});
+    }
+  }
+  ops.sort((a,b)=>b.benef-a.benef);
+
+  const head2 = `<tr>
+    <th class="name">Opération (3 → 1)</th>
+    <th class="narrow" title="Coût d'achat de 3 runes du tier inférieur">Coût (×3)</th>
+    <th class="narrow" title="Prix de vente de la rune supérieure obtenue">Gain</th>
+    <th class="narrow" title="Bénéfice = Gain − Coût">Bénéfice</th>
+    <th class="narrow" title="Ratio Gain/Coût — &gt;1 = rentable, &lt;1 = déficitaire">Ratio</th>
+    <th class="narrow" title="Source des prix">Source</th>
+  </tr>`;
+  const body2 = ops.length ? ops.map(op=>{
+    const ratioStr = op.ratio!=null ? op.ratio.toFixed(2)+'×' : '—';
+    const ratioColor = op.ratio!=null ? (op.ratio>=1?'var(--accent2)':'var(--bad)') : '';
+    const src = op.live
+      ? '<span style="color:var(--accent2)">HDV</span>'
+      : '<span class="muted">estimé</span>';
+    return `<tr>
+      <td class="name">${op.from.nom} → ${op.to.nom}</td>
+      <td class="narrow">${fmt(op.cost)}</td>
+      <td class="narrow">${fmt(op.gain)}</td>
+      <td class="narrow">${benFmt(op.benef)}</td>
+      <td class="narrow" style="color:${ratioColor}">${ratioStr}</td>
+      <td class="narrow">${src}</td>
+    </tr>`;
+  }).join("") : `<tr><td colspan="6" class="muted">Aucune opération de concassage calculable.</td></tr>`;
+
+  root.innerHTML =
+    `<div class="controls" style="gap:12px;align-items:center">`+
+      `${concBtn} ${liveTag}`+
+    `</div>`+
+    `<h3 class="sec">💎 Prix des runes${RD.live_prices?'':' <span class="muted">(prix exemple — pas de données HDV)</span>'}</h3>`+
+    `<div class="tablewrap"><table><thead>${head1}</thead><tbody>${body1}`+
+      (giantRows ? `<tr><td colspan="6" class="muted" style="padding-top:8px">Runes géantes</td></tr>${giantRows}` : '')+
+    `</tbody></table></div>`+
+    `<h3 class="sec">🔨 Concassage <span class="muted">— 3 simples → 1 Pa, 3 Pa → 1 Ra</span></h3>`+
+    `<div class="tablewrap"><table><thead>${head2}</thead><tbody>${body2}</tbody></table></div>`;
+
+  document.getElementById("rune-conc-btn").addEventListener("click", ()=>{
+    RUNE_FILTER_CONC = !RUNE_FILTER_CONC; renderRunes();
+  });
+}
+
 // ── Boot ───────────────────────────────────────────────────────────────────
 (function initTypeFilter(){
   const types = [...new Set(DTV.items.map(it=>it.type).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'fr'));
@@ -992,6 +1110,7 @@ renderListControls();
 renderHead(); renderRows();
 renderBrisage();
 renderAffaires();
+renderRunes();
 if(DTV.items.length){
   // sélectionne le 1er item de la vue (niveau le plus bas) pour montrer un graphe d'emblée
   const first = computeRows()[0];

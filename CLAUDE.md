@@ -27,7 +27,7 @@ Capture (CDP passif) → CSV data/raw/  →  dtv ingest  →  SQLite data/dtv.db
 | `dtv/collector/item_names.py` | `load_item_names()`, `load_gid_types()`, `load_type_names()`. **Manque `load_item_levels()`** (appelé dans report.py:83 — crash latent). |
 | `dtv/config.py` | Résout tous les chemins (adb, catalogues, DB). `catalog(kind)`, `rune_gids_path()`. |
 | `dtv/data/runes.json` | 43 runes : `nom`, `poids`, `special` (vi/ii/pod), `tiers` (liste), `concassable`, `giant_only`. |
-| `dtv/data/rune_gids.json` | Mapping `code_rune → GID` pour prix HDV réels. |
+| `dtv/data/rune_gids.json` | Mapping prix HDV par tier : `code → GID` (simple), `code_pa → GID`, `code_ra → GID`. |
 
 ## Structure des données JS dans le rapport
 
@@ -102,7 +102,7 @@ Rechercher par nom avec Grep — les numéros sont indicatifs et dérivent aprè
 | 2 | Clic ingrédient (popup craft) → graphe popup | ✅ fait (commit e0ce460) |
 | 3 | "Used in" : étendre aux ressources/consommables | ❌ todo |
 | 4 | Coût de craft dans "Prix dans le temps" | ❌ todo |
-| 5 | Nouvel onglet Runes (concassage = craft) | ❌ todo |
+| 5 | Nouvel onglet Runes (concassage = craft) | ✅ fait |
 | 6 | Coût/bénéf batch dans les vues listes | ❌ todo |
 | 7 | Nouvel onglet Craft sans brisage (craft + revente) | ❌ todo |
 | 8 | Volume décimales + varOver fix | ✅ fait (commit e0ce460) |
