@@ -349,10 +349,10 @@ const COLS = [
   {k:"nom",   l:"Nom",    cls:"name", title:"Nom de l'item", get:r=>r.nom, fmt:r=>r.nom},
   {k:"type",  l:"Type",   cls:"type", title:"Type d'objet", get:r=>r.type, fmt:r=>r.type||'<span class="muted">—</span>'},
   {k:"niv",   l:"Niv",    cls:"narrow", title:"Niveau de l'objet (ordre HDV)", get:r=>r.level, fmt:r=>r.level==null?'<span class="muted">—</span>':r.level},
-  {k:"last",  l:"Dernier",title:"Dernier prix connu (source sélectionnée)", get:r=>r.st?r.st.last:null, fmt:r=>fmt(r.st&&r.st.last)},
+  {k:"last",  l:"Moyen",  title:"Prix moyen le plus récent (source sélectionnée)", get:r=>r.st?r.st.last:null, fmt:r=>fmt(r.st&&r.st.last)},
   {k:"min",   l:"Min",    title:"Prix minimum observé (source sélectionnée)", get:r=>r.st?r.st.min:null,  fmt:r=>fmt(r.st&&r.st.min)},
   {k:"max",   l:"Max",    title:"Prix maximum observé (source sélectionnée)", get:r=>r.st?r.st.max:null,  fmt:r=>fmt(r.st&&r.st.max)},
-  {k:"avg",   l:"Moyen",  title:"Prix moyen sur tous les relevés (source sélectionnée)", get:r=>r.st?r.st.avg:null,  fmt:r=>fmt(r.st&&r.st.avg)},
+  {k:"avg",   l:"Médian", title:"Prix médian historique (moyenne de tous les relevés, source sélectionnée)", get:r=>r.st?r.st.avg:null,  fmt:r=>fmt(r.st&&r.st.avg)},
   {k:"varj",  l:"Var j",  cls:"var", title:"Variation du prix moyen sur 24h", get:r=>r.varj, fmt:r=>varCell(r.varj)},
   {k:"vars",  l:"Var s",  cls:"var", title:"Variation du prix moyen sur 1 semaine", get:r=>r.vars, fmt:r=>varCell(r.vars)},
   {k:"varm",  l:"Var m",  cls:"var", title:"Variation du prix moyen sur 1 mois", get:r=>r.varm, fmt:r=>varCell(r.varm)},
@@ -1065,22 +1065,41 @@ function _renderRuneConc(){
 }
 
 function concassageCols(real){
+  function resIt(r){ return r.GID ? DTV.items.find(it=>it.gid===r.GID) : null; }
+  function hdvU(r, src){ const it=resIt(r); if(!it) return null;
+    const st=statsOf(seriesOf(it,src)); return st ? st.last/TIER_DIV[src] : null; }
+  function bU(r, src){ const u=hdvU(r,src), c=r._d.cost; return u==null||c==null?null:u-c; }
   return [
     {k:"fav", l:"★", cls:"fav", sort:false, get:r=>0,
       fmt:r=>`<span class="star ${isFav(r.GID)?'on':''}" data-fav="${r.GID}">★</span>`},
-    {k:"Nom", l:"Résultat", cls:"name", title:"Rune obtenue (1 exemplaire)",
-      get:r=>r.Nom, fmt:r=>r.Nom},
-    {k:"from_nom", l:"Ingrédient", cls:"name", title:"Rune de départ (×3)",
-      get:r=>r.from_nom, fmt:r=>r.from_nom},
-    {k:"rev", l:"Prix vente", cls:"narrow", title:"Prix de vente de la rune résultante",
-      get:r=>r._d.rev, fmt:r=>num(r._d.rev)},
-    {k:"cost", l:"Coût (×3)", cls:"narrow", title:"Coût d'achat de 3 runes d'entrée au batch courant",
+    {k:"Nom",      l:"Résultat",  cls:"name",   title:"Rune obtenue (1 exemplaire)", get:r=>r.Nom, fmt:r=>r.Nom},
+    {k:"from_nom", l:"Ingrédient",cls:"name",   title:"Rune de départ (×3)", get:r=>r.from_nom, fmt:r=>r.from_nom},
+    {k:"vol",      l:"V",         cls:"narrow", title:"Volume V : activité marché de la rune résultante (0–10)",
+      get:r=>{ const it=resIt(r); return it?volumeIndex(seriesOf(it,"avg")):null; },
+      fmt:r=>{ const it=resIt(r); if(!it) return'<span class="muted">—</span>';
+               const v=volumeIndex(seriesOf(it,"avg")); return v==null?'<span class="muted">—</span>':(+v).toFixed(1); }},
+    {k:"cost",    l:"C/u",      cls:"narrow", title:"Coût de concassage d'1 rune (batch courant)",
       get:r=>r._d.cost, fmt:r=>num(r._d.cost)},
-    {k:"batchN", l:"Batch", cls:"narrow",
-      get:r=>r._d.batchN, fmt:r=>r._d.batchN==null?'<span class="muted">—</span>':fmt(r._d.batchN)},
-    {k:"benef", l:"Bénéf", cls:"narrow",
-      get:r=>r._d.benef, fmt:r=>benFmt(r._d.benef)},
-    {k:"rent", l:"Ratio", cls:"narrow", title:"Ratio prix vente / coût (>1 = rentable)",
+    {k:"benef",   l:"B×1",      cls:"narrow", title:"Bénéfice en vendant à l'unité (HDV ×1, ou prix moyen si indispo)",
+      get:r=>{ const u=hdvU(r,"x1"); return u==null?r._d.benef:u-(r._d.cost||0); },
+      fmt:r=>{ const u=hdvU(r,"x1"); return benFmt(u==null?r._d.benef:u-(r._d.cost||0)); }},
+    {k:"bu10",    l:"B/u×10",   cls:"narrow", title:"Bénéfice par rune vendue en lot de 10",
+      get:r=>bU(r,"x10"), fmt:r=>benFmt(bU(r,"x10"))},
+    {k:"ctot10",  l:"C×10",     cls:"narrow", title:"Capital à investir pour 10 runes (coût×10)",
+      get:r=>r._d.cost==null?null:r._d.cost*10,
+      fmt:r=>r._d.cost==null?'<span class="muted">—</span>':num(r._d.cost*10)},
+    {k:"btot10",  l:"B×10",     cls:"narrow", title:"Bénéfice total d'un lot de 10 (HDV×10 − coût×10)",
+      get:r=>{ const b=bU(r,"x10"); return b==null?null:b*10; },
+      fmt:r=>{ const b=bU(r,"x10"); return benFmt(b==null?null:b*10); }},
+    {k:"bu100",   l:"B/u×100",  cls:"narrow", title:"Bénéfice par rune vendue en lot de 100",
+      get:r=>bU(r,"x100"), fmt:r=>benFmt(bU(r,"x100"))},
+    {k:"ctot100", l:"C×100",    cls:"narrow", title:"Capital à investir pour 100 runes (coût×100)",
+      get:r=>r._d.cost==null?null:r._d.cost*100,
+      fmt:r=>r._d.cost==null?'<span class="muted">—</span>':num(r._d.cost*100)},
+    {k:"btot100", l:"B×100",    cls:"narrow", title:"Bénéfice total d'un lot de 100 (HDV×100 − coût×100)",
+      get:r=>{ const b=bU(r,"x100"); return b==null?null:b*100; },
+      fmt:r=>{ const b=bU(r,"x100"); return benFmt(b==null?null:b*100); }},
+    {k:"rent",    l:"Ratio",    cls:"narrow", title:"Ratio prix moyen / coût (>1 = rentable)",
       get:r=>r._d.rent, fmt:r=>r._d.rent==null?'<span class="muted">—</span>':r._d.rent.toFixed(2)},
   ];
 }
