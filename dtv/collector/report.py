@@ -379,6 +379,7 @@ def build_rune_data(conn: sqlite3.Connection) -> dict:
     conc_rows: list[dict] = []
     for code, rune_data in catalog.items():
         tiers = rune_data["tiers"]
+        craft_unit_costs: dict[str, float] = {}  # nom → coût craft d'1 unité via concassage
         for i in range(len(tiers) - 1):
             from_t, to_t = tiers[i], tiers[i + 1]
             from_norm = br.normalize_name(from_t["nom"])
@@ -388,15 +389,20 @@ def build_rune_data(conn: sqlite3.Connection) -> dict:
             ing_p = {}
             if from_norm in ing_tier_prices:
                 ing_p[from_norm] = ing_tier_prices[from_norm]
+            # Sous-concassage : Pa peut être produit par concassage de 3 simples, etc.
+            ca = {from_norm: craft_unit_costs[from_norm]} if from_norm in craft_unit_costs else {}
 
-            pa = craft.craft_plan(recipe_items, ing_p, craft_alt={}) if ing_p else None
+            pa = craft.craft_plan(recipe_items, ing_p, craft_alt=ca) if (ing_p or ca) else None
             cpc: dict = {"auto": round(pa["cost_per_craft"], 2) if pa else None}
             for nb in _CRAFT_BATCHES:
-                pl = (craft.craft_plan(recipe_items, ing_p, n_crafts=nb, craft_alt={})
-                      if ing_p else None)
+                pl = (craft.craft_plan(recipe_items, ing_p, n_crafts=nb, craft_alt=ca)
+                      if (ing_p or ca) else None)
                 cpc[str(nb)] = round(pl["cost_per_craft"], 2) if pl else None
 
-            if not ing_p:
+            if pa:
+                craft_unit_costs[to_norm] = pa["cost_per_craft"]
+
+            if not ing_p and not ca:
                 # Repli flat : avgprice × 3
                 from_gid = from_t.get("gid")
                 flat_u = item_prices.get(from_gid) if from_gid else from_t.get("prix")
@@ -411,7 +417,8 @@ def build_rune_data(conn: sqlite3.Connection) -> dict:
 
             recipe = [{
                 "nom": from_t["nom"], "qty": 3,
-                "tiers": ing_tier_prices.get(from_norm), "craft_unit": None,
+                "tiers": ing_tier_prices.get(from_norm),
+                "craft_unit": craft_unit_costs.get(from_norm),  # coût si concassage en sous-craft
             }]
             conc_rows.append({
                 "GID": to_gid, "Nom": to_t["nom"], "Type": "Rune", "Niveau": None,
