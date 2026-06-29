@@ -87,10 +87,16 @@ def build_gid_meta(catalog_dir) -> dict:
         if gid is None or gid in out:
             continue
         lvl = br.to_level(it.get("Niveau"))
+        # Recette de craft de l'item ([] si non craftable) et liste des items où
+        # il entre comme ingrédient (Utilise_dans, séparé par des virgules).
+        recette = [[q, nom] for q, nom in br.parse_recipe(it.get("Recette") or "")]
+        used_in = [s.strip() for s in (it.get("Utilise_dans") or "").split(",") if s.strip()]
         out[gid] = {
             "nom": (it.get("Nom_FR") or "").strip(),
             "type": (it.get("Type") or "").strip(),
             "niveau": int(lvl) if lvl else None,
+            "recette": recette,
+            "used_in": used_in,
         }
     return out
 

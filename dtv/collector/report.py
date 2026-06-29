@@ -93,15 +93,24 @@ def _price_series(conn: sqlite3.Connection) -> list[dict]:
         if not slot["nom"]:
             slot["nom"] = names.get(slot["gid"]) or (m["nom"] if m and m["nom"] else "") \
                           or f"GID {slot['gid']}"
-        tid = gid_types.get(slot["gid"])
-        if tid is not None:
-            slot["type"] = type_names.get(tid) or ""
-        if not slot["type"] and m and m["type"]:
+        # Type : on PRÉFÈRE le libellé FR du catalogue (curé) au cache de jeu
+        # (qui contient encore des types en anglais, ex. « Fish »).
+        if m and m["type"]:
             slot["type"] = m["type"]
+        else:
+            tid = gid_types.get(slot["gid"])
+            if tid is not None:
+                slot["type"] = type_names.get(tid) or ""
         lvl = levels.get(slot["gid"])
         if lvl is None and m:
             lvl = m["niveau"]
         slot["level"] = lvl
+        # Recette + « utilisé dans » (catalogue complet) pour les fiches.
+        if m:
+            if m["recette"]:
+                slot["recipe"] = m["recette"]
+            if m["used_in"]:
+                slot["used_in"] = m["used_in"]
 
     return sorted(items.values(), key=lambda s: s["nom"].lower())
 

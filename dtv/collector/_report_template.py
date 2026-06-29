@@ -120,6 +120,9 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .modal-bg.dual-right .modal { pointer-events:auto; }
   .modtitle { cursor:pointer; } .modtitle:hover { text-decoration:underline; }
   .goicon { font-size:14px; opacity:.65; } .modtitle:hover .goicon { opacity:1; }
+  .usedchips { display:flex; flex-wrap:wrap; gap:6px; margin:6px 0; }
+  .chip { background:var(--panel2); border:1px solid var(--border); border-radius:12px; padding:3px 10px; font-size:12px; }
+  .chip:not(.muted) { cursor:pointer; } .chip:not(.muted):hover { border-color:var(--accent); }
   .modal h3 { margin:0 0 2px; font-size:18px; }
   .modal .x { float:right; cursor:pointer; color:var(--muted); font-size:20px; line-height:1; }
   .modal .x:hover { color:var(--text); }
@@ -276,12 +279,16 @@ let MAX_INVEST=null, MIN_BENEF=0;
   d.style.cssText="margin-left:auto;display:flex;gap:12px;align-items:flex-end";
   d.innerHTML =
     `<label class="kpi" style="cursor:auto"><div class="l">💰 Invest. max (capital/op.)</div>`+
-      `<input id="maxInvest" type="number" min="0" step="50000" placeholder="∞" style="width:110px"></label>`+
+      `<input id="maxInvest" type="text" inputmode="numeric" placeholder="∞ (ex: 1M)" style="width:110px"></label>`+
     `<label class="kpi" style="cursor:auto"><div class="l">📈 Bénéf. min /batch</div>`+
-      `<input id="minBenef" type="number" min="0" step="1000" value="0" style="width:90px"></label>`;
+      `<input id="minBenef" type="text" inputmode="numeric" value="0" style="width:90px"></label>`;
   document.getElementById("kpis").appendChild(d);
-  document.getElementById("maxInvest").addEventListener("change", e=>{ const v=e.target.value.trim(); MAX_INVEST=v===""?null:Number(v); refreshAll(); });
-  document.getElementById("minBenef").addEventListener("change", e=>{ MIN_BENEF=Number(e.target.value)||0; refreshAll(); });
+  // Parse tolérant : « 20 000 », « 1 000 000 », « 1.5M » → nombre (espaces/séparateurs OK).
+  const parseAmount = s=>{ s=(s||"").toLowerCase().replace(/[\s,]/g,"");
+    let mult=1; if(s.endsWith("m")){mult=1e6;s=s.slice(0,-1);} else if(s.endsWith("k")){mult=1e3;s=s.slice(0,-1);}
+    const n=parseFloat(s); return isFinite(n)?n*mult:null; };
+  document.getElementById("maxInvest").addEventListener("change", e=>{ MAX_INVEST=parseAmount(e.target.value); refreshAll(); });
+  document.getElementById("minBenef").addEventListener("change", e=>{ MIN_BENEF=parseAmount(e.target.value)||0; refreshAll(); });
 })();
 // Filtre une ligne par capital investi et bénéfice minimal (null = inconnu → on garde si pas de seuil).
 function passInvestBenef(invest, benef){
@@ -549,10 +556,12 @@ function showDetail(gid, root){
     `<div class="chart"></div>` +
     `<div class="sub" style="margin-top:6px">Graphe en prix unitaire (lots ÷ 10/100/1000) — comparable au x1 et au prix moyen.</div>` +
     `<div class="legend"></div>` +
+    `<div class="recipein"></div>`+
     `<div class="usedin"></div>`+
     `<div class="concin"></div>`;
   drawLegend(it, avail, root);
   drawChart(it, root);
+  renderRecipe(it, root.querySelector(".recipein"));
   renderUsedIn(it, root.querySelector(".usedin"));
   renderConcIn(it, root.querySelector(".concin"));
   root.querySelectorAll("input[data-sell]").forEach(cb=>cb.onchange=()=>{
@@ -761,9 +770,37 @@ const USEDIN = (()=>{ const m={};
     const k=normName(ing.nom); (m[k]=m[k]||[]).push(r); }); });
   return m; })();
 
-// Crafts les + rentables qui utilisent un item comme ingrédient (popup prix / détail).
+// Recette de craft de l'item (depuis le catalogue) ; ingrédients cliquables.
+function renderRecipe(it, host){
+  if(!host) return;
+  const rec = it.recipe;
+  if(!rec || !rec.length){ host.innerHTML=""; return; }
+  host.innerHTML =
+    `<h3 class="sec">🧪 Recette de ${it.nom}</h3>`+
+    `<table><thead><tr><th class="name">Ingrédient</th><th class="narrow">Qté</th><th class="narrow">Prix moyen</th></tr></thead><tbody>`+
+    rec.map(([qty,nom])=>{ const gid=NAMEGID[normName(nom)];
+      const it2=gid!=null?DTV.items.find(x=>x.gid===gid):null;
+      const st=it2?statsOf(seriesOf(it2,"avg")):null;
+      const attr=gid!=null?` style="cursor:pointer" data-ing="${gid}"`:'';
+      return `<tr${attr}><td class="name">${nom}</td><td class="narrow">${qty}</td><td class="narrow">${st?fmt(st.last):'<span class="muted">—</span>'}</td></tr>`;
+    }).join("")+
+    `</tbody></table>`;
+  host.querySelectorAll("tr[data-ing]").forEach(tr=>tr.onclick=()=>openPriceModal(+tr.dataset.ing));
+}
+
+// « Utilisé dans » : liste complète du catalogue (Utilise_dans) en chips
+// cliquables ; repli sur l'index brisage si la donnée catalogue manque.
 function renderUsedIn(it, host){
   if(!host) return;
+  if(it.used_in && it.used_in.length){
+    host.innerHTML =
+      `<h3 class="sec">🔧 Utilisé dans <span class="muted">(${it.used_in.length})</span></h3>`+
+      `<div class="usedchips">`+it.used_in.map(nom=>{ const gid=NAMEGID[normName(nom)];
+        return gid!=null ? `<span class="chip" data-ing="${gid}">${nom}</span>` : `<span class="chip muted">${nom}</span>`;
+      }).join("")+`</div>`;
+    host.querySelectorAll("[data-ing]").forEach(el=>el.onclick=()=>openPriceModal(+el.dataset.ing));
+    return;
+  }
   const users = USEDIN[normName(it.nom)] || [];
   if(!users.length){ host.innerHTML=""; return; }
   const rows = users.map(r=>({r, d:deriveB(r, false)}))
