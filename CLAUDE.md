@@ -13,7 +13,8 @@ Capture (CDP passif) → CSV data/raw/ → dtv ingest → SQLite data/dtv.db →
 | Fichier | Rôle |
 |---|---|
 | `dtv/collector/_report_template.py` | Template HTML+JS (~1100 lignes). **Fichier principal.** Grep par nom de fonction, Read 30-40 lignes max. |
-| `dtv/collector/report.py` | `build_report_data()` → JSON embarqué `DTV`. `build_brisage_data()`, `build_rune_data()`. |
+| `dtv/collector/report.py` | `build_report_data()` → JSON embarqué `DTV`. `build_brisage_data()`, `build_craft_data()` (onglet Craft revente), `build_rune_data()`. `_price_series()` enrichit nom/type/niveau/recette/used_in depuis les catalogues. |
+| `dtv/collector/catalog.py` | `build_recipes`, `build_name_to_gid`, `build_gid_meta` (nom/type/niveau/recette/used_in FR pour les fiches). |
 | `dtv/collector/brisage.py` | `build_ranking`, `RUNES` dict (43 runes), `EFFET_VERS_CODE`, `normalize_name`. |
 | `dtv/collector/craft.py` | `craft_plan(recipe, ing_tier_prices, n_crafts, craft_alt)`, `best_tier`, `best_unit_price`. |
 | `dtv/collector/store.py` | `connect`, `ingest_all`, `tier_prices_for_gids(conn, gids, days)`. |
@@ -25,7 +26,10 @@ Grep le nom → Read offset+limit. Numéros indicatifs.
 
 | Symbole | Rôle |
 |---|---|
-| `DTV` | JSON embarqué. `items[{gid,nom,type,level,avg,hdv}]`, `brisage{coeff,theo,real}`, `runes{runes,concassage,live_prices}` |
+| `DTV` | JSON embarqué. `items[{gid,nom,type,level,avg,hdv,recipe?,used_in?}]`, `brisage{coeff,theo,real}`, `craft{rows,...}`, `runes{runes,concassage,live_prices}` |
+| `BATCH` modes | `budget` (bénéf total maxi sous plafond invest — le bon défaut métier), `smart` (marge unitaire), `auto`, `10/100/1000`. `MAX_INVEST`/`MIN_BENEF` = filtres globaux (en-tête). `passInvestBenef()`. |
+| `sellBatchCols(real,lead,detail)` | Colonnes « produire puis revendre » partagées concassage + craft. `bestSell` avec repli prix moyen. |
+| `renderCraft()` / `CRAFTMAP` | Onglet Craft (revente). Icône ⚒️/📈 entre fiches et popups (`openItemDetail`, `layoutModals`). |
 | `COLS` | Colonnes tableau "Prix dans le temps" (fav,nom,type,niv,last,min,max,avg,varj,vars,varm,spark,vol,hdvn,hdvlast,gid) |
 | `normName(s)` | `s.toLowerCase().replace(/\s+/g," ").trim()` — toujours utiliser pour croiser les noms |
 | `seriesOf(it,src)` / `statsOf(s)` | Série de prix / stats {last,min,max,avg} |
@@ -41,14 +45,15 @@ Grep le nom → Read offset+limit. Numéros indicatifs.
 | `BATCH` / `BATCHES` | Batch courant : "smart","auto","1","10","100","1000" |
 
 ## Tâches restantes
-| # | Tâche |
-|---|---|
-| 1 | `load_item_levels()` manquant dans `item_names.py` — crash latent |
-| 3 | "Used in" : étendre aux ressources/consommables |
-| 4 | Coût de craft dans "Prix dans le temps" |
-| 6 | Coût/bénéf batch dans les vues listes |
-| 7 | Nouvel onglet "Craft sans brisage" (craft + revente) |
-| 10 | Bonnes affaires : vérifier bug calcul écart vs médiane |
+| # | Tâche | Statut |
+|---|---|---|
+| 1 | `load_item_levels()` dans `item_names.py` | ✅ existe |
+| 3 | "Used in" étendu (catalogue `Utilise_dans`, chips cliquables dans le graphe) | ✅ |
+| 4 | Coût de craft dans le graphe (recette + total) | ✅ |
+| 7 | Onglet "Craft (revente)" | ✅ |
+| — | **408 items brisables sans recette** = trou de scraping (catalogues), pas un bug code |
+| — | GID sans nom/type = items captés absents du catalogue ET du cache jeu |
+| 10 | Bonnes affaires : revoir calcul écart vs médiane (à vérifier) |
 
 ## Invariants
 - CSV = source de vérité. SQLite reconstructible via `dtv ingest`.
