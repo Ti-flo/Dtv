@@ -267,6 +267,27 @@ document.getElementById("hdr-meta").textContent =
   document.getElementById("kpis").innerHTML =
     k.map(([l,v])=>`<div class="kpi"><div class="v">${v}</div><div class="l">${l}</div></div>`).join("");
 })();
+// ── Filtres globaux : capital max par opération + bénéfice minimum ──────────
+let MAX_INVEST=null, MIN_BENEF=0;
+(function(){
+  const d=document.createElement("div");
+  d.style.cssText="margin-left:auto;display:flex;gap:12px;align-items:flex-end";
+  d.innerHTML =
+    `<label class="kpi" style="cursor:auto"><div class="l">💰 Invest. max (capital/op.)</div>`+
+      `<input id="maxInvest" type="number" min="0" step="50000" placeholder="∞" style="width:110px"></label>`+
+    `<label class="kpi" style="cursor:auto"><div class="l">📈 Bénéf. min /batch</div>`+
+      `<input id="minBenef" type="number" min="0" step="1000" value="0" style="width:90px"></label>`;
+  document.getElementById("kpis").appendChild(d);
+  document.getElementById("maxInvest").addEventListener("change", e=>{ const v=e.target.value.trim(); MAX_INVEST=v===""?null:Number(v); refreshAll(); });
+  document.getElementById("minBenef").addEventListener("change", e=>{ MIN_BENEF=Number(e.target.value)||0; refreshAll(); });
+})();
+// Filtre une ligne par capital investi et bénéfice minimal (null = inconnu → on garde si pas de seuil).
+function passInvestBenef(invest, benef){
+  if(MAX_INVEST!=null && invest!=null && invest>MAX_INVEST) return false;
+  if(MIN_BENEF>0 && (benef==null || benef<MIN_BENEF)) return false;
+  return true;
+}
+function refreshAll(){ if(B.available) renderBrisage(); renderAffaires(); renderArbitrage(); renderRunes(); }
 const TABS = [["prix","📈 Prix dans le temps"],["achats","🛒 Ressources achetées"],
               ["craft","⚒️ Craft & Brisage"],["affaires","💎 Bonnes affaires"],
               ["arbitrage","💱 Achat / Vente"],["runes","🔮 Runes"]];
@@ -344,11 +365,24 @@ function bestSell(it, gid){
   return best;   // {src,unit} ou null
 }
 // ── Fraîcheur (F) : ancienneté du dernier relevé ───────────────────────────
+// Deux fraîcheurs existent : HDV (relevés réels) et moyenne (prix moyen marché).
+// Seule la fraîcheur HDV est affichée ; la moyenne sert de repli (Bonnes affaires).
 function seriesFreshDays(s){ return (s&&s.length) ? (DATA_NOW - Date.parse(s[s.length-1][0]))/DAY : null; }
-function freshCell(d){
+function hdvFreshDays(it){ return (it && it.hdv && it.hdv.length) ? (DATA_NOW - Date.parse(it.hdv[it.hdv.length-1][0]))/DAY : null; }
+const _fColor = d => d<3 ? 'var(--accent2)' : d<10 ? 'var(--warn)' : 'var(--bad)';
+const _fDays  = d => d<10 ? d.toFixed(1) : Math.round(d);
+function freshCell(d, tag){
   if(d==null) return '<span class="muted">—</span>';
-  const c = d<3 ? 'var(--accent2)' : d<10 ? 'var(--warn)' : 'var(--bad)';
-  return `<span title="dernier relevé il y a ${d.toFixed(1)} j" style="color:${c}">●</span>`;
+  const t = tag ? ` <span class="muted">${tag}</span>` : '';
+  return `<span title="dernier relevé ${tag==='moy'?'(prix moyen) ':'HDV '}il y a ${d.toFixed(1)} j" style="color:${_fColor(d)}">● ${_fDays(d)}j${t}</span>`;
+}
+// Fraîcheur d'item : HDV par défaut ; si pas de HDV récent, repli sur la moyenne (taggé « moy »).
+function hdvFreshCell(it){ return freshCell(hdvFreshDays(it)); }
+function dealFreshCell(it){
+  const h = hdvFreshDays(it);
+  if(h!=null && h<10) return freshCell(h);
+  const a = seriesFreshDays(seriesOf(it,"avg"));
+  return a!=null ? freshCell(a, 'moy') : freshCell(h);
 }
 function renderListControls(){
   const sel = document.getElementById("listSel");
@@ -424,7 +458,7 @@ const COLS = [
   {k:"varm",  l:"Var m",  cls:"var", title:"Variation du prix moyen sur 1 mois", get:r=>r.varm, fmt:r=>varCell(r.varm)},
   {k:"spark", l:"Tendance", title:"Prix moyen sur 7 jours (échelle 0→max)", get:r=>0, fmt:r=>sparkline(lastDays(r.avgS,7)), sort:false},
   {k:"vol",   l:"V",      cls:"narrow", title:"Indice de volume 0–10 : fréquence de changement du prix moyen sur 10 jours (avec décimale)", get:r=>r.vol, fmt:r=>r.vol==null?'<span class="muted">—</span>':(+r.vol).toFixed(1)},
-  {k:"fresh", l:"F",      cls:"narrow", title:"Fraîcheur : ancienneté du dernier relevé (source affichée). ● vert <3j · orange <10j · rouge au-delà", get:r=>seriesFreshDays(r.s), fmt:r=>freshCell(seriesFreshDays(r.s))},
+  {k:"fresh", l:"F",      cls:"narrow", title:"Fraîcheur HDV : ancienneté du dernier relevé HDV réel. ● vert <3j · orange <10j · rouge au-delà", get:r=>hdvFreshDays(r.item), fmt:r=>hdvFreshCell(r.item)},
   {k:"hdvn",  l:"R",      cls:"narrow", title:"Nombre de relevés HDV réels", get:r=>r.hdvN, fmt:r=>r.hdvN||'<span class="muted">0</span>'},
   {k:"hdvlast",l:"Dernier",cls:"narrow", title:"Date du dernier relevé HDV", get:r=>r.hdvLastT, fmt:r=>r.hdvLast?dmy(r.hdvLast):'<span class="muted">—</span>'},
   {k:"gid",   l:"GID",    cls:"narrow", title:"Identifiant unique de l'item dans le jeu", get:r=>r.gid, fmt:r=>r.gid},
@@ -642,6 +676,7 @@ let BATCH = "auto";   // taille de lot de craft : "auto" | "10" | "100" | "1000"
 // x1 retiré : on ne vend/craft jamais à l'unité, c'est du bruit.
 const BATCHES = ["smart","auto","10","100","1000"];
 let BFAVONLY=false, RUNETARGET="";   // favoris seulement / rune ciblée (code)
+let BRIS_DETAIL=false;               // false = vue essentielle, true = toutes les colonnes
 // Bénéfice : vert si positif (gain), rouge si négatif (perte).
 const benFmt = v => v==null ? '<span class="muted">—</span>'
   : `<span style="color:${v>0?'var(--accent2)':v<0?'var(--bad)':'inherit'}">${(v>0?'+':'')+fmt(v)}</span>`;
@@ -768,15 +803,17 @@ function brisageCols(real){
     {k:"vol", l:"V", cls:"narrow", title:"Volume V : activité marché de l'item (0–10)",
       get:r=>{ const it=bItem(r); return it?volumeIndex(seriesOf(it,"avg")):null; },
       fmt:r=>{ const it=bItem(r); if(!it) return'<span class="muted">—</span>'; const v=volumeIndex(seriesOf(it,"avg")); return v==null?'<span class="muted">—</span>':(+v).toFixed(1); }},
-    {k:"fresh", l:"F", cls:"narrow", title:"Fraîcheur du dernier prix moyen de l'item. ● vert <3j · orange <10j · rouge au-delà",
-      get:r=>{ const it=bItem(r); return it?seriesFreshDays(seriesOf(it,"avg")):null; },
-      fmt:r=>{ const it=bItem(r); return freshCell(it?seriesFreshDays(seriesOf(it,"avg")):null); }},
+    {k:"fresh", l:"F", cls:"narrow", title:"Fraîcheur HDV du dernier relevé réel de l'item. ● vert <3j · orange <10j · rouge",
+      get:r=>{ const it=bItem(r); return hdvFreshDays(it); },
+      fmt:r=>hdvFreshCell(bItem(r))},
     {k:"rev", l:revLbl, cls:"narrow", title:"Valeur des runes obtenues", get:r=>r._d.rev, fmt:r=>num(r._d.rev)},
     {k:"Prix_Moyen", l:"Prix moy", cls:"narrow", title:"Prix moyen de l'item fini à l'HDV (achat direct)", get:r=>r.Prix_Moyen, fmt:r=>num(r.Prix_Moyen)},
     {k:"cost", l:"Craft", cls:"narrow", title:"Coût de craft au batch courant (Σ ingrédients au meilleur tier)", get:r=>r._d.cost, fmt:r=>num(r._d.cost)},
     {k:"batchN", l:"Batch", cls:"narrow", title:"Nombre de crafts utilisé pour le coût (auto = estimé selon le coût)", get:r=>r._d.batchN, fmt:r=>r._d.batchN==null?'<span class="muted">—</span>':fmt(r._d.batchN)},
+    {k:"cbatch", l:"C/Batch", cls:"narrow", title:"Coût total du batch (Craft × Batch) — capital à avancer", get:r=>r._d.cost==null||r._d.batchN==null?null:r._d.cost*r._d.batchN, fmt:r=>r._d.cost==null||r._d.batchN==null?'<span class="muted">—</span>':num(r._d.cost*r._d.batchN)},
     {k:"cmin", l:"C.min", cls:"narrow", title:"Coeff serveur minimal pour être rentable (plus bas = plus sûr)", get:r=>r._d.cmin, fmt:r=>r._d.cmin==null?'<span class="muted">—</span>':fmt(r._d.cmin)+"%"},
-    {k:"benef", l:"Bénéf", cls:"narrow", get:r=>r._d.benef, fmt:r=>benFmt(r._d.benef)},
+    {k:"benef", l:"Bénéf", cls:"narrow", title:"Bénéfice par unité (revenu runes − coût craft)", get:r=>r._d.benef, fmt:r=>benFmt(r._d.benef)},
+    {k:"bbatch", l:"B×Batch", cls:"narrow", title:"Bénéfice total du batch (Bénéf × Batch)", get:r=>r._d.benef==null||r._d.batchN==null?null:r._d.benef*r._d.batchN, fmt:r=>benFmt(r._d.benef==null||r._d.batchN==null?null:r._d.benef*r._d.batchN)},
     {k:"rent", l:"Rent", cls:"narrow", title:"Rentabilité = revenu / coût de craft", get:r=>r._d.rent, fmt:r=>r._d.rent==null?'<span class="muted">—</span>':r._d.rent.toFixed(2)},
     {k:"rmoy", l:"R/moy", cls:"narrow", title:"Rentabilité si on ACHÈTE l'item au prix moyen et qu'on le brise (revenu / prix moyen)", get:r=>r._d.rmoy, fmt:r=>r._d.rmoy==null?'<span class="muted">—</span>':r._d.rmoy.toFixed(2)},
   );
@@ -791,6 +828,12 @@ function brisageCols(real){
   }
   cols.push({k:"Runes", l:"Runes obtenues", cls:"runesb", sort:false, get:r=>r.Runes||"",
     fmt:r=>r.Runes||'<span class="muted">—</span>'});
+  // Vue simplifiée : on masque les colonnes de référence/diagnostic (on garde
+  // cmin, qui est aussi le tri par défaut).
+  if(!BRIS_DETAIL){
+    const HIDE = new Set(["Prix_Moyen","rmoy","Coeff_Reel","Dernier_Brisage"]);
+    return cols.filter(c=>!HIDE.has(c.k));
+  }
   return cols;
 }
 const BSORT = {};
@@ -802,6 +845,15 @@ function renderBTable(hostId, allRows, real, defaultSort, colsFn){
   if(BFAVONLY) rows = rows.filter(r=>isFav(r.GID));
   if(RUNETARGET && !customCols) rows = rows.filter(r=>runeQty(r,RUNETARGET)!=null);
   rows.forEach(r=>{ r._d = deriveB(r, real); });   // recalcul au batch courant
+  // Filtres globaux capital max / bénéfice min (par batch).
+  rows = rows.filter(r=>{
+    const invest = (r._d.cost!=null&&r._d.batchN!=null) ? r._d.cost*r._d.batchN : null;
+    let benefB;
+    if(r.is_concassage){ const it=DTV.items.find(x=>x.gid===r.GID), b=it?bestSell(it,r.GID):null;
+      benefB = (b&&r._d.cost!=null&&r._d.batchN!=null) ? (b.unit-r._d.cost)*r._d.batchN : null; }
+    else benefB = (r._d.benef!=null&&r._d.batchN!=null) ? r._d.benef*r._d.batchN : null;
+    return passInvestBenef(invest, benefB);
+  });
   const cols = colsFn(real);
   if(!BSORT[hostId]) BSORT[hostId] = defaultSort;
   const srt = BSORT[hostId];
@@ -843,7 +895,7 @@ function renderBTable(hostId, allRows, real, defaultSort, colsFn){
       renderListControls(); if(BFAVONLY) _rerender(); return; }
     const tr=e.target.closest("tr"); if(!tr||!tr.dataset.gid) return;
     const row=allRows.find(x=>x.GID==tr.dataset.gid);
-    if(row && row.is_concassage) openConcDetail(row); else openBModal(row, real);
+    if(row) openItemDetail(row, real);
   });
 }
 let MODAL_CTX = null;
@@ -874,6 +926,7 @@ function renderBrisage(){
     `<span>coeff théo <b>${B.coeff}%</b></span>`+
     `<label class="chk muted"><input type="checkbox" id="bFav"${BFAVONLY?' checked':''}> ★ favoris</label>`+
     `<label class="muted">Rune ciblée <select id="bRune">${runeOpts}</select></label>`+
+    `<button class="btn" id="brisDetail">${BRIS_DETAIL?'Vue simple':'Toutes les colonnes'}</button>`+
     `<span style="margin-left:auto">Batch ${batchSelectorHTML()}</span></div>`+
     // Brisages réels EN PREMIER (watchlist : ce qui est rentable maintenant).
     (hasReal
@@ -886,6 +939,7 @@ function renderBrisage(){
   });
   document.getElementById("bFav").addEventListener("change", e=>{ BFAVONLY=e.target.checked; renderBrisage(); });
   document.getElementById("bRune").addEventListener("change", e=>{ RUNETARGET=e.target.value; renderBrisage(); });
+  document.getElementById("brisDetail").addEventListener("click", ()=>{ BRIS_DETAIL=!BRIS_DETAIL; renderBrisage(); });
   if(hasReal) renderBTable("breal", B.real, true, {k:"benef", dir:-1});
   renderBTable("btheo", B.theo, false, {k:"cmin", dir:1});
 }
@@ -977,7 +1031,7 @@ function openBModal(r, real){
     `<span class="x" id="bmodal-x">✕</span>`+
     `<h3>${r.Nom||("GID "+r.GID)}</h3>`+
     `<div class="sub">${subLine}</div>`+
-    (isCon ? sellLotCtrlHTML(r.GID) : '')+
+    (r.GID ? sellLotCtrlHTML(r.GID) : '')+
     `<div class="kv">`+
       `<div class="b"><div class="v">${num(isCon?cSellU:d.rev)}</div><div class="l">${isCon?('Vente / u (lot '+cLotLbl+')'):'Revenu runes / unité'}</div></div>`+
       `<div class="b"><div class="v">${num(d.cost)}</div><div class="l">Coût ${isCon?'concassage':'craft'} / unité</div></div>`+
@@ -1016,9 +1070,10 @@ function openBModal(r, real){
   document.getElementById("bmodal-x").onclick = closeBModal;
   document.getElementById("bmodal").style.display = "flex";
 }
-// Ouvre le concassage à gauche ET le graphe du résultat à droite (côte à côte).
-function openConcDetail(r){
-  openBModal(r, false);
+// Ouvre le détail (craft/brisage/concassage) à GAUCHE et le graphe de l'item
+// à DROITE, côte à côte. Cliquer un ingrédient ne change que le graphe de droite.
+function openItemDetail(r, real){
+  openBModal(r, real);
   document.getElementById("bmodal").classList.add("dual-left");
   if(r.GID) openPriceModal(r.GID, true);
 }
@@ -1084,7 +1139,7 @@ function affDealCols(){
     {k:"ecart", l:"Écart", cls:"narrow", title:"Écart du prix actuel vs médiane historique", get:r=>r.st.ecart, fmt:r=>`<span style="color:${ecartColor(r.st.ecart)}">${pct(r.st.ecart)}</span>`},
     {k:"z", l:"z", cls:"narrow", title:"z-score = (actuel − moyenne) / écart-type", get:r=>r.st.z, fmt:r=>r.st.z==null?'—':r.st.z.toFixed(2)},
     {k:"n", l:"#pts", cls:"narrow", get:r=>r.st.n, fmt:r=>r.st.n},
-    {k:"fresh", l:"F", cls:"narrow", title:"Fraîcheur du dernier prix moyen. ● vert <3j · orange <10j · rouge au-delà", get:r=>seriesFreshDays(r.st.series), fmt:r=>freshCell(seriesFreshDays(r.st.series))},
+    {k:"fresh", l:"F", cls:"narrow", title:"Fraîcheur HDV ; bascule sur le prix moyen (tag « moy ») si pas de relevé HDV récent. ● vert <3j · orange <10j · rouge", get:r=>{const it=DTV.items.find(x=>x.gid===r.gid); return it?(hdvFreshDays(it)??seriesFreshDays(seriesOf(it,"avg"))):null;}, fmt:r=>{const it=DTV.items.find(x=>x.gid===r.gid); return it?dealFreshCell(it):'<span class="muted">—</span>';}},
     {k:"action", l:"Meilleure action", cls:"narrow", title:"Usage le plus rentable de cet item bon marché : brisage, concassage ou revente en lot supérieur (au batch courant)",
       get:r=>{ const a=bestAction(r.gid); return a?a.benef:null; },
       fmt:r=>{ const a=bestAction(r.gid); return a?`${a.kind} ${benFmt(a.benef)}`:'<span class="muted">—</span>'; }},
@@ -1114,6 +1169,9 @@ function renderAffaires(){
       if(!r.craft||!r.craft.recipe) continue;
       const d=deriveB(r,false);
       if(!(d.benef>0)) continue;
+      const invest=(d.cost!=null&&d.batchN!=null)?d.cost*d.batchN:null;
+      const benefB=(d.benef!=null&&d.batchN!=null)?d.benef*d.batchN:null;
+      if(!passInvestBenef(invest, benefB)) continue;   // capital max / bénéf min
       const promo=r.craft.recipe.map(ing=>({ing, deal:DEALMAP[normName(ing.nom)]}))
         .filter(x=>x.deal && x.deal.st.ecart<=AFF_SEUIL);
       if(promo.length) ops.push({r, d, promo});
@@ -1211,6 +1269,7 @@ function renderArbitrage(){
   const q=ARB_Q.trim().toLowerCase();
   if(q) rows=rows.filter(r=>r.nom.toLowerCase().includes(q)||String(r.gid).includes(q));
   if(ARB_MINV>0) rows=rows.filter(r=>(r.vol||0)>=ARB_MINV);
+  rows=rows.filter(r=>passInvestBenef(r.capital, r.benefLot));   // capital max / bénéf min
   const cols=[
     {k:"fav", l:"★", cls:"fav", sort:false, get:r=>0, fmt:r=>`<span class="star ${isFav(r.gid)?'on':''}" data-fav="${r.gid}">★</span>`},
     {k:"nom",   l:"Item", cls:"name", get:r=>r.nom, fmt:r=>r.nom},
@@ -1305,9 +1364,9 @@ function concassageCols(real){
       get:r=>{ const it=resIt(r); return it?volumeIndex(seriesOf(it,"avg")):null; },
       fmt:r=>{ const it=resIt(r); if(!it) return'<span class="muted">—</span>';
                const v=volumeIndex(seriesOf(it,"avg")); return v==null?'<span class="muted">—</span>':(+v).toFixed(1); }},
-    {k:"fresh",    l:"F",         cls:"narrow", title:"Fraîcheur du dernier prix de la rune résultante. ● vert <3j · orange <10j · rouge au-delà",
-      get:r=>{ const it=resIt(r); return it?seriesFreshDays(seriesOf(it,"avg")):null; },
-      fmt:r=>{ const it=resIt(r); return freshCell(it?seriesFreshDays(seriesOf(it,"avg")):null); }},
+    {k:"fresh",    l:"F",         cls:"narrow", title:"Fraîcheur HDV du dernier relevé réel de la rune résultante. ● vert <3j · orange <10j · rouge",
+      get:r=>hdvFreshDays(resIt(r)),
+      fmt:r=>hdvFreshCell(resIt(r))},
     {k:"batchN",  l:"Batch",    cls:"narrow", title:"Nombre de concassages au batch courant",
       get:r=>r._d.batchN, fmt:r=>r._d.batchN==null?'<span class="muted">—</span>':fmt(r._d.batchN)},
     {k:"cost",    l:"C/u",      cls:"narrow", title:"Coût de concassage d'1 rune (batch courant)",
@@ -1333,9 +1392,9 @@ function concassageCols(real){
       get:r=>{ const it=resIt(r), a=it?avgUnit(it):null; return a&&r._d.cost?a/r._d.cost:null; },
       fmt:r=>{ const it=resIt(r), a=it?avgUnit(it):null; return ratFmt(a&&r._d.cost?a/r._d.cost:null); }},
   ];
-  // Vue simplifiée : on ne garde que l'essentiel pour décider d'un coup d'œil.
+  // Vue simplifiée : l'essentiel pour décider, en gardant Batch et coûts/bénéf clés.
   if(!CONC_DETAIL){
-    const ESS = new Set(["fav","Nom","from_nom","vol","fresh","cost","bbatch","rbatch"]);
+    const ESS = new Set(["fav","Nom","from_nom","vol","fresh","batchN","cost","cbatch","bbatch","rbatch","b10","b100"]);
     return cols.filter(c=>ESS.has(c.k));
   }
   return cols;
