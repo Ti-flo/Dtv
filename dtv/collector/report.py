@@ -327,6 +327,106 @@ def build_brisage_data(conn: sqlite3.Connection, *, coeff: float = 100.0) -> dic
     }
 
 
+_CRAFT_CAP = 800   # plafond de lignes embarquées pour l'onglet Craft
+
+
+def build_craft_data(conn: sqlite3.Connection) -> dict:
+    """
+    Onglet « Craft » : crafter un item puis le REVENDRE (sans brisage).
+
+    Rows BrisageRow-compatibles (is_craft=True) → consommés tels quels par
+    renderBTable / openBModal côté rapport. Coût = craft_plan (tiers HDV
+    optimisés + sous-crafts), revenu = prix moyen marché de l'item fini.
+    """
+    paths = [config.catalog(k) for k in ("equipements", "consommables", "ressources")]
+    paths = [p for p in paths if p and Path(p).exists()]
+    if not paths:
+        return {"available": False, "reason": "catalogue scrapé introuvable."}
+    catalog: list[dict] = []
+    for p in paths:
+        try:
+            catalog += catalog_mod.load_catalog(p)
+        except Exception:
+            continue
+    if not catalog:
+        return {"available": False, "reason": "catalogue illisible."}
+
+    catalog_dir = Path(paths[0]).parent
+    item_prices = _latest_avg_prices(conn)
+    name2gid = catalog_mod.build_name_to_gid(catalog_dir)
+    ing_tier_prices: dict = {}
+    if name2gid:
+        try:
+            tp = store.tier_prices_for_gids(conn, list(name2gid.values()), days=7)
+            ing_tier_prices = {nom: tp[gid] for nom, gid in name2gid.items() if gid in tp}
+        except Exception:
+            ing_tier_prices = {}
+    use_db_craft = bool(ing_tier_prices)
+    name_prices = catalog_mod.build_name_prices(item_prices, catalog_dir)
+    craft_alt: dict = {}
+    if use_db_craft:
+        recipes_all = catalog_mod.build_recipes(catalog_dir)
+        buy_unit = {nom: craft.best_unit_price(tiers)
+                    for nom, tiers in ing_tier_prices.items()}
+        buy_unit = {k: v for k, v in buy_unit.items() if v is not None}
+        resolved = craft.resolve_craft_unit_costs(recipes_all, buy_unit)
+        craft_alt = {nom: r["craft_unit"] for nom, r in resolved.items()
+                     if r["craft_unit"] is not None}
+
+    seen: set = set()
+    rows: list[dict] = []
+    for it in catalog:
+        recipe_raw = br.parse_recipe(it.get("Recette") or "")
+        if not recipe_raw:
+            continue
+        gid = br.to_gid(it.get("GID"))
+        if gid is None or gid in seen:
+            continue
+        seen.add(gid)
+        sell = item_prices.get(gid)            # revente = prix moyen marché
+        recipe_items = [(qty, br.normalize_name(ing)) for qty, ing in recipe_raw]
+        ing_p = {n: ing_tier_prices[n] for _, n in recipe_items if n in ing_tier_prices}
+        if use_db_craft and ing_p:
+            recipe = [{"nom": ing, "qty": qty,
+                       "tiers": ing_tier_prices.get(br.normalize_name(ing)),
+                       "craft_unit": craft_alt.get(br.normalize_name(ing))}
+                      for qty, ing in recipe_raw]
+            cpc = {}
+            for nb in _CRAFT_BATCHES:
+                pl = craft.craft_plan(recipe_items, ing_p, n_crafts=nb, craft_alt=craft_alt)
+                cpc[str(nb)] = round(pl["cost_per_craft"], 2) if pl else None
+            pa = craft.craft_plan(recipe_items, ing_p, craft_alt=craft_alt)
+            cpc["auto"] = round(pa["cost_per_craft"], 2) if pa else None
+            n_auto, db = (pa["n_crafts"] if pa else None), True
+        else:
+            cc = br.craft_cost(it.get("Recette") or "", name_prices)
+            flat = round(cc["cost"], 2) if cc else None
+            recipe = [{"nom": ing, "qty": qty, "tiers": None, "craft_unit": None}
+                      for qty, ing in recipe_raw]
+            cpc = {k: flat for k in ("auto", "1", "10", "100", "1000")}
+            n_auto, db = None, False
+
+        cout = cpc.get("auto")
+        if cout is None and sell is None:
+            continue
+        lvl = br.to_level(it.get("Niveau"))
+        rows.append({
+            "GID": gid, "Nom": it.get("Nom_FR") or f"GID {gid}",
+            "Type": it.get("Type") or "", "Niveau": int(lvl) if lvl else None,
+            "Revenu_theo": sell, "Revenu_reel": None,
+            "Cout_HDV": cout, "Base_coeff100": 0, "Prix_Moyen": sell,
+            "Coeff_Reel": None, "Coeff_Min": None, "Craft_Manquants": None,
+            "craft": {"recipe": recipe, "cpc": cpc, "n_auto": n_auto, "db": db},
+            "runes_detail": [], "Runes": None, "is_craft": True,
+        })
+
+    rows.sort(key=lambda r: ((r["Revenu_theo"] or 0) - (r["Cout_HDV"] or 0)
+                             if (r["Revenu_theo"] is not None and r["Cout_HDV"] is not None)
+                             else -1e18), reverse=True)
+    return {"available": True, "craft_mode": use_db_craft,
+            "n_craftable": len(rows), "rows": rows[:_CRAFT_CAP]}
+
+
 def build_rune_data(conn: sqlite3.Connection) -> dict:
     """
     Données de l'onglet Runes.
@@ -490,6 +590,7 @@ def build_report_data(conn: sqlite3.Connection) -> dict:
         "snapshots": [{"id": r["snapshot"], "ts": r["ts"]} for r in snaps],
         "items": _price_series(conn),
         "brisage": build_brisage_data(conn),
+        "craft": build_craft_data(conn),
         "runes": build_rune_data(conn),
     }
 

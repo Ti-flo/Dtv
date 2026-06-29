@@ -209,6 +209,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   </section>
   <section class="tab" data-tab="achats"><div class="soon"><div class="big">🛒</div><p>Onglet « Ressources achetées » — à venir (dépend de <code>transactions_observations.csv</code>).</p></div></section>
   <section class="tab" data-tab="craft"><div id="craft-root"></div></section>
+  <section class="tab" data-tab="craftsell"><div id="craftsell-root"></div></section>
   <section class="tab" data-tab="affaires"><div id="affaires-root"></div></section>
   <section class="tab" data-tab="arbitrage"><div id="arb-root"></div></section>
   <section class="tab" data-tab="runes"><div id="runes-root"></div></section>
@@ -281,14 +282,18 @@ let MAX_INVEST=null, MIN_BENEF=0;
     `<label class="kpi" style="cursor:auto"><div class="l">💰 Invest. max (capital/op.)</div>`+
       `<input id="maxInvest" type="text" inputmode="numeric" placeholder="∞ (ex: 1M)" style="width:110px"></label>`+
     `<label class="kpi" style="cursor:auto"><div class="l">📈 Bénéf. min /batch</div>`+
-      `<input id="minBenef" type="text" inputmode="numeric" value="0" style="width:90px"></label>`;
+      `<input id="minBenef" type="text" inputmode="numeric" value="0" style="width:90px"></label>`+
+    `<button class="btn" id="filtApply" style="align-self:center">Appliquer ✓</button>`;
   document.getElementById("kpis").appendChild(d);
   // Parse tolérant : « 20 000 », « 1 000 000 », « 1.5M » → nombre (espaces/séparateurs OK).
   const parseAmount = s=>{ s=(s||"").toLowerCase().replace(/[\s,]/g,"");
     let mult=1; if(s.endsWith("m")){mult=1e6;s=s.slice(0,-1);} else if(s.endsWith("k")){mult=1e3;s=s.slice(0,-1);}
     const n=parseFloat(s); return isFinite(n)?n*mult:null; };
-  document.getElementById("maxInvest").addEventListener("change", e=>{ MAX_INVEST=parseAmount(e.target.value); refreshAll(); });
-  document.getElementById("minBenef").addEventListener("change", e=>{ MIN_BENEF=parseAmount(e.target.value)||0; refreshAll(); });
+  const applyFilters=()=>{ MAX_INVEST=parseAmount(document.getElementById("maxInvest").value);
+    MIN_BENEF=parseAmount(document.getElementById("minBenef").value)||0; refreshAll(); };
+  document.getElementById("filtApply").onclick=applyFilters;
+  document.getElementById("maxInvest").addEventListener("change", applyFilters);
+  document.getElementById("minBenef").addEventListener("change", applyFilters);
 })();
 // Filtre une ligne par capital investi et bénéfice minimal (null = inconnu → on garde si pas de seuil).
 function passInvestBenef(invest, benef){
@@ -296,9 +301,10 @@ function passInvestBenef(invest, benef){
   if(MIN_BENEF>0 && (benef==null || benef<MIN_BENEF)) return false;
   return true;
 }
-function refreshAll(){ if(B.available) renderBrisage(); renderAffaires(); renderArbitrage(); renderRunes(); }
+function refreshAll(){ if(B.available) renderBrisage(); if(CR.available) renderCraft(); renderAffaires(); renderArbitrage(); renderRunes(); }
 const TABS = [["prix","📈 Prix dans le temps"],["achats","🛒 Ressources achetées"],
-              ["craft","⚒️ Craft & Brisage"],["affaires","💎 Bonnes affaires"],
+              ["craft","⚒️ Craft & Brisage"],["craftsell","🛠️ Craft (revente)"],
+              ["affaires","💎 Bonnes affaires"],
               ["arbitrage","💱 Achat / Vente"],["runes","🔮 Runes"]];
 document.getElementById("tabs").innerHTML =
   TABS.map(([id,l],i)=>`<button data-go="${id}"${i===0?' class="active"':''}>${l}</button>`).join("");
@@ -546,6 +552,7 @@ function showDetail(gid, root){
   const vol = volumeIndex(seriesOf(it,"avg"));
   // Lien vers le craft/brisage de l'item (icône ⚒️) s'il en a un.
   const craftRow = (typeof BRISMAP!=="undefined" && BRISMAP[gid])
+                || (typeof CRAFTMAP!=="undefined" && CRAFTMAP[gid])
                 || ((typeof RD!=="undefined" && RD.concassage) ? RD.concassage.find(x=>x.GID===gid) : null);
   root.innerHTML =
     `<h3${craftRow?' class="modtitle" title="Voir le craft / brisage"':''}>${it.nom}${craftRow?' <span class="goicon">⚒️</span>':''}</h3>`+
@@ -691,7 +698,7 @@ document.getElementById("rows").addEventListener("click", e=>{
 const B = DTV.brisage || {available:false, reason:"(pas de données)"};
 let BATCH = "auto";   // taille de lot de craft : "auto" | "10" | "100" | "1000"
 // x1 retiré : on ne vend/craft jamais à l'unité, c'est du bruit.
-const BATCHES = ["smart","auto","10","100","1000"];
+const BATCHES = ["budget","smart","auto","10","100","1000"];
 let BFAVONLY=false, RUNETARGET="";   // favoris seulement / rune ciblée (code)
 let BRIS_DETAIL=false;               // false = vue essentielle, true = toutes les colonnes
 // Bénéfice : vert si positif (gain), rouge si négatif (perte).
@@ -728,14 +735,34 @@ function smartBatch(r){
   }
   return best || fallback;   // si rien ne tient sous le plafond, le + petit (sera filtré)
 }
+// Mode « budget » : contrairement à smart (qui vise la meilleure marge unitaire,
+// donc le + gros lot), budget choisit le batch qui MAXIMISE le bénéfice TOTAL
+// réalisable SOUS le plafond d'investissement. C'est ce qu'on veut vraiment :
+// « gagne-moi le plus possible avec le capital que j'ai ».
+function budgetBatch(r, rev){
+  if(!r.craft) return null;
+  let best=null, fb=null;
+  for(const b of ["10","100","1000"]){
+    const c=r.craft.cpc[b]; if(c==null) continue;
+    const invest=c*Number(b);
+    if(fb==null || invest<fb.invest) fb={batch:Number(b), cost:c, invest};   // repli : + petit capital
+    if(MAX_INVEST!=null && invest>MAX_INVEST) continue;
+    const benef = rev==null ? null : (rev-c)*Number(b);
+    const score = benef==null ? -Infinity : benef;
+    if(best==null || score>best.score) best={batch:Number(b), cost:c, score};
+  }
+  return best || fb;
+}
 // Coût de craft du batch courant (cpc précalculé par Python = source unique).
 function bCost(r){
   if(!r.craft) return r.Cout_HDV;
   if(BATCH==="smart"){ const s=smartBatch(r); return s?s.cost:null; }
+  if(BATCH==="budget"){ const s=budgetBatch(r, r.Revenu_theo); return s?s.cost:null; }
   return r.craft.cpc[BATCH] ?? null;
 }
 function bBatchN(r){
   if(BATCH==="smart"){ const s=r.craft?smartBatch(r):null; return s?Number(s.batch):null; }
+  if(BATCH==="budget"){ const s=r.craft?budgetBatch(r,r.Revenu_theo):null; return s?s.batch:null; }
   if(BATCH==="auto") return r.craft ? (r.craft.n_auto ?? null) : null;
   return Number(BATCH);
 }
@@ -775,15 +802,23 @@ function renderRecipe(it, host){
   if(!host) return;
   const rec = it.recipe;
   if(!rec || !rec.length){ host.innerHTML=""; return; }
-  host.innerHTML =
-    `<h3 class="sec">🧪 Recette de ${it.nom}</h3>`+
-    `<table><thead><tr><th class="name">Ingrédient</th><th class="narrow">Qté</th><th class="narrow">Prix moyen</th></tr></thead><tbody>`+
-    rec.map(([qty,nom])=>{ const gid=NAMEGID[normName(nom)];
+  let total=0, known=true;
+  const body = rec.map(([qty,nom])=>{ const gid=NAMEGID[normName(nom)];
       const it2=gid!=null?DTV.items.find(x=>x.gid===gid):null;
       const st=it2?statsOf(seriesOf(it2,"avg")):null;
+      const line = st? st.last*qty : null;
+      if(line==null) known=false; else total+=line;
       const attr=gid!=null?` style="cursor:pointer" data-ing="${gid}"`:'';
-      return `<tr${attr}><td class="name">${nom}</td><td class="narrow">${qty}</td><td class="narrow">${st?fmt(st.last):'<span class="muted">—</span>'}</td></tr>`;
-    }).join("")+
+      return `<tr${attr}><td class="name">${nom}</td><td class="narrow">${qty}</td>`+
+             `<td class="narrow">${st?fmt(st.last):'<span class="muted">—</span>'}</td>`+
+             `<td class="narrow">${line!=null?fmt(line):'<span class="muted">—</span>'}</td></tr>`;
+    }).join("");
+  host.innerHTML =
+    `<h3 class="sec">🧪 Recette de ${it.nom}</h3>`+
+    `<table><thead><tr><th class="name">Ingrédient</th><th class="narrow">Qté</th><th class="narrow">Prix moyen</th><th class="narrow">Coût ligne</th></tr></thead><tbody>`+
+    body+
+    `<tr><td class="name"><b>Total craft (prix moyen)</b></td><td></td><td></td>`+
+    `<td class="narrow"><b style="color:#fff">${fmt(total)}${known?'':' <span class="muted" title="certains ingrédients sans prix">≈</span>'}</b></td></tr>`+
     `</tbody></table>`;
   host.querySelectorAll("tr[data-ing]").forEach(tr=>tr.onclick=()=>openPriceModal(+tr.dataset.ing));
 }
@@ -952,9 +987,11 @@ function renderBTable(hostId, allRows, real, defaultSort, colsFn){
 }
 let MODAL_CTX = null;
 function batchSelectorHTML(){
-  const lbl = b => b==="auto" ? "auto" : b==="smart" ? "🧠 smart" : "x"+b;
+  const lbl = b => b==="auto" ? "auto" : b==="smart" ? "🧠 smart" : b==="budget" ? "💰 budget" : "x"+b;
+  const tip = b => b==='smart' ? 'meilleure marge unitaire (gros lot)'
+    : b==='budget' ? 'bénéfice total maxi sous le plafond d\'investissement' : '';
   return '<span class="batchsel">'+BATCHES.map(b=>
-    `<button data-b="${b}" class="${b===BATCH?'on':''}" title="${b==='smart'?'batch le plus rentable par item':''}">${lbl(b)}</button>`).join("")+'</span>';
+    `<button data-b="${b}" class="${b===BATCH?'on':''}" title="${tip(b)}">${lbl(b)}</button>`).join("")+'</span>';
 }
 function renderBrisage(){
   const root=document.getElementById("craft-root");
@@ -994,6 +1031,39 @@ function renderBrisage(){
   document.getElementById("brisDetail").addEventListener("click", ()=>{ BRIS_DETAIL=!BRIS_DETAIL; renderBrisage(); });
   if(hasReal) renderBTable("breal", B.real, true, {k:"benef", dir:-1});
   renderBTable("btheo", B.theo, false, {k:"cmin", dir:1});
+}
+
+// ── Onglet « Craft (revente) » ─────────────────────────────────────────────
+const CR = DTV.craft || {available:false};
+const CRAFTMAP = (()=>{ const m={}; (CR.rows||[]).forEach(r=>{ if(r.GID!=null && m[r.GID]==null) m[r.GID]=r; }); return m; })();
+let CRAFT_DETAIL=false, CRAFT_Q="";
+function renderCraft(){
+  const root=document.getElementById("craftsell-root");
+  if(!CR.available){ root.innerHTML=`<div class="soon"><div class="big">🛠️</div><p>${CR.reason||'Pas de données de craft.'}</p></div>`; return; }
+  const costTag = CR.craft_mode ? '<span class="tag ok">coût = craft (tiers HDV optimisés)</span>'
+                                : '<span class="tag warn">coût = craft (avgprices, sans optim. tiers)</span>';
+  let rows = CR.rows||[];
+  const q=CRAFT_Q.trim().toLowerCase();
+  if(q) rows=rows.filter(r=>(r.Nom||"").toLowerCase().includes(q)||String(r.GID).includes(q));
+  root.innerHTML =
+    `<div class="help">🛠️ <b>Craft (revente).</b> Crafter un item puis le <b>revendre</b> au marché (sans brisage). `+
+    `<b>C/Batch</b> = capital · <b>CA</b> = ce que tu encaisses · <b>B×Batch</b> = bénéfice. Ligne <b style="color:var(--accent2)">verte</b> = rentable. `+
+    `Le batch <b>💰 budget</b> respecte ton plafond d'investissement. Clique un item → détail + graphe.</div>`+
+    `<div class="notice"><span><b>${fmt(CR.n_craftable)}</b> items craftables chiffrables</span><span>${costTag}</span>`+
+    `<label class="chk muted"><input type="checkbox" id="cFav"${BFAVONLY?' checked':''}> ★ favoris</label>`+
+    `<input id="cQ" type="search" placeholder="Rechercher (Entrée)…" value="${q.replace(/"/g,'&quot;')}" style="width:170px">`+
+    `<button class="btn" id="cQbtn">🔍</button>`+
+    `<button class="btn" id="craftDetail">${CRAFT_DETAIL?'Vue simple':'Toutes les colonnes'}</button>`+
+    `<span style="margin-left:auto">Batch ${batchSelectorHTML()}</span></div>`+
+    `<div id="craftsell-tbl"></div>`;
+  root.querySelector(".batchsel").addEventListener("click", e=>{ const btn=e.target.closest("button"); if(!btn) return;
+    BATCH=btn.dataset.b; renderCraft(); if(MODAL_CTX) openBModal(MODAL_CTX.r, MODAL_CTX.real); });
+  document.getElementById("cFav").addEventListener("change", e=>{ BFAVONLY=e.target.checked; renderCraft(); });
+  const doQ=()=>{ CRAFT_Q=document.getElementById("cQ").value; renderCraft(); };
+  document.getElementById("cQbtn").onclick=doQ;
+  document.getElementById("cQ").addEventListener("change", doQ);   // valide à Entrée/sortie de champ
+  document.getElementById("craftDetail").addEventListener("click", ()=>{ CRAFT_DETAIL=!CRAFT_DETAIL; renderCraft(); });
+  renderBTable("craftsell-tbl", rows, false, {k:"bbatch",dir:-1}, craftCols);
 }
 
 // ── Modale de détail (recette + tiers + runes + craft vs achat) ─────────────
@@ -1104,13 +1174,14 @@ function openBModal(r, real){
     bottomSection;
   box.querySelector(".batchsel").addEventListener("click", e=>{
     const btn=e.target.closest("button"); if(!btn) return;
-    BATCH=btn.dataset.b; renderBrisage(); if(document.getElementById("conc-tbl")) _renderRuneConc(); openBModal(r, real);
+    BATCH=btn.dataset.b; renderBrisage(); if(CR.available) renderCraft(); if(document.getElementById("conc-tbl")) _renderRuneConc(); openBModal(r, real);
   });
-  // Cases de lots de vente (concassage) : re-render modale + tables dépendantes.
+  // Cases de lots de vente : re-render modale + tables dépendantes.
   box.querySelectorAll("input[data-sell]").forEach(cb=>cb.onchange=()=>{
     toggleSell(+cb.dataset.gid, cb.dataset.sell);
     if(document.getElementById("conc-tbl")) _renderRuneConc();
     if(document.getElementById("arb-root")) renderArbitrage();
+    if(CR.available) renderCraft();
     openBModal(r, real);
   });
   // Clic sur un ingrédient → ouvre/maj le graphe de prix (popup de droite si mode double).
@@ -1181,6 +1252,8 @@ function bestAction(gid){
   const opts=[];
   const brz = BRISMAP[gid];
   if(brz){ const d=deriveB(brz,false); if(d.benef!=null) opts.push({kind:"⚒️ Briser", benef:d.benef}); }
+  const crz = (typeof CRAFTMAP!=="undefined") ? CRAFTMAP[gid] : null;
+  if(crz){ const d=deriveB(crz,false); if(d.benef!=null) opts.push({kind:"🛠️ Crafter", benef:d.benef}); }
   ((typeof _CONC_ING_MAP!=="undefined"&&_CONC_ING_MAP[gid])||[]).forEach(r=>{
     const d=deriveB(r,false); if(d.benef!=null) opts.push({kind:"🔨 Concasser", benef:d.benef}); });
   if(it && typeof arbRow==="function"){ const a=arbRow(it); if(a) opts.push({kind:"💱 Revendre "+a.sell, benef:a.benefLot}); }
@@ -1188,8 +1261,19 @@ function bestAction(gid){
   opts.sort((x,y)=>(y.benef??-1e18)-(x.benef??-1e18));
   return opts[0];
 }
-let AFF_SEUIL=-10, AFF_SENS="buy", AFF_SORT={k:"ecart",dir:1};
+let AFF_SEUIL=-10, AFF_SENS="buy", AFF_SORT={k:"ecart",dir:1}, OP_SORT={k:"cmin",dir:1};
 const ecartColor = e => e<0 ? 'var(--accent2)' : e>0 ? 'var(--bad)' : 'var(--muted)';
+function affOpCols(){ return [
+  {k:"nom", l:"Item", cls:"name", get:o=>o.r.Nom, fmt:o=>o.r.Nom},
+  {k:"type", l:"Type", cls:"type", get:o=>o.r.Type||"", fmt:o=>o.r.Type||'<span class="muted">—</span>'},
+  {k:"promo", l:"Ingrédient(s) en promo", cls:"runesb", sort:false, get:o=>0,
+    fmt:o=>o.promo.map(x=>`${x.ing.nom} <span style="color:${ecartColor(x.deal.st.ecart)}">${pct(x.deal.st.ecart)}</span>`).join(", ")},
+  {k:"cost", l:"Craft", cls:"narrow", get:o=>o.d.cost, fmt:o=>num(o.d.cost)},
+  {k:"batchN", l:"Batch", cls:"narrow", get:o=>o.d.batchN, fmt:o=>o.d.batchN==null?'<span class="muted">—</span>':fmt(o.d.batchN)},
+  {k:"benef", l:"Bénéf", cls:"narrow", get:o=>o.d.benef, fmt:o=>benFmt(o.d.benef)},
+  {k:"cmin", l:"C.min", cls:"narrow", title:"Coeff serveur minimal pour être rentable", get:o=>o.d.cmin, fmt:o=>o.d.cmin==null?'<span class="muted">—</span>':fmt(o.d.cmin)+'%'},
+  {k:"rent", l:"Rent", cls:"narrow", get:o=>o.d.rent, fmt:o=>o.d.rent==null?'<span class="muted">—</span>':o.d.rent.toFixed(2)},
+]; }
 
 function affDealCols(){
   return [
@@ -1215,6 +1299,8 @@ function renderAffaires(){
   const sensSel = `<select id="affSens"><option value="buy"${AFF_SENS==="buy"?" selected":""}>sous la médiane (à acheter)</option><option value="sell"${AFF_SENS==="sell"?" selected":""}>au-dessus (à vendre)</option></select>`;
   // Section 1 : affaires de prix.
   let rows = DEALS.filter(d=> AFF_SENS==="buy" ? d.st.ecart<=AFF_SEUIL : d.st.ecart>=Math.abs(AFF_SEUIL));
+  // Bénéfice minimum : on ne garde que les items dont la meilleure action rapporte assez.
+  if(MIN_BENEF>0) rows = rows.filter(r=>{ const a=bestAction(r.gid); return a && a.benef!=null && a.benef>=MIN_BENEF; });
   const cols = affDealCols();
   const col = cols.find(c=>c.k===AFF_SORT.k)||cols[6];
   rows.sort((a,b)=>{ let va=col.get(a),vb=col.get(b);
@@ -1239,21 +1325,18 @@ function renderAffaires(){
         .filter(x=>x.deal && x.deal.st.ecart<=AFF_SEUIL);
       if(promo.length) ops.push({r, d, promo});
     }
-    ops.sort((a,b)=> (a.d.cmin??1e9)-(b.d.cmin??1e9));
   }
-  const opBody = ops.length ? ops.map(o=>{
-    const ings=o.promo.map(x=>`${x.ing.nom} <span style="color:${ecartColor(x.deal.st.ecart)}">${pct(x.deal.st.ecart)}</span>`).join(", ");
-    const coeff = o.r.Coeff_Reel!=null ? o.r.Coeff_Reel : B.coeff;
-    const coeffStr = o.r.Coeff_Reel!=null ? `${fmt(o.r.Coeff_Reel)}% <span class="muted">réel</span>`
-                                          : `${fmt(B.coeff)}% <span class="muted">théo</span>`;
-    const tr_=totalRunes(o.r), runesPred = tr_!=null ? dec2(tr_*coeff/100) : '—';
-    return `<tr data-gid="${o.r.GID}" style="cursor:pointer"><td class="name">${o.r.Nom}</td><td class="type">${o.r.Type||'—'}</td>`+
-      `<td class="runesb">${ings}</td><td class="narrow">${num(o.d.cost)}</td>`+
-      `<td class="narrow">${o.d.batchN==null?'—':fmt(o.d.batchN)}</td>`+
-      `<td class="narrow">${coeffStr}</td><td class="narrow">${runesPred}</td>`+
-      `<td class="narrow">${benFmt(o.d.benef)}</td><td class="narrow">${o.d.cmin==null?'—':fmt(o.d.cmin)+'%'}</td>`+
-      `<td class="narrow">${o.d.rent==null?'—':o.d.rent.toFixed(2)}</td></tr>`;
-  }).join("") : `<tr><td colspan="10"><div class="empty">${B.available?"Aucune recette dont un ingrédient est en promo à ce seuil.":"Catalogue craft indisponible."}</div></td></tr>`;
+  const opCols = affOpCols();
+  const opCol = opCols.find(c=>c.k===OP_SORT.k)||opCols[6];
+  ops.sort((a,b)=>{ let va=opCol.get(a),vb=opCol.get(b);
+    const an=va==null,bn=vb==null; if(an&&bn)return 0; if(an)return 1; if(bn)return -1;
+    if(typeof va==="string"){va=va.toLowerCase();vb=vb.toLowerCase();return va<vb?-OP_SORT.dir:va>vb?OP_SORT.dir:0;}
+    return (va-vb)*OP_SORT.dir; });
+  const opHead = opCols.map(c=>{ const arr=OP_SORT.k===c.k?`<span class="arrow">${OP_SORT.dir<0?"▼":"▲"}</span>`:"";
+    const tt=c.title?` title="${c.title}"`:""; return `<th class="${c.cls||''}"${tt} data-k="${c.k}" data-sort="${c.sort!==false}">${c.l} ${arr}</th>`; }).join("");
+  const opBody = ops.length ? ops.map(o=>`<tr data-gid="${o.r.GID}" style="cursor:pointer">`+
+      opCols.map(c=>`<td class="${c.cls||''}">${c.fmt(o)}</td>`).join("")+"</tr>").join("")
+    : `<tr><td colspan="${opCols.length}"><div class="empty">${B.available?"Aucune recette dont un ingrédient est en promo à ce seuil.":"Catalogue craft indisponible."}</div></td></tr>`;
 
   root.innerHTML =
     `<div class="controls"><label class="muted">Affaires <b id="affCount"></b></label>`+
@@ -1263,7 +1346,7 @@ function renderAffaires(){
     `<h3 class="sec">💸 Prix bas du moment <span class="muted">— clique une ligne pour voir le graphe</span></h3>`+
     `<div class="tablewrap"><table id="affTbl"><thead><tr>${head}</tr></thead><tbody id="affRows">${body}</tbody></table></div>`+
     `<h3 class="sec">⚒️ Opportunités craft/brisage induites <span class="muted">— rentables maintenant ET un ingrédient est en promo · clique pour le détail</span></h3>`+
-    `<div class="tablewrap"><table><thead><tr><th class="name">Item</th><th class="type">Type</th><th class="runesb">Ingrédient(s) en promo</th><th class="narrow">Craft</th><th class="narrow" title="Batch utilisé">Batch</th><th class="narrow" title="Coeff réel sinon théorique">Coeff</th><th class="narrow" title="Runes totales prédites au coeff">Runes préd.</th><th class="narrow">Bénéf</th><th class="narrow">C.min</th><th class="narrow">Rent</th></tr></thead><tbody id="opRows">${opBody}</tbody></table></div>`;
+    `<div class="tablewrap"><table id="opTbl"><thead><tr>${opHead}</tr></thead><tbody id="opRows">${opBody}</tbody></table></div>`;
   document.getElementById("affCount").textContent = rows.length;
   document.getElementById("affSeuil").addEventListener("change", e=>{ AFF_SEUIL=Number(e.target.value); renderAffaires(); });
   document.getElementById("affSens").addEventListener("change", e=>{ AFF_SENS=e.target.value; AFF_SORT={k:"ecart",dir:AFF_SENS==="buy"?1:-1}; renderAffaires(); });
@@ -1278,9 +1361,14 @@ function renderAffaires(){
     const tr=e.target.closest("tr"); if(!tr||!tr.dataset.gid) return;
     openPriceModal(+tr.dataset.gid);
   });
+  document.querySelector("#opTbl thead").addEventListener("click", e=>{
+    const th=e.target.closest("th"); if(!th||th.dataset.sort==="false"||!th.dataset.k) return;
+    const k=th.dataset.k; if(OP_SORT.k===k) OP_SORT.dir*=-1; else OP_SORT={k, dir:(k==="nom"||k==="type")?1:-1};
+    renderAffaires();
+  });
   document.getElementById("opRows").addEventListener("click", e=>{
     const tr=e.target.closest("tr"); if(!tr||!tr.dataset.gid) return;
-    const r=B.theo.find(x=>x.GID==tr.dataset.gid); if(r) openBModal(r,false);
+    const r=B.theo.find(x=>x.GID==tr.dataset.gid); if(r) openItemDetail(r,false);
   });
 }
 // Popup graphe de prix d'un item (réutilise showDetail : graphe + Volume V +
@@ -1337,6 +1425,7 @@ function renderArbitrage(){
     {k:"nom",   l:"Item", cls:"name", get:r=>r.nom, fmt:r=>r.nom},
     {k:"type",  l:"Type", cls:"type", get:r=>r.type, fmt:r=>r.type||'<span class="muted">—</span>'},
     {k:"vol",   l:"V",    cls:"narrow", title:"Volume V (activité marché)", get:r=>r.vol, fmt:r=>r.vol==null?'<span class="muted">—</span>':(+r.vol).toFixed(1)},
+    {k:"fresh", l:"F",    cls:"narrow", title:"Fraîcheur HDV du dernier relevé. ● vert <3j · orange <10j · rouge", get:r=>hdvFreshDays(DTV.items.find(x=>x.gid===r.gid)), fmt:r=>hdvFreshCell(DTV.items.find(x=>x.gid===r.gid))},
     {k:"buy",   l:"Achat", cls:"narrow", title:"Tier d'achat le moins cher · prix unitaire",
       get:r=>r.t[r.buy].unit, fmt:r=>`<span title="lot ${fmt(r.t[r.buy].lot)}">${r.buy} · ${fmt(r.t[r.buy].unit)}/u</span>`},
     {k:"sell",  l:"Vente", cls:"narrow", title:"Meilleur lot de vente autorisé · prix unitaire",
@@ -1360,10 +1449,13 @@ function renderArbitrage(){
     `<div class="help">💱 <b>Achat / Vente.</b> Acheter un item à un tier de lot et le revendre au tier <b>adjacent</b> plus cher à l'unité (ex : acheter par 1 à 25/u, revendre par 10 à 60/u). `+
     `<b>${rows.length}</b> opportunités, sur relevés &lt; 3 j uniquement (pas de faux écart). <b>Bénéf/lot</b> = gain net d'une vente · <b>Capital</b> = mise à avancer. Clique un item pour régler ses lots de vente.</div>`+
     `<div class="controls">Volume min <input id="arbV" type="number" min="0" max="10" step="0.5" value="${ARB_MINV}" style="width:60px">`+
-    `<input id="arbQ" type="search" placeholder="Rechercher…" value="${q.replace(/"/g,"&quot;")}" style="width:160px"></div>`+
+    `<input id="arbQ" type="search" placeholder="Rechercher (Entrée)…" value="${q.replace(/"/g,"&quot;")}" style="width:170px">`+
+    `<button class="btn" id="arbQbtn">🔍</button></div>`+
     `<div class="tablewrap"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
   document.getElementById("arbV").onchange=e=>{ ARB_MINV=Number(e.target.value)||0; renderArbitrage(); };
-  document.getElementById("arbQ").oninput=e=>{ ARB_Q=e.target.value; renderArbitrage(); };
+  const arbDoQ=()=>{ ARB_Q=document.getElementById("arbQ").value; renderArbitrage(); };
+  document.getElementById("arbQbtn").onclick=arbDoQ;
+  document.getElementById("arbQ").addEventListener("change", arbDoQ);   // Entrée / sortie de champ
   root.querySelector("thead").addEventListener("click",e=>{
     const th=e.target.closest("th"); if(!th||th.dataset.sort==="false"||!th.dataset.k) return;
     const k=th.dataset.k; if(ARB_SORT.k===k) ARB_SORT.dir*=-1; else ARB_SORT={k,dir:(k==="nom"||k==="type")?1:-1};
@@ -1407,63 +1499,71 @@ function _renderRuneConc(){
   }
 }
 
-function concassageCols(real){
+// Colonnes génériques « produire (craft/concassage) puis revendre ». `lead` =
+// colonnes d'identification de la ligne ; `detail` = true → toutes les colonnes.
+// Le revenu utilise le meilleur lot de vente autorisé (règle 3j) ; repli prix
+// moyen pour les items non vendus en lots (équipements).
+function sellBatchCols(real, lead, detail){
   function resIt(r){ return r.GID ? DTV.items.find(it=>it.gid===r.GID) : null; }
-  // Prix de vente unitaire d'un tier (règle 3j) ; null si lot non autorisé.
-  function sellU(r, src){ if(!isSellOn(r.GID,src)) return null;
-    const it=resIt(r); return it?effUnit(it,src):null; }
-  function best(r){ const it=resIt(r); return it?bestSell(it, r.GID):null; }   // {src,unit}
-  const off = '<span class="muted" title="Lot désactivé pour cette rune (clic la rune → cases vente)">·</span>';
+  function sellU(r, src){ if(!isSellOn(r.GID,src)) return null; const it=resIt(r); return it?effUnit(it,src):null; }
+  function best(r){ const it=resIt(r); if(!it) return null;
+    return bestSell(it, r.GID) || (avgUnit(it)!=null?{src:'moy', unit:avgUnit(it)}:null); }
+  const off = '<span class="muted" title="Lot désactivé (clic l\'item → cases vente)">·</span>';
   const ratFmt = v=>v==null?'<span class="muted">—</span>':v.toFixed(2);
-  // Bénéfice total d'un lot vendu (taille `n`) via le tier `src` : (vente/u − coût)×n.
   function bLot(r, src, n){ const u=sellU(r,src), c=r._d.cost; return u==null||c==null?null:(u-c)*n; }
   function rTier(r, src){ const u=sellU(r,src), c=r._d.cost; return u==null||!c?null:u/c; }
-  const cols = [
-    {k:"fav", l:"★", cls:"fav", sort:false, get:r=>0,
-      fmt:r=>`<span class="star ${isFav(r.GID)?'on':''}" data-fav="${r.GID}">★</span>`},
-    {k:"Nom",      l:"Résultat",  cls:"name",   title:"Rune obtenue (1 exemplaire)", get:r=>r.Nom, fmt:r=>r.Nom},
-    {k:"from_nom", l:"Ingrédient",cls:"name",   title:"Rune de départ (×3)", get:r=>r.from_nom, fmt:r=>r.from_nom},
-    {k:"vol",      l:"V",         cls:"narrow", title:"Volume V : activité marché de la rune résultante (0–10)",
+  const cols = lead.concat([
+    {k:"vol", l:"V", cls:"narrow", title:"Volume V : activité marché de l'item (0–10)",
       get:r=>{ const it=resIt(r); return it?volumeIndex(seriesOf(it,"avg")):null; },
       fmt:r=>{ const it=resIt(r); if(!it) return'<span class="muted">—</span>';
                const v=volumeIndex(seriesOf(it,"avg")); return v==null?'<span class="muted">—</span>':(+v).toFixed(1); }},
-    {k:"fresh",    l:"F",         cls:"narrow", title:"Fraîcheur HDV du dernier relevé réel de la rune résultante. ● vert <3j · orange <10j · rouge",
-      get:r=>hdvFreshDays(resIt(r)),
-      fmt:r=>hdvFreshCell(resIt(r))},
-    {k:"batchN",  l:"Batch",    cls:"narrow", title:"Nombre de concassages au batch courant",
+    {k:"fresh", l:"F", cls:"narrow", title:"Fraîcheur HDV du dernier relevé réel. ● vert <3j · orange <10j · rouge",
+      get:r=>hdvFreshDays(resIt(r)), fmt:r=>hdvFreshCell(resIt(r))},
+    {k:"batchN", l:"Batch", cls:"narrow", title:"Nombre de crafts/transfo au batch courant",
       get:r=>r._d.batchN, fmt:r=>r._d.batchN==null?'<span class="muted">—</span>':fmt(r._d.batchN)},
-    {k:"cost",    l:"C/u",      cls:"narrow", title:"Coût de concassage d'1 rune (batch courant)",
+    {k:"cost", l:"C/u", cls:"narrow", title:"Coût de production d'1 unité (batch courant)",
       get:r=>r._d.cost, fmt:r=>num(r._d.cost)},
-    {k:"cbatch",  l:"C/Batch",  cls:"narrow", title:"Coût total du batch courant (C/u × Batch)",
+    {k:"cbatch", l:"C/Batch", cls:"narrow", title:"Coût total du batch (C/u × Batch) — capital à avancer",
       get:r=>r._d.cost==null||r._d.batchN==null?null:r._d.cost*r._d.batchN,
       fmt:r=>r._d.cost==null||r._d.batchN==null?'<span class="muted">—</span>':num(r._d.cost*r._d.batchN)},
-    {k:"ca",      l:"CA",       cls:"narrow", title:"Chiffre d'affaires : revenu de vente du batch au meilleur lot (vente/u × Batch) — ce que tu encaisses",
+    {k:"ca", l:"CA", cls:"narrow", title:"Chiffre d'affaires : revenu de vente du batch au meilleur lot — ce que tu encaisses",
       get:r=>{ const b=best(r); return b&&r._d.batchN!=null?b.unit*r._d.batchN:null; },
       fmt:r=>{ const b=best(r); return caFmt(b&&r._d.batchN!=null?b.unit*r._d.batchN:null); }},
-    {k:"bbatch",  l:"B×Batch",  cls:"narrow", title:"Bénéfice total du batch au meilleur lot autorisé (règle relevé <3j)",
+    {k:"bbatch", l:"B×Batch", cls:"narrow", title:"Bénéfice total du batch au meilleur lot autorisé (règle relevé <3j)",
       get:r=>{ const b=best(r); return b&&r._d.cost!=null&&r._d.batchN!=null?(b.unit-r._d.cost)*r._d.batchN:null; },
       fmt:r=>{ const b=best(r); return benFmt(b&&r._d.cost!=null&&r._d.batchN!=null?(b.unit-r._d.cost)*r._d.batchN:null); }},
-    {k:"rbatch",  l:"RBatch",   cls:"narrow", title:"Ratio au meilleur lot autorisé (vente/u ÷ coût/u)",
+    {k:"rbatch", l:"RBatch", cls:"narrow", title:"Ratio au meilleur lot autorisé (vente/u ÷ coût/u)",
       get:r=>{ const b=best(r); return b&&r._d.cost?b.unit/r._d.cost:null; },
       fmt:r=>{ const b=best(r); return ratFmt(b&&r._d.cost?b.unit/r._d.cost:null); }},
-    {k:"b10",     l:"B×10",     cls:"narrow", title:"Bénéfice total d'un lot de 10 (vente <3j sinon prix moyen)",
+    {k:"b10", l:"B×10", cls:"narrow", title:"Bénéfice total d'un lot de 10 (vente <3j sinon prix moyen)",
       get:r=>bLot(r,"x10",10), fmt:r=>isSellOn(r.GID,"x10")?benFmt(bLot(r,"x10",10)):off},
-    {k:"r10",     l:"R10",      cls:"narrow", title:"Ratio en vente par 10 (vente/u ÷ coût/u)",
-      get:r=>rTier(r,"x10"), fmt:r=>isSellOn(r.GID,"x10")?ratFmt(rTier(r,"x10")):off},
-    {k:"b100",    l:"B×100",    cls:"narrow", title:"Bénéfice total d'un lot de 100 (vente <3j sinon prix moyen)",
-      get:r=>bLot(r,"x100",100), fmt:r=>isSellOn(r.GID,"x100")?benFmt(bLot(r,"x100",100)):off},
-    {k:"r100",    l:"R100",     cls:"narrow", title:"Ratio en vente par 100 (vente/u ÷ coût/u)",
-      get:r=>rTier(r,"x100"), fmt:r=>isSellOn(r.GID,"x100")?ratFmt(rTier(r,"x100")):off},
-    {k:"rmoyen",  l:"RMoyen",   cls:"narrow", title:"Ratio sur prix moyen marché (référence) = prix moyen/u ÷ coût/u",
+    {k:"r10", l:"R10", cls:"narrow", title:"Ratio en vente par 10", get:r=>rTier(r,"x10"), fmt:r=>isSellOn(r.GID,"x10")?ratFmt(rTier(r,"x10")):off},
+    {k:"b100", l:"B×100", cls:"narrow", title:"Bénéfice total d'un lot de 100", get:r=>bLot(r,"x100",100), fmt:r=>isSellOn(r.GID,"x100")?benFmt(bLot(r,"x100",100)):off},
+    {k:"r100", l:"R100", cls:"narrow", title:"Ratio en vente par 100", get:r=>rTier(r,"x100"), fmt:r=>isSellOn(r.GID,"x100")?ratFmt(rTier(r,"x100")):off},
+    {k:"rmoyen", l:"RMoyen", cls:"narrow", title:"Ratio sur prix moyen marché (référence) = prix moyen/u ÷ coût/u",
       get:r=>{ const it=resIt(r), a=it?avgUnit(it):null; return a&&r._d.cost?a/r._d.cost:null; },
       fmt:r=>{ const it=resIt(r), a=it?avgUnit(it):null; return ratFmt(a&&r._d.cost?a/r._d.cost:null); }},
-  ];
-  // Vue simplifiée : l'essentiel pour décider, en gardant Batch et coûts/bénéf clés.
-  if(!CONC_DETAIL){
-    const ESS = new Set(["fav","Nom","from_nom","vol","fresh","batchN","cost","cbatch","ca","bbatch","rbatch","b10","b100"]);
+  ]);
+  if(!detail){
+    const ESS = new Set([...lead.map(c=>c.k), "vol","fresh","batchN","cost","cbatch","ca","bbatch","rbatch","b10","b100"]);
     return cols.filter(c=>ESS.has(c.k));
   }
   return cols;
+}
+const _favCol = {k:"fav", l:"★", cls:"fav", sort:false, get:r=>0,
+  fmt:r=>`<span class="star ${isFav(r.GID)?'on':''}" data-fav="${r.GID}">★</span>`};
+function concassageCols(real){
+  return sellBatchCols(real, [ _favCol,
+    {k:"Nom", l:"Résultat", cls:"name", title:"Rune obtenue (1 exemplaire)", get:r=>r.Nom, fmt:r=>r.Nom},
+    {k:"from_nom", l:"Ingrédient", cls:"name", title:"Rune de départ (×3)", get:r=>r.from_nom, fmt:r=>r.from_nom},
+  ], CONC_DETAIL);
+}
+function craftCols(real){
+  return sellBatchCols(real, [ _favCol,
+    {k:"Nom", l:"Item", cls:"name", title:"Item à crafter puis revendre", get:r=>r.Nom, fmt:r=>r.Nom},
+    {k:"Type", l:"Type", cls:"type", get:r=>r.Type||"", fmt:r=>r.Type||'<span class="muted">—</span>'},
+    {k:"Niveau", l:"Niv", cls:"narrow", get:r=>r.Niveau, fmt:r=>r.Niveau==null?'<span class="muted">—</span>':r.Niveau},
+  ], CRAFT_DETAIL);
 }
 
 function _renderRunePrices(){
@@ -1489,7 +1589,8 @@ function _renderRunePrices(){
     `<option value="${s}"${s===RUNE_SRC?" selected":""}>${TIER_LABEL[s]}</option>`).join("");
   document.getElementById("rune-price-ctrl").innerHTML =
     `Source : <select id="runesrc">${srcOpts}</select> `+
-    `<input id="runeq" type="search" placeholder="Rechercher…" value="${q.replace(/"/g,"&quot;")}" style="width:160px">`;
+    `<input id="runeq" type="search" placeholder="Rechercher (Entrée)…" value="${q.replace(/"/g,"&quot;")}" style="width:170px">`+
+    `<button class="btn" id="runeqbtn">🔍</button>`;
   if(!rows.length){
     document.getElementById("rune-price-tbl").innerHTML =
       '<div class="empty">Aucune rune dans les données — lancez une capture pour obtenir des prix de runes.</div>';
@@ -1504,7 +1605,9 @@ function _renderRunePrices(){
       `<div class="tablewrap"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
   }
   document.getElementById("runesrc").onchange = e=>{ RUNE_SRC=e.target.value; _renderRunePrices(); };
-  document.getElementById("runeq").oninput = e=>{ RUNE_Q=e.target.value; _renderRunePrices(); };
+  const runeDoQ=()=>{ RUNE_Q=document.getElementById("runeq").value; _renderRunePrices(); };
+  document.getElementById("runeqbtn").onclick=runeDoQ;
+  document.getElementById("runeq").addEventListener("change", runeDoQ);   // Entrée / sortie de champ
   const thead = document.querySelector("#rune-price-tbl thead");
   if(thead) thead.addEventListener("click", e=>{
     const th=e.target.closest("th"); if(!th||th.dataset.sort==="false"||!th.dataset.k) return;
@@ -1558,6 +1661,7 @@ function renderRunes(){
 renderListControls();
 renderHead(); renderRows();
 renderBrisage();
+renderCraft();
 renderAffaires();
 renderArbitrage();
 renderRunes();
