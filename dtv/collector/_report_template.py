@@ -107,6 +107,11 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
               justify-content:center; z-index:50; padding:24px; }
   .modal { background:var(--panel); border:1px solid var(--border); border-radius:10px;
            max-width:760px; width:100%; max-height:88vh; overflow:auto; padding:20px 22px; }
+  /* Mode double : concassage à gauche, graphe à droite, côte à côte */
+  .modal-bg.dual-left { justify-content:flex-start; }
+  .modal-bg.dual-right { justify-content:flex-end; background:transparent; pointer-events:none; }
+  .modal-bg.dual-left .modal, .modal-bg.dual-right .modal { max-width:48vw; }
+  .modal-bg.dual-right .modal { pointer-events:auto; }
   .modal h3 { margin:0 0 2px; font-size:18px; }
   .modal .x { float:right; cursor:pointer; color:var(--muted); font-size:20px; line-height:1; }
   .modal .x:hover { color:var(--text); }
@@ -313,6 +318,25 @@ function refreshSellViews(gid, root){
   if(document.getElementById("conc-tbl") && RD.concassage && RD.concassage.length) _renderRuneConc();
   if(document.getElementById("arb-root")) renderArbitrage();
 }
+// ── Prix de vente avec règle de fraîcheur (relevé HDV < 3 j sinon prix moyen) ─
+const DATA_NOW = (DTV.generated_at ? Date.parse(DTV.generated_at) : Date.now());
+// Prix unitaire d'un tier SI son dernier relevé date de < 3 jours, sinon null.
+function tierFreshUnit(it, src){
+  const s = seriesOf(it, src); if(!s.length) return null;
+  if(DATA_NOW - Date.parse(s[s.length-1][0]) >= 3*DAY) return null;
+  const st = statsOf(s); return st ? st.last/LOTSIZE[src] : null;
+}
+function avgUnit(it){ const st = statsOf(seriesOf(it,"avg")); return st ? st.last : null; }
+// Prix de vente unitaire effectif d'un tier : relevé frais (<3j) sinon prix moyen.
+function effUnit(it, src){ const f = tierFreshUnit(it, src); return f!=null ? f : avgUnit(it); }
+// Meilleur lot de vente autorisé (prix unitaire le + haut = meilleur ratio, coût fixe).
+function bestSell(it, gid){
+  let best=null;
+  ["x1","x10","x100"].forEach(src=>{ if(!isSellOn(gid,src)) return;
+    const u=effUnit(it,src); if(u==null) return;
+    if(best==null || u>best.unit) best={src, unit:u}; });
+  return best;   // {src,unit} ou null
+}
 function renderListControls(){
   const sel = document.getElementById("listSel");
   sel.innerHTML = Object.keys(LISTS).map(n=>{
@@ -489,10 +513,12 @@ function statBlock(it){
   const blocks = ["avg","x1","x10","x100","x1000"].map(src=>{
     const st = statsOf(seriesOf(it,src)); if(!st) return "";
     const div = TIER_DIV[src];
-    // prix actuel coloré + prix unitaire à côté ; en dessous, min/max PAR LOT.
+    // prix actuel coloré + prix unitaire à côté ; en dessous, min/max PAR LOT + Volume V du tier.
     const unit = div>1 ? ` <span class="muted">= ${fmt(st.last/div)}/u</span>` : "";
+    const v = volumeIndex(seriesOf(it,src));
+    const vTag = v==null ? "" : ` · <span title="Volume V de ce tier (0–10)">V ${(+v).toFixed(1)}</span>`;
     return `<div class="stat"><div class="v" style="color:${TIER_COLORS[src]}">${fmt(st.last)}${unit}</div>`+
-           `<div class="l">${TIER_LABEL[src]} · min ${fmt(st.min)} / max ${fmt(st.max)}</div></div>`;
+           `<div class="l">${TIER_LABEL[src]} · min ${fmt(st.min)} / max ${fmt(st.max)}${vTag}</div></div>`;
   }).join("");
   return `<div class="statgrid">${blocks||'<span class="muted">aucune donnée</span>'}</div>`;
 }
@@ -786,7 +812,8 @@ function renderBTable(hostId, allRows, real, defaultSort, colsFn){
     if(star){ const gid=+star.dataset.fav; toggleFav(gid); star.classList.toggle("on",isFav(gid));
       renderListControls(); if(BFAVONLY) _rerender(); return; }
     const tr=e.target.closest("tr"); if(!tr||!tr.dataset.gid) return;
-    openBModal(allRows.find(x=>x.GID==tr.dataset.gid), real);
+    const row=allRows.find(x=>x.GID==tr.dataset.gid);
+    if(row && row.is_concassage) openConcDetail(row); else openBModal(row, real);
   });
 }
 let MODAL_CTX = null;
@@ -863,6 +890,13 @@ function openBModal(r, real){
   const isCon = !!r.is_concassage;
   // Coeff appliqué dans ce contexte de table (réel si tableau réel, sinon théo).
   const mcoeff = real ? r.Coeff_Reel : B.coeff;
+  // Concassage : prix de vente = meilleur lot autorisé (règle relevé <3j), sinon prix moyen.
+  const cResIt = (isCon && r.GID) ? DTV.items.find(it=>it.gid===r.GID) : null;
+  const cBest  = cResIt ? bestSell(cResIt, r.GID) : null;
+  const cSellU = isCon ? (cBest ? cBest.unit : r.Prix_Moyen) : d.rev;
+  const cBenef = isCon ? ((cSellU!=null&&d.cost!=null)?cSellU-d.cost:null) : d.benef;
+  const cRent  = isCon ? ((cSellU!=null&&d.cost)?cSellU/d.cost:null) : d.rent;
+  const cLotLbl= cBest ? cBest.src : 'moyen';
   // Section inférieure : "Runes obtenues" pour brisage, "Résultat" pour concassage.
   let bottomSection;
   if(isCon){
@@ -891,12 +925,12 @@ function openBModal(r, real){
   }
   // Verdict : concassage → acheter 3 simples vs acheter 1 Pa directement.
   let verdict = "";
-  if(d.cost!=null && r.Prix_Moyen!=null){
+  if(d.cost!=null && (isCon ? cSellU!=null : r.Prix_Moyen!=null)){
     if(isCon){
-      const profitable = d.cost < r.Prix_Moyen;
+      const profitable = cSellU > d.cost;
       verdict = `<div class="verdict ${profitable?'craft':'buy'}">${profitable
-        ? `💡 <b>Concasser</b> 3 × ${r.from_nom} (${fmt(d.cost)}) est moins cher qu'acheter 1 × ${r.Nom} directement (${fmt(r.Prix_Moyen)}).`
-        : `🛒 <b>Acheter</b> directement 1 × ${r.Nom} (${fmt(r.Prix_Moyen)}) est moins cher que concasser (${fmt(d.cost)}).`}</div>`;
+        ? `💡 <b>Concasser</b> (coût ${fmt(d.cost)}/u) puis revendre en lot ${cLotLbl} à ${fmt(cSellU)}/u → bénéfice ${benFmt(cBenef)}/u.`
+        : `🛒 <b>Pas rentable</b> : concasser coûte ${fmt(d.cost)}/u pour une revente à ${fmt(cSellU)}/u (lot ${cLotLbl}).`}</div>`;
     } else {
       const buy = r.Prix_Moyen < d.cost;
       verdict = `<div class="verdict ${buy?'buy':'craft'}">${buy
@@ -912,37 +946,55 @@ function openBModal(r, real){
     `<span class="x" id="bmodal-x">✕</span>`+
     `<h3>${r.Nom||("GID "+r.GID)}</h3>`+
     `<div class="sub">${subLine}</div>`+
+    (isCon ? sellLotCtrlHTML(r.GID) : '')+
     `<div class="kv">`+
-      `<div class="b"><div class="v">${num(d.rev)}</div><div class="l">${isCon?'Prix de vente':'Revenu runes / unité'}</div></div>`+
+      `<div class="b"><div class="v">${num(isCon?cSellU:d.rev)}</div><div class="l">${isCon?('Vente / u (lot '+cLotLbl+')'):'Revenu runes / unité'}</div></div>`+
       `<div class="b"><div class="v">${num(d.cost)}</div><div class="l">Coût ${isCon?'concassage':'craft'} / unité</div></div>`+
-      `<div class="b"><div class="v">${num(r.Prix_Moyen)}</div><div class="l">Prix moyen (achat)</div></div>`+
-      `<div class="b"><div class="v">${benFmt(d.benef)}</div><div class="l">Bénéfice / unité</div></div>`+
-      `<div class="b"><div class="v">${d.rent==null?'—':d.rent.toFixed(2)}</div><div class="l">Ratio</div></div>`+
+      `<div class="b"><div class="v">${num(r.Prix_Moyen)}</div><div class="l">Prix moyen (réf.)</div></div>`+
+      `<div class="b"><div class="v">${benFmt(cBenef)}</div><div class="l">Bénéfice / unité</div></div>`+
+      `<div class="b"><div class="v">${cRent==null?'—':cRent.toFixed(2)}</div><div class="l">Ratio</div></div>`+
       (!isCon?`<div class="b"><div class="v">${d.cmin==null?'—':fmt(d.cmin)+'%'}</div><div class="l">Coeff min</div></div>`:'')+
     `</div>`+
     verdict+
     `<div class="kv" style="align-items:center"><span class="muted">Batch :</span> ${batchSelectorHTML()} <span class="muted">${batchN?('= '+fmt(batchN)+' crafts'):''}</span></div>`+
     `<div class="kv">`+
       `<div class="b"><div class="v">${batchN&&d.cost!=null?fmt(d.cost*batchN):'—'}</div><div class="l">Coût TOTAL du batch</div></div>`+
-      `<div class="b"><div class="v">${batchN&&d.benef!=null?benFmt(d.benef*batchN):'—'}</div><div class="l">Bénéfice TOTAL du batch</div></div>`+
-      `<div class="b"><div class="v">${batchN&&d.rev!=null?fmt(d.rev*batchN):'—'}</div><div class="l">${isCon?'Revenu TOTAL du batch':'Revenu TOTAL du batch'}</div></div>`+
+      `<div class="b"><div class="v">${batchN&&cBenef!=null?benFmt(cBenef*batchN):'—'}</div><div class="l">Bénéfice TOTAL du batch</div></div>`+
+      `<div class="b"><div class="v">${batchN&&cSellU!=null?fmt(cSellU*batchN):'—'}</div><div class="l">Revenu TOTAL du batch</div></div>`+
     `</div>`+
     `<h3 class="sec">Recette ${c&&!c.db?'<span class="muted">(prix moyen, sans optim. tiers)</span>':''}</h3>`+
     `<table><thead><tr><th class="name">Ingrédient</th><th>Qté/craft</th><th>Besoin</th><th>Tier</th><th>PU</th><th>Coût ligne</th></tr></thead><tbody>${recipeRows}</tbody></table>`+
     bottomSection;
   box.querySelector(".batchsel").addEventListener("click", e=>{
     const btn=e.target.closest("button"); if(!btn) return;
-    BATCH=btn.dataset.b; renderBrisage(); openBModal(r, real);
+    BATCH=btn.dataset.b; renderBrisage(); if(document.getElementById("conc-tbl")) _renderRuneConc(); openBModal(r, real);
   });
-  // Clic sur un ingrédient → ouvre le graphe de prix dans la popup modale.
+  // Cases de lots de vente (concassage) : re-render modale + tables dépendantes.
+  box.querySelectorAll("input[data-sell]").forEach(cb=>cb.onchange=()=>{
+    toggleSell(+cb.dataset.gid, cb.dataset.sell);
+    if(document.getElementById("conc-tbl")) _renderRuneConc();
+    if(document.getElementById("arb-root")) renderArbitrage();
+    openBModal(r, real);
+  });
+  // Clic sur un ingrédient → ouvre/maj le graphe de prix (popup de droite si mode double).
   box.addEventListener("click", e=>{
     const tr=e.target.closest("tr[data-ing]"); if(!tr) return;
-    openPriceModal(+tr.dataset.ing);
+    const dual = document.getElementById("bmodal").classList.contains("dual-left");
+    openPriceModal(+tr.dataset.ing, dual);
   });
   document.getElementById("bmodal-x").onclick = closeBModal;
   document.getElementById("bmodal").style.display = "flex";
 }
-function closeBModal(){ document.getElementById("bmodal").style.display="none"; MODAL_CTX=null; }
+// Ouvre le concassage à gauche ET le graphe du résultat à droite (côte à côte).
+function openConcDetail(r){
+  openBModal(r, false);
+  document.getElementById("bmodal").classList.add("dual-left");
+  if(r.GID) openPriceModal(r.GID, true);
+}
+function closeBModal(){
+  const bm=document.getElementById("bmodal"); bm.style.display="none"; bm.classList.remove("dual-left"); MODAL_CTX=null;
+  const pm=document.getElementById("pmodal"); if(pm.classList.contains("dual-right")) closePriceModal();
+}
 document.getElementById("bmodal").addEventListener("click", e=>{ if(e.target.id==="bmodal") closeBModal(); });
 document.addEventListener("keydown", e=>{ if(e.key==="Escape"){ closeBModal(); if(typeof closePriceModal==="function") closePriceModal(); } });
 
@@ -1061,14 +1113,16 @@ function renderAffaires(){
 }
 // Popup graphe de prix d'un item (réutilise showDetail : graphe + Volume V +
 // crafts qui utilisent la ressource).
-function openPriceModal(gid){
+function openPriceModal(gid, dual){
   const box=document.getElementById("pmodal-box");
   box.innerHTML = `<span class="x" id="pmodal-x">✕</span><div class="pdetail"></div>`;
   showDetail(gid, box.querySelector(".pdetail"));
   document.getElementById("pmodal-x").onclick = closePriceModal;
-  document.getElementById("pmodal").style.display = "flex";
+  const pm=document.getElementById("pmodal");
+  pm.classList.toggle("dual-right", !!dual);   // mode côte à côte avec le concassage
+  pm.style.display = "flex";
 }
-function closePriceModal(){ document.getElementById("pmodal").style.display="none"; }
+function closePriceModal(){ const pm=document.getElementById("pmodal"); pm.style.display="none"; pm.classList.remove("dual-right"); }
 document.getElementById("pmodal").addEventListener("click", e=>{ if(e.target.id==="pmodal") closePriceModal(); });
 
 // ── Onglet « Achat / Vente » (arbitrage entre tailles de lot) ──────────────
@@ -1077,19 +1131,28 @@ document.getElementById("pmodal").addEventListener("click", e=>{ if(e.target.id=
 // revendre 1 lot de 10 à 600. Inversement gros lot pas cher → petit lot cher.
 let ARB_SORT={k:"ecart",dir:-1}, ARB_MINV=0, ARB_Q="";
 function arbRow(it){
+  // Tiers utilisables : seulement ceux dont le relevé date de < 3 jours
+  // (évite de comparer des prix de lots relevés à des dates différentes).
   const t={};
-  ["x1","x10","x100","x1000"].forEach(src=>{ const st=statsOf(seriesOf(it,src));
-    if(st && st.last>0) t[src]={lot:st.last, unit:st.last/LOTSIZE[src], size:LOTSIZE[src]}; });
-  // Achat : tier au prix unitaire mini (tous tiers, lots inclus).
-  let buy=null; Object.keys(t).forEach(s=>{ if(buy==null||t[s].unit<t[buy].unit) buy=s; });
-  // Vente : tier au prix unitaire maxi parmi les lots autorisés à la vente.
-  let sell=null; ["x1","x10","x100"].forEach(s=>{ if(t[s]&&isSellOn(it.gid,s)){ if(sell==null||t[s].unit>t[sell].unit) sell=s; } });
-  if(buy==null||sell==null) return null;
-  const ecartU = t[sell].unit - t[buy].unit;
-  if(ecartU<=0) return null;
-  return {gid:it.gid, nom:it.nom, type:it.type||"", vol:volumeIndex(seriesOf(it,"avg")),
-          buy, sell, t, ecartU, ecartPct:t[buy].unit>0?ecartU/t[buy].unit*100:null,
-          benefLot:t[sell].lot - t[sell].size*t[buy].unit, capital:t[sell].size*t[buy].unit};
+  ["x1","x10","x100","x1000"].forEach(src=>{ const u=tierFreshUnit(it,src);
+    if(u!=null){ const st=statsOf(seriesOf(it,src)); t[src]={lot:st.last, unit:u, size:LOTSIZE[src]}; } });
+  // On ne passe que d'un tier au tier adjacent (1↔10, 10↔100, 100↔1000) :
+  // acheter 100 unités en lots de 1 pour revendre par 100 n'est pas réaliste.
+  const pairs=[["x1","x10"],["x10","x100"],["x100","x1000"]];
+  let best=null;
+  for(const [a,b] of pairs){
+    if(!t[a]||!t[b]) continue;
+    for(const [buy,sell] of [[a,b],[b,a]]){
+      if(sell==="x1000") continue;                 // on ne vend pas par 1000
+      if(!isSellOn(it.gid, sell)) continue;
+      const ecartU=t[sell].unit-t[buy].unit; if(ecartU<=0) continue;
+      const cand={buy, sell, ecartU, ecartPct:t[buy].unit>0?ecartU/t[buy].unit*100:null,
+                  benefLot:t[sell].lot - t[sell].size*t[buy].unit, capital:t[sell].size*t[buy].unit};
+      if(best==null || (cand.ecartPct||0)>(best.ecartPct||0)) best=cand;
+    }
+  }
+  if(!best) return null;
+  return {gid:it.gid, nom:it.nom, type:it.type||"", vol:volumeIndex(seriesOf(it,"avg")), t, ...best};
 }
 function renderArbitrage(){
   const root=document.getElementById("arb-root");
@@ -1122,7 +1185,7 @@ function renderArbitrage(){
     : `<tr><td colspan="${cols.length}"><div class="empty">Aucune opportunité (nécessite ≥2 tiers de prix HDV par item).</div></td></tr>`;
   root.innerHTML =
     `<div class="notice"><span><b>${rows.length}</b> opportunités d'arbitrage de lot</span>`+
-    `<span class="muted">Acheter au tier le moins cher, revendre via un lot autorisé plus cher. Les lots de vente se règlent en cliquant un item (cases x1/x10/x100).</span></div>`+
+    `<span class="muted">Achat → vente entre tiers adjacents uniquement (1↔10↔100↔1000), sur relevés &lt; 3 j. Les lots de vente se règlent en cliquant un item (cases x1/x10/x100).</span></div>`+
     `<div class="controls">Volume min <input id="arbV" type="number" min="0" max="10" step="0.5" value="${ARB_MINV}" style="width:60px">`+
     `<input id="arbQ" type="search" placeholder="Rechercher…" value="${q.replace(/"/g,"&quot;")}" style="width:160px"></div>`+
     `<div class="tablewrap"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
@@ -1161,7 +1224,7 @@ function _renderRuneConc(){
     });
   }
   if(RD.concassage && RD.concassage.length){
-    renderBTable("conc-tbl", RD.concassage, false, {k:"benef",dir:-1}, concassageCols);
+    renderBTable("conc-tbl", RD.concassage, false, {k:"bbatch",dir:-1}, concassageCols);
   } else {
     document.getElementById("conc-tbl").innerHTML =
       '<div class="empty">Pas de données de concassage (nécessite des relevés HDV de runes).</div>';
@@ -1170,12 +1233,15 @@ function _renderRuneConc(){
 
 function concassageCols(real){
   function resIt(r){ return r.GID ? DTV.items.find(it=>it.gid===r.GID) : null; }
-  function hdvU(r, src){ const it=resIt(r); if(!it) return null;
-    const st=statsOf(seriesOf(it,src)); return st ? st.last/TIER_DIV[src] : null; }
-  // Bénéf/u en vendant via le lot `src` ; null si lot non autorisé pour cette rune.
-  function bU(r, src){ if(!isSellOn(r.GID,src)) return null;
-    const u=hdvU(r,src), c=r._d.cost; return u==null||c==null?null:u-c; }
+  // Prix de vente unitaire d'un tier (règle 3j) ; null si lot non autorisé.
+  function sellU(r, src){ if(!isSellOn(r.GID,src)) return null;
+    const it=resIt(r); return it?effUnit(it,src):null; }
+  function best(r){ const it=resIt(r); return it?bestSell(it, r.GID):null; }   // {src,unit}
   const off = '<span class="muted" title="Lot désactivé pour cette rune (clic la rune → cases vente)">·</span>';
+  const ratFmt = v=>v==null?'<span class="muted">—</span>':v.toFixed(2);
+  // Bénéfice total d'un lot vendu (taille `n`) via le tier `src` : (vente/u − coût)×n.
+  function bLot(r, src, n){ const u=sellU(r,src), c=r._d.cost; return u==null||c==null?null:(u-c)*n; }
+  function rTier(r, src){ const u=sellU(r,src), c=r._d.cost; return u==null||!c?null:u/c; }
   return [
     {k:"fav", l:"★", cls:"fav", sort:false, get:r=>0,
       fmt:r=>`<span class="star ${isFav(r.GID)?'on':''}" data-fav="${r.GID}">★</span>`},
@@ -1189,27 +1255,26 @@ function concassageCols(real){
       get:r=>r._d.batchN, fmt:r=>r._d.batchN==null?'<span class="muted">—</span>':fmt(r._d.batchN)},
     {k:"cost",    l:"C/u",      cls:"narrow", title:"Coût de concassage d'1 rune (batch courant)",
       get:r=>r._d.cost, fmt:r=>num(r._d.cost)},
-    {k:"benef",   l:"B×1",      cls:"narrow", title:"Bénéfice à l'unité (HDV ×1, ou prix moyen si indispo). Désactivable par rune.",
-      get:r=>{ if(!isSellOn(r.GID,"x1")) return null; const u=hdvU(r,"x1"); return u==null?r._d.benef:u-(r._d.cost||0); },
-      fmt:r=>{ if(!isSellOn(r.GID,"x1")) return off; const u=hdvU(r,"x1"); return benFmt(u==null?r._d.benef:u-(r._d.cost||0)); }},
-    {k:"ctot10",  l:"C×10",     cls:"narrow", title:"Capital à investir pour 10 runes (coût×10)",
-      get:r=>!isSellOn(r.GID,"x10")||r._d.cost==null?null:r._d.cost*10,
-      fmt:r=>!isSellOn(r.GID,"x10")?off:r._d.cost==null?'<span class="muted">—</span>':num(r._d.cost*10)},
-    {k:"bu10",    l:"B/u×10",   cls:"narrow", title:"Bénéfice par rune vendue en lot de 10",
-      get:r=>bU(r,"x10"), fmt:r=>isSellOn(r.GID,"x10")?benFmt(bU(r,"x10")):off},
-    {k:"btot10",  l:"B×10",     cls:"narrow", title:"Bénéfice total d'un lot de 10 (HDV×10 − coût×10)",
-      get:r=>{ const b=bU(r,"x10"); return b==null?null:b*10; },
-      fmt:r=>isSellOn(r.GID,"x10")?benFmt((b=>b==null?null:b*10)(bU(r,"x10"))):off},
-    {k:"ctot100", l:"C×100",    cls:"narrow", title:"Capital à investir pour 100 runes (coût×100)",
-      get:r=>!isSellOn(r.GID,"x100")||r._d.cost==null?null:r._d.cost*100,
-      fmt:r=>!isSellOn(r.GID,"x100")?off:r._d.cost==null?'<span class="muted">—</span>':num(r._d.cost*100)},
-    {k:"bu100",   l:"B/u×100",  cls:"narrow", title:"Bénéfice par rune vendue en lot de 100",
-      get:r=>bU(r,"x100"), fmt:r=>isSellOn(r.GID,"x100")?benFmt(bU(r,"x100")):off},
-    {k:"btot100", l:"B×100",    cls:"narrow", title:"Bénéfice total d'un lot de 100 (HDV×100 − coût×100)",
-      get:r=>{ const b=bU(r,"x100"); return b==null?null:b*100; },
-      fmt:r=>isSellOn(r.GID,"x100")?benFmt((b=>b==null?null:b*100)(bU(r,"x100"))):off},
-    {k:"rent",    l:"Ratio",    cls:"narrow", title:"Ratio prix moyen / coût (>1 = rentable)",
-      get:r=>r._d.rent, fmt:r=>r._d.rent==null?'<span class="muted">—</span>':r._d.rent.toFixed(2)},
+    {k:"cbatch",  l:"C/Batch",  cls:"narrow", title:"Coût total du batch courant (C/u × Batch)",
+      get:r=>r._d.cost==null||r._d.batchN==null?null:r._d.cost*r._d.batchN,
+      fmt:r=>r._d.cost==null||r._d.batchN==null?'<span class="muted">—</span>':num(r._d.cost*r._d.batchN)},
+    {k:"bbatch",  l:"B×Batch",  cls:"narrow", title:"Bénéfice total du batch au meilleur lot autorisé (règle relevé <3j)",
+      get:r=>{ const b=best(r); return b&&r._d.cost!=null&&r._d.batchN!=null?(b.unit-r._d.cost)*r._d.batchN:null; },
+      fmt:r=>{ const b=best(r); return benFmt(b&&r._d.cost!=null&&r._d.batchN!=null?(b.unit-r._d.cost)*r._d.batchN:null); }},
+    {k:"rbatch",  l:"RBatch",   cls:"narrow", title:"Ratio au meilleur lot autorisé (vente/u ÷ coût/u)",
+      get:r=>{ const b=best(r); return b&&r._d.cost?b.unit/r._d.cost:null; },
+      fmt:r=>{ const b=best(r); return ratFmt(b&&r._d.cost?b.unit/r._d.cost:null); }},
+    {k:"b10",     l:"B×10",     cls:"narrow", title:"Bénéfice total d'un lot de 10 (vente <3j sinon prix moyen)",
+      get:r=>bLot(r,"x10",10), fmt:r=>isSellOn(r.GID,"x10")?benFmt(bLot(r,"x10",10)):off},
+    {k:"r10",     l:"R10",      cls:"narrow", title:"Ratio en vente par 10 (vente/u ÷ coût/u)",
+      get:r=>rTier(r,"x10"), fmt:r=>isSellOn(r.GID,"x10")?ratFmt(rTier(r,"x10")):off},
+    {k:"b100",    l:"B×100",    cls:"narrow", title:"Bénéfice total d'un lot de 100 (vente <3j sinon prix moyen)",
+      get:r=>bLot(r,"x100",100), fmt:r=>isSellOn(r.GID,"x100")?benFmt(bLot(r,"x100",100)):off},
+    {k:"r100",    l:"R100",     cls:"narrow", title:"Ratio en vente par 100 (vente/u ÷ coût/u)",
+      get:r=>rTier(r,"x100"), fmt:r=>isSellOn(r.GID,"x100")?ratFmt(rTier(r,"x100")):off},
+    {k:"rmoyen",  l:"RMoyen",   cls:"narrow", title:"Ratio sur prix moyen marché (référence) = prix moyen/u ÷ coût/u",
+      get:r=>{ const it=resIt(r), a=it?avgUnit(it):null; return a&&r._d.cost?a/r._d.cost:null; },
+      fmt:r=>{ const it=resIt(r), a=it?avgUnit(it):null; return ratFmt(a&&r._d.cost?a/r._d.cost:null); }},
   ];
 }
 
@@ -1264,7 +1329,8 @@ function _renderRunePrices(){
     const star=e.target.closest(".star");
     if(star){ const gid=+star.dataset.fav; toggleFav(gid); star.classList.toggle("on",isFav(gid)); renderListControls(); return; }
     const tr=e.target.closest("tr"); if(!tr||!tr.dataset.gid) return;
-    openPriceModal(+tr.dataset.gid);
+    // Graphe à droite du tableau (comme « Prix dans le temps »), pas en popup.
+    showDetail(+tr.dataset.gid, document.getElementById("rune-detail"));
   });
 }
 
@@ -1280,7 +1346,10 @@ function renderRunes(){
   root.innerHTML =
     `<div class="controls" id="rune-price-ctrl"></div>`+
     `<h3 class="sec">💎 Prix des runes ${liveTag}</h3>`+
-    `<div id="rune-price-tbl"></div>`+
+    `<div class="layout with-detail">`+
+      `<div id="rune-price-tbl"></div>`+
+      `<div id="rune-detail" class="detail"><div class="empty">Clique une rune pour voir son graphe.</div></div>`+
+    `</div>`+
     `<h3 class="sec">🔨 Concassage <span class="muted">— 3 × tier inférieur → 1 × tier supérieur — <small>clique une ligne pour le détail</small></span></h3>`+
     `<div class="controls" id="rune-conc-ctrl" style="margin-bottom:4px"></div>`+
     `<div id="conc-tbl"></div>`;
