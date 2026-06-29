@@ -103,6 +103,12 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .tag.ok { color:var(--accent2); border-color:#2ea04366; }
   .tag.warn { color:var(--warn); border-color:#d2992266; }
   td.good { color:var(--accent2); } td.bad { color:var(--bad); }
+  /* Coloration rentabilité des lignes (triage visuel) */
+  tr.prof-pos { background:#2ea04314; } tr.prof-pos:hover { background:#2ea04322; }
+  tr.prof-neg { background:#f8514910; } tr.prof-neg:hover { background:#f8514920; }
+  .help { background:var(--panel2); border:1px solid var(--border); border-left:3px solid var(--accent);
+          border-radius:6px; padding:8px 12px; margin:0 0 12px; font-size:12.5px; color:var(--muted); }
+  .help b { color:var(--text); }
   .modal-bg { position:fixed; inset:0; background:#000a; display:flex; align-items:center;
               justify-content:center; z-index:50; padding:24px; }
   .modal { background:var(--panel); border:1px solid var(--border); border-radius:10px;
@@ -811,8 +817,17 @@ function renderBTable(hostId, allRows, real, defaultSort, colsFn){
     const tt=c.title?` title="${c.title}"`:"";
     return `<th class="${c.cls||''}"${tt} data-k="${c.k}" data-sort="${c.sort!==false}">${c.l} ${arr}</th>`;
   }).join("");
-  const body = sorted.map(r=>`<tr data-gid="${r.GID}" data-real="${real?1:0}">`+
-    cols.map(c=>`<td class="${c.cls||''}">${c.fmt(r)}</td>`).join("")+"</tr>").join("");
+  // Coloration rentabilité : concassage = meilleur lot autorisé, brisage = bénéf courant.
+  const profOf = r=>{
+    if(r.is_concassage){ const it=DTV.items.find(x=>x.gid===r.GID), b=it?bestSell(it,r.GID):null;
+      return (b&&r._d.cost!=null)?b.unit-r._d.cost:null; }
+    return r._d.benef;
+  };
+  const body = sorted.map(r=>{
+    const p=profOf(r), pc=p==null?'':(p>0?'prof-pos':p<0?'prof-neg':'');
+    return `<tr class="${pc}" data-gid="${r.GID}" data-real="${real?1:0}">`+
+      cols.map(c=>`<td class="${c.cls||''}">${c.fmt(r)}</td>`).join("")+"</tr>";
+  }).join("");
   document.getElementById(hostId).innerHTML =
     `<div class="tablewrap"><table><thead><tr>${head}</tr></thead><tbody>${body||`<tr><td>—</td></tr>`}</tbody></table></div>`;
   const _rerender = ()=>renderBTable(hostId, allRows, real, defaultSort, customCols?colsFn:undefined);
@@ -1220,8 +1235,8 @@ function renderArbitrage(){
   const body=rows.length ? rows.map(r=>`<tr data-gid="${r.gid}">`+cols.map(c=>`<td class="${c.cls||''}">${c.fmt(r)}</td>`).join("")+"</tr>").join("")
     : `<tr><td colspan="${cols.length}"><div class="empty">Aucune opportunité (nécessite ≥2 tiers de prix HDV par item).</div></td></tr>`;
   root.innerHTML =
-    `<div class="notice"><span><b>${rows.length}</b> opportunités d'arbitrage de lot</span>`+
-    `<span class="muted">Achat → vente entre tiers adjacents uniquement (1↔10↔100↔1000), sur relevés &lt; 3 j. Les lots de vente se règlent en cliquant un item (cases x1/x10/x100).</span></div>`+
+    `<div class="help">💱 <b>Achat / Vente.</b> Acheter un item à un tier de lot et le revendre au tier <b>adjacent</b> plus cher à l'unité (ex : acheter par 1 à 25/u, revendre par 10 à 60/u). `+
+    `<b>${rows.length}</b> opportunités, sur relevés &lt; 3 j uniquement (pas de faux écart). <b>Bénéf/lot</b> = gain net d'une vente · <b>Capital</b> = mise à avancer. Clique un item pour régler ses lots de vente.</div>`+
     `<div class="controls">Volume min <input id="arbV" type="number" min="0" max="10" step="0.5" value="${ARB_MINV}" style="width:60px">`+
     `<input id="arbQ" type="search" placeholder="Rechercher…" value="${q.replace(/"/g,"&quot;")}" style="width:160px"></div>`+
     `<div class="tablewrap"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
@@ -1248,16 +1263,19 @@ const _CONC_ING_MAP = (()=>{ const m={};
 
 let _RUNE_NOM_SET = null, RUNE_SRC = "avg", RUNE_Q = "";
 let RUNE_SORT = {k:"nom", dir:1};
+let CONC_DETAIL = false;   // false = vue essentielle, true = toutes les colonnes
 
 function _renderRuneConc(){
   const ctrl = document.getElementById("rune-conc-ctrl");
   if(ctrl){
-    ctrl.innerHTML = `<span class="muted">Batch :</span> ${batchSelectorHTML()}`;
+    ctrl.innerHTML = `<span class="muted">Batch :</span> ${batchSelectorHTML()} `+
+      `<button class="btn" id="concDetail">${CONC_DETAIL?'Vue simple':'Toutes les colonnes'}</button>`;
     ctrl.querySelector(".batchsel").addEventListener("click", e=>{
       const btn=e.target.closest("button"); if(!btn) return;
       BATCH=btn.dataset.b; _renderRuneConc();
       if(MODAL_CTX && MODAL_CTX.r.is_concassage) openBModal(MODAL_CTX.r, false);
     });
+    ctrl.querySelector("#concDetail").addEventListener("click", ()=>{ CONC_DETAIL=!CONC_DETAIL; _renderRuneConc(); });
   }
   if(RD.concassage && RD.concassage.length){
     renderBTable("conc-tbl", RD.concassage, false, {k:"bbatch",dir:-1}, concassageCols);
@@ -1278,7 +1296,7 @@ function concassageCols(real){
   // Bénéfice total d'un lot vendu (taille `n`) via le tier `src` : (vente/u − coût)×n.
   function bLot(r, src, n){ const u=sellU(r,src), c=r._d.cost; return u==null||c==null?null:(u-c)*n; }
   function rTier(r, src){ const u=sellU(r,src), c=r._d.cost; return u==null||!c?null:u/c; }
-  return [
+  const cols = [
     {k:"fav", l:"★", cls:"fav", sort:false, get:r=>0,
       fmt:r=>`<span class="star ${isFav(r.GID)?'on':''}" data-fav="${r.GID}">★</span>`},
     {k:"Nom",      l:"Résultat",  cls:"name",   title:"Rune obtenue (1 exemplaire)", get:r=>r.Nom, fmt:r=>r.Nom},
@@ -1315,6 +1333,12 @@ function concassageCols(real){
       get:r=>{ const it=resIt(r), a=it?avgUnit(it):null; return a&&r._d.cost?a/r._d.cost:null; },
       fmt:r=>{ const it=resIt(r), a=it?avgUnit(it):null; return ratFmt(a&&r._d.cost?a/r._d.cost:null); }},
   ];
+  // Vue simplifiée : on ne garde que l'essentiel pour décider d'un coup d'œil.
+  if(!CONC_DETAIL){
+    const ESS = new Set(["fav","Nom","from_nom","vol","fresh","cost","bbatch","rbatch"]);
+    return cols.filter(c=>ESS.has(c.k));
+  }
+  return cols;
 }
 
 function _renderRunePrices(){
@@ -1383,13 +1407,17 @@ function renderRunes(){
     ? '<span style="color:var(--accent2)">● prix HDV</span>'
     : '<span class="muted">● prix exemple</span>';
   root.innerHTML =
+    `<div class="help">🔮 <b>Runes.</b> En haut : le prix de chaque rune dans le temps (clique une ligne → graphe à droite). `+
+    `En bas : le <b>concassage</b> — transformer 3 runes d'un tier en 1 du tier supérieur. `+
+    `Une ligne <b style="color:var(--accent2)">verte</b> = rentable (RBatch &gt; 1). Règle le <b>Batch</b> (taille de production) et les <b>lots de vente</b> réalistes en cliquant une rune. `+
+    `<b>« Toutes les colonnes »</b> déplie le détail par lot (×10/×100).</div>`+
     `<div class="controls" id="rune-price-ctrl"></div>`+
     `<h3 class="sec">💎 Prix des runes ${liveTag}</h3>`+
     `<div class="layout with-detail">`+
       `<div id="rune-price-tbl"></div>`+
       `<div id="rune-detail" class="detail"><div class="empty">Clique une rune pour voir son graphe.</div></div>`+
     `</div>`+
-    `<h3 class="sec">🔨 Concassage <span class="muted">— 3 × tier inférieur → 1 × tier supérieur — <small>clique une ligne pour le détail</small></span></h3>`+
+    `<h3 class="sec">🔨 Concassage <span class="muted">— 3 × tier inférieur → 1 × tier supérieur — <small>clique une ligne : concassage à gauche + graphe à droite</small></span></h3>`+
     `<div class="controls" id="rune-conc-ctrl" style="margin-bottom:4px"></div>`+
     `<div id="conc-tbl"></div>`;
   _renderRunePrices();
