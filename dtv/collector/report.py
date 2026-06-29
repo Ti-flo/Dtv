@@ -296,81 +296,145 @@ def build_brisage_data(conn: sqlite3.Connection, *, coeff: float = 100.0) -> dic
 
 def build_rune_data(conn: sqlite3.Connection) -> dict:
     """
-    Données de l'onglet Runes : prix par tier + rentabilité du concassage.
+    Données de l'onglet Runes.
 
-    Clés rune_gids.json supportées :
-      code        → GID de la rune simple (ex. "ag" → GID de Rune Age)
-      code_pa     → GID de la rune Pa (ex. "ag_pa" → GID de Rune Pa Age)
-      code_ra     → GID de la rune Ra (ex. "ag_ra" → GID de Rune Ra Age)
-    Les tiers sans GID sont estimés par mult_base × prix_simple (marqués live=False).
+    - catalog  : 43 runes avec tiers enrichis ; GIDs résolus par nom depuis
+                 avg_prices (pas besoin de rune_gids.json par tier).
+    - concassage : rows BrisageRow-compatible pour renderBTable/openBModal.
+                   Modélise 3×tier_inf → 1×tier_sup comme un craft_plan.
     """
-    rg_path = config.rune_gids_path()
-    code2gid: dict = {}
-    if rg_path.exists():
+    # ── GIDs des runes depuis la base (matching par nom normalisé) ──────────
+    rune_tier_noms: dict[str, tuple] = {}
+    for code, rune in br.RUNES.items():
+        for t in rune["tiers"]:
+            rune_tier_noms[br.normalize_name(t["nom"])] = (code, t["tier"], t["mult_base"])
+
+    name_to_gid: dict[str, int] = {}
+    try:
+        for row in conn.execute(
+            "SELECT DISTINCT gid, nom FROM avg_prices WHERE nom IS NOT NULL"
+        ).fetchall():
+            norm = br.normalize_name(row["nom"])
+            if norm in rune_tier_noms:
+                name_to_gid[norm] = row["gid"]
+    except Exception:
+        pass
+
+    # Prix unitaires HDV par tier (7 derniers jours) pour les runes trouvées.
+    ing_tier_prices: dict[str, dict] = {}
+    if name_to_gid:
         try:
-            code2gid = json.loads(rg_path.read_text(encoding="utf-8"))
+            tp = store.tier_prices_for_gids(conn, list(set(name_to_gid.values())), days=7)
+            ing_tier_prices = {nom: tp[gid]
+                               for nom, gid in name_to_gid.items() if gid in tp}
         except Exception:
             pass
 
     item_prices = _latest_avg_prices(conn)
 
-    def _lookup(key: str):
-        gid = code2gid.get(key)
-        if gid is not None:
-            p = item_prices.get(int(gid))
-            if p:
-                return p, int(gid)
-        return None, None
-
-    result: dict = {}
-    live_count = 0
-
+    # ── Catalogue : une entrée par rune, tiers enrichis ─────────────────────
+    catalog: dict = {}
     for code, rune in br.RUNES.items():
-        tiers_out = []
+        tiers_out: list[dict] = []
         simple_price: float | None = None
 
         for t in rune["tiers"]:
-            tier_name = t["tier"]
-            # "simple" et "ga" utilisent le code direct, "pa" → code_pa, "ra" → code_ra
-            key = code if tier_name in ("simple", "ga") else f"{code}_{tier_name}"
-            prix, gid = _lookup(key)
-            live = prix is not None
+            norm = br.normalize_name(t["nom"])
+            gid = name_to_gid.get(norm)
+            tiers_hdv = ing_tier_prices.get(norm)
 
-            if not live:
-                # Repli : prix_exemple pour simple, simple × mult pour pa/ra
-                if tier_name in ("simple", "ga"):
-                    prix = rune.get("prix_exemple")
-                elif simple_price is not None:
-                    prix = round(simple_price * t["mult_base"])
+            if tiers_hdv:
+                prix = craft.best_unit_price(tiers_hdv)
+                live = prix is not None
+            elif gid and gid in item_prices:
+                prix = item_prices[gid]
+                live = True
+            elif t["tier"] in ("simple", "ga"):
+                prix = rune.get("prix_exemple")
+                live = False
+            elif simple_price is not None:
+                prix = round(simple_price * t["mult_base"])
+                live = False
+            else:
+                prix, live = None, False
 
-            if tier_name in ("simple", "ga") and prix is not None:
+            if t["tier"] in ("simple", "ga") and prix is not None:
                 simple_price = prix
 
-            if live:
-                live_count += 1
-
             tiers_out.append({
-                "tier": tier_name,
-                "nom": t["nom"],
-                "mult": t["mult_base"],
-                "gid": gid,
-                "prix": prix,
-                "live": live,
+                "tier": t["tier"], "nom": t["nom"], "mult": t["mult_base"],
+                "gid": gid, "prix": prix, "live": live,
             })
 
-        result[code] = {
-            "code": code,
-            "nom": rune["nom"],
-            "display": rune["display"],
+        catalog[code] = {
+            "code": code, "nom": rune["nom"], "display": rune["display"],
             "nom_rune": rune.get("nom_rune", rune["display"]),
-            "poids": rune["poids"],
-            "special": rune.get("special", False),
+            "poids": rune["poids"], "special": rune.get("special", False),
             "concassable": rune.get("concassable", False),
             "giant_only": rune.get("giant_only", False),
             "tiers": tiers_out,
         }
 
-    return {"runes": result, "live_prices": live_count > 0}
+    # ── Concassage : rows BrisageRow-like (3×inf → 1×sup) ───────────────────
+    conc_rows: list[dict] = []
+    for code, rune_data in catalog.items():
+        tiers = rune_data["tiers"]
+        for i in range(len(tiers) - 1):
+            from_t, to_t = tiers[i], tiers[i + 1]
+            from_norm = br.normalize_name(from_t["nom"])
+            to_norm   = br.normalize_name(to_t["nom"])
+
+            recipe_items = [(3, from_norm)]
+            ing_p = {}
+            if from_norm in ing_tier_prices:
+                ing_p[from_norm] = ing_tier_prices[from_norm]
+
+            pa = craft.craft_plan(recipe_items, ing_p, craft_alt={}) if ing_p else None
+            cpc: dict = {"auto": round(pa["cost_per_craft"], 2) if pa else None}
+            for nb in _CRAFT_BATCHES:
+                pl = (craft.craft_plan(recipe_items, ing_p, n_crafts=nb, craft_alt={})
+                      if ing_p else None)
+                cpc[str(nb)] = round(pl["cost_per_craft"], 2) if pl else None
+
+            if not ing_p:
+                # Repli flat : avgprice × 3
+                from_gid = from_t.get("gid")
+                flat_u = item_prices.get(from_gid) if from_gid else from_t.get("prix")
+                flat = round(3 * flat_u, 2) if flat_u else None
+                cpc = {k: flat for k in ("auto", "1", "10", "100", "1000")}
+
+            to_gid    = to_t.get("gid")
+            prix_vente = (item_prices.get(to_gid) if to_gid else None) or to_t.get("prix")
+            cout       = cpc.get("auto")
+            benef      = round(prix_vente - cout, 2) if (prix_vente and cout) else None
+            rent       = round(prix_vente / cout, 4) if (prix_vente and cout and cout > 0) else None
+
+            recipe = [{
+                "nom": from_t["nom"], "qty": 3,
+                "tiers": ing_tier_prices.get(from_norm), "craft_unit": None,
+            }]
+            conc_rows.append({
+                "GID": to_gid, "Nom": to_t["nom"], "Type": "Rune", "Niveau": None,
+                "Code": code,
+                "from_nom": from_t["nom"], "from_tier": from_t["tier"],
+                "to_tier": to_t["tier"],
+                # Champs BrisageRow (Revenu = prix de vente du résultat)
+                "Revenu_theo": prix_vente, "Revenu_reel": None,
+                "Cout_HDV": cout, "Base_coeff100": 0,  # base=0 → cmin=null
+                "Prix_Moyen": prix_vente,
+                "Coeff_Reel": None, "Coeff_Min": None, "Craft_Manquants": None,
+                "craft": {"recipe": recipe, "cpc": cpc,
+                          "n_auto": pa["n_crafts"] if pa else None, "db": bool(ing_p)},
+                "runes_detail": [], "Runes": None,
+                "is_concassage": True,
+            })
+
+    live_count = sum(1 for r in catalog.values() for t in r["tiers"] if t["live"])
+    return {
+        "runes": catalog,
+        "concassage": conc_rows,
+        "live_prices": live_count > 0,
+    }
 
 
 def build_report_data(conn: sqlite3.Connection) -> dict:

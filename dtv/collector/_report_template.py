@@ -692,12 +692,15 @@ function brisageCols(real){
   return cols;
 }
 const BSORT = {};
-function renderBTable(hostId, allRows, real, defaultSort){
+// colsFn optionnel : si fourni, remplace brisageCols (et désactive RUNETARGET filter).
+function renderBTable(hostId, allRows, real, defaultSort, colsFn){
+  const customCols = colsFn != null;
+  colsFn = colsFn || brisageCols;
   let rows = allRows;
   if(BFAVONLY) rows = rows.filter(r=>isFav(r.GID));
-  if(RUNETARGET) rows = rows.filter(r=>runeQty(r,RUNETARGET)!=null);
+  if(RUNETARGET && !customCols) rows = rows.filter(r=>runeQty(r,RUNETARGET)!=null);
   rows.forEach(r=>{ r._d = deriveB(r, real); });   // recalcul au batch courant
-  const cols = brisageCols(real);
+  const cols = colsFn(real);
   if(!BSORT[hostId]) BSORT[hostId] = defaultSort;
   const srt = BSORT[hostId];
   const col = cols.find(c=>c.k===srt.k) || cols[0];
@@ -716,16 +719,17 @@ function renderBTable(hostId, allRows, real, defaultSort){
     cols.map(c=>`<td class="${c.cls||''}">${c.fmt(r)}</td>`).join("")+"</tr>").join("");
   document.getElementById(hostId).innerHTML =
     `<div class="tablewrap"><table><thead><tr>${head}</tr></thead><tbody>${body||`<tr><td>—</td></tr>`}</tbody></table></div>`;
+  const _rerender = ()=>renderBTable(hostId, allRows, real, defaultSort, customCols?colsFn:undefined);
   document.querySelector(`#${hostId} thead`).addEventListener("click", e=>{
     const th=e.target.closest("th"); if(!th||th.dataset.sort==="false"||!th.dataset.k) return;
     const k=th.dataset.k;
     if(srt.k===k) srt.dir*=-1; else BSORT[hostId]={k, dir:(k==="Nom"||k==="Type")?1:-1};
-    renderBTable(hostId, allRows, real, defaultSort);
+    _rerender();
   });
   document.querySelector(`#${hostId} tbody`).addEventListener("click", e=>{
     const star=e.target.closest(".star");
     if(star){ const gid=+star.dataset.fav; toggleFav(gid); star.classList.toggle("on",isFav(gid));
-      renderListControls(); if(BFAVONLY) renderBTable(hostId, allRows, real, defaultSort); return; }
+      renderListControls(); if(BFAVONLY) _rerender(); return; }
     const tr=e.target.closest("tr"); if(!tr||!tr.dataset.gid) return;
     openBModal(allRows.find(x=>x.GID==tr.dataset.gid), real);
   });
@@ -801,48 +805,70 @@ function openBModal(r, real){
              `<td>${tier}</td><td>${fmt(unit)}</td><td>${fmt(ing.qty*unit)} <span class="muted">${info}</span></td></tr>`;
     }).join("");
   }
+  const isCon = !!r.is_concassage;
   // Coeff appliqué dans ce contexte de table (réel si tableau réel, sinon théo).
   const mcoeff = real ? r.Coeff_Reel : B.coeff;
-  const runeRows = (r.runes_detail&&r.runes_detail.length)
-    ? r.runes_detail.map(x=>{
-        const qc = mcoeff!=null ? x.qty*mcoeff/100 : null;
-        return `<tr><td>${x.nom} <span class="muted">(${x.code})</span></td><td>${dec2(x.qty)}</td>`+
-               `<td>${dec2(qc)}</td><td>${fmt(x.price)}</td><td>${qc==null?'—':fmt(qc*x.price)}</td></tr>`;
-      }).join("")
-    : '<tr><td colspan="5" class="muted">—</td></tr>';
-  // Verdict craft vs achat.
-  let verdict = "";
-  if(r.Prix_Moyen!=null && d.cost!=null){
-    const buy = r.Prix_Moyen < d.cost;
-    verdict = `<div class="verdict ${buy?'buy':'craft'}">${buy
-      ? `💡 <b>Acheter</b> l'item fini (${fmt(r.Prix_Moyen)}) est moins cher que le crafter (${fmt(d.cost)}).`
-      : `⚒️ <b>Crafter</b> (${fmt(d.cost)}) est moins cher qu'acheter l'item fini (${fmt(r.Prix_Moyen)}).`}</div>`;
+  // Section inférieure : "Runes obtenues" pour brisage, "Résultat" pour concassage.
+  let bottomSection;
+  if(isCon){
+    bottomSection =
+      `<h3 class="sec">Résultat obtenu</h3>`+
+      `<table><thead><tr><th class="name">Rune</th><th>Prix de vente</th></tr></thead><tbody>`+
+      `<tr><td class="name">1 × ${r.Nom}</td><td>${num(r.Prix_Moyen)}</td></tr>`+
+      `</tbody></table>`;
+  } else {
+    const runeRows = (r.runes_detail&&r.runes_detail.length)
+      ? r.runes_detail.map(x=>{
+          const qc = mcoeff!=null ? x.qty*mcoeff/100 : null;
+          return `<tr><td>${x.nom} <span class="muted">(${x.code})</span></td><td>${dec2(x.qty)}</td>`+
+                 `<td>${dec2(qc)}</td><td>${fmt(x.price)}</td><td>${qc==null?'—':fmt(qc*x.price)}</td></tr>`;
+        }).join("")
+      : '<tr><td colspan="5" class="muted">—</td></tr>';
+    bottomSection =
+      `<h3 class="sec">Runes obtenues <span class="muted">— Qté 100% / au coeff ${mcoeff!=null?mcoeff+'%':'?'}</span></h3>`+
+      `<table><thead><tr><th class="name">Rune</th><th>Qté @100%</th><th>Qté @coeff</th><th>Prix u.</th><th>Valeur</th></tr></thead><tbody>${runeRows}</tbody></table>`;
   }
+  // Verdict : concassage → acheter 3 simples vs acheter 1 Pa directement.
+  let verdict = "";
+  if(d.cost!=null && r.Prix_Moyen!=null){
+    if(isCon){
+      const profitable = d.cost < r.Prix_Moyen;
+      verdict = `<div class="verdict ${profitable?'craft':'buy'}">${profitable
+        ? `💡 <b>Concasser</b> 3 × ${r.from_nom} (${fmt(d.cost)}) est moins cher qu'acheter 1 × ${r.Nom} directement (${fmt(r.Prix_Moyen)}).`
+        : `🛒 <b>Acheter</b> directement 1 × ${r.Nom} (${fmt(r.Prix_Moyen)}) est moins cher que concasser (${fmt(d.cost)}).`}</div>`;
+    } else {
+      const buy = r.Prix_Moyen < d.cost;
+      verdict = `<div class="verdict ${buy?'buy':'craft'}">${buy
+        ? `💡 <b>Acheter</b> l'item fini (${fmt(r.Prix_Moyen)}) est moins cher que le crafter (${fmt(d.cost)}).`
+        : `⚒️ <b>Crafter</b> (${fmt(d.cost)}) est moins cher qu'acheter l'item fini (${fmt(r.Prix_Moyen)}).`}</div>`;
+    }
+  }
+  const subLine = isCon
+    ? `3 × ${r.from_nom} → 1 × ${r.Nom}`
+    : `GID ${r.GID} · niv ${r.Niveau}${r.Type?' · '+r.Type:''}${real?` · coeff réel ${r.Coeff_Reel}%`:` · coeff théo ${B.coeff}%`}`;
   const box=document.getElementById("bmodal-box");
   box.innerHTML =
     `<span class="x" id="bmodal-x">✕</span>`+
     `<h3>${r.Nom||("GID "+r.GID)}</h3>`+
-    `<div class="sub">GID ${r.GID} · niv ${r.Niveau}${r.Type?' · '+r.Type:''}${real?` · coeff réel ${r.Coeff_Reel}%`:` · coeff théo ${B.coeff}%`}</div>`+
+    `<div class="sub">${subLine}</div>`+
     `<div class="kv">`+
-      `<div class="b"><div class="v">${num(d.rev)}</div><div class="l">Revenu runes / unité</div></div>`+
-      `<div class="b"><div class="v">${num(d.cost)}</div><div class="l">Coût craft / unité</div></div>`+
+      `<div class="b"><div class="v">${num(d.rev)}</div><div class="l">${isCon?'Prix de vente':'Revenu runes / unité'}</div></div>`+
+      `<div class="b"><div class="v">${num(d.cost)}</div><div class="l">Coût ${isCon?'concassage':'craft'} / unité</div></div>`+
       `<div class="b"><div class="v">${num(r.Prix_Moyen)}</div><div class="l">Prix moyen (achat)</div></div>`+
       `<div class="b"><div class="v">${benFmt(d.benef)}</div><div class="l">Bénéfice / unité</div></div>`+
-      `<div class="b"><div class="v">${d.rent==null?'—':d.rent.toFixed(2)}</div><div class="l">Rent (craft)</div></div>`+
-      `<div class="b"><div class="v">${d.cmin==null?'—':fmt(d.cmin)+'%'}</div><div class="l">Coeff min</div></div>`+
+      `<div class="b"><div class="v">${d.rent==null?'—':d.rent.toFixed(2)}</div><div class="l">Ratio</div></div>`+
+      (!isCon?`<div class="b"><div class="v">${d.cmin==null?'—':fmt(d.cmin)+'%'}</div><div class="l">Coeff min</div></div>`:'')+
     `</div>`+
     verdict+
     `<div class="kv" style="align-items:center"><span class="muted">Batch :</span> ${batchSelectorHTML()} <span class="muted">${batchN?('= '+fmt(batchN)+' crafts'):''}</span></div>`+
-    // Totaux du batch (× nombre de crafts).
     `<div class="kv">`+
       `<div class="b"><div class="v">${batchN&&d.cost!=null?fmt(d.cost*batchN):'—'}</div><div class="l">Coût TOTAL du batch</div></div>`+
       `<div class="b"><div class="v">${batchN&&d.benef!=null?benFmt(d.benef*batchN):'—'}</div><div class="l">Bénéfice TOTAL du batch</div></div>`+
-      `<div class="b"><div class="v">${batchN&&d.rev!=null?fmt(d.rev*batchN):'—'}</div><div class="l">Revenu TOTAL du batch</div></div>`+
+      `<div class="b"><div class="v">${batchN&&d.rev!=null?fmt(d.rev*batchN):'—'}</div><div class="l">${isCon?'Revenu TOTAL du batch':'Revenu TOTAL du batch'}</div></div>`+
     `</div>`+
     `<h3 class="sec">Recette ${c&&!c.db?'<span class="muted">(prix moyen, sans optim. tiers)</span>':''}</h3>`+
     `<table><thead><tr><th class="name">Ingrédient</th><th>Qté/craft</th><th>Besoin</th><th>Tier</th><th>PU</th><th>Coût ligne</th></tr></thead><tbody>${recipeRows}</tbody></table>`+
-    `<h3 class="sec">Runes obtenues <span class="muted">— Qté 100% / au coeff ${mcoeff!=null?mcoeff+'%':'?'}</span></h3>`+
-    `<table><thead><tr><th class="name">Rune</th><th>Qté @100%</th><th>Qté @coeff</th><th>Prix u.</th><th>Valeur</th></tr></thead><tbody>${runeRows}</tbody></table>`;
+    bottomSection;
   box.querySelector(".batchsel").addEventListener("click", e=>{
     const btn=e.target.closest("button"); if(!btn) return;
     BATCH=btn.dataset.b; renderBrisage(); openBModal(r, real);
@@ -985,119 +1011,109 @@ function closePriceModal(){ document.getElementById("pmodal").style.display="non
 document.getElementById("pmodal").addEventListener("click", e=>{ if(e.target.id==="pmodal") closePriceModal(); });
 
 // ── Onglet « Runes » ───────────────────────────────────────────────────────
-const RD = DTV.runes || {runes:{}, live_prices:false};
-// Liste triée par poids croissant (ordre naturel du marché).
-const RUNE_LIST = Object.values(RD.runes).sort((a,b)=>a.poids-b.poids||a.nom.localeCompare(b.nom,'fr'));
+const RD = DTV.runes || {runes:{}, concassage:[], live_prices:false};
 
-let RUNE_FILTER_CONC = false;  // true = afficher seulement les concassables
+let _RUNE_NOM_SET = null, RUNE_SRC = "avg", RUNE_Q = "";
+let RUNE_SORT = {k:"nom", dir:1};
+
+function concassageCols(real){
+  return [
+    {k:"fav", l:"★", cls:"fav", sort:false, get:r=>0,
+      fmt:r=>`<span class="star ${isFav(r.GID)?'on':''}" data-fav="${r.GID}">★</span>`},
+    {k:"Nom", l:"Résultat", cls:"name", title:"Rune obtenue (1 exemplaire)",
+      get:r=>r.Nom, fmt:r=>r.Nom},
+    {k:"from_nom", l:"Ingrédient", cls:"name", title:"Rune de départ (×3)",
+      get:r=>r.from_nom, fmt:r=>r.from_nom},
+    {k:"rev", l:"Prix vente", cls:"narrow", title:"Prix de vente de la rune résultante",
+      get:r=>r._d.rev, fmt:r=>num(r._d.rev)},
+    {k:"cost", l:"Coût (×3)", cls:"narrow", title:"Coût d'achat de 3 runes d'entrée au batch courant",
+      get:r=>r._d.cost, fmt:r=>num(r._d.cost)},
+    {k:"batchN", l:"Batch", cls:"narrow",
+      get:r=>r._d.batchN, fmt:r=>r._d.batchN==null?'<span class="muted">—</span>':fmt(r._d.batchN)},
+    {k:"benef", l:"Bénéf", cls:"narrow",
+      get:r=>r._d.benef, fmt:r=>benFmt(r._d.benef)},
+    {k:"rent", l:"Ratio", cls:"narrow", title:"Ratio prix vente / coût (>1 = rentable)",
+      get:r=>r._d.rent, fmt:r=>r._d.rent==null?'<span class="muted">—</span>':r._d.rent.toFixed(2)},
+  ];
+}
+
+function _renderRunePrices(){
+  const q = RUNE_Q.trim().toLowerCase();
+  let rows = DTV.items.filter(it=>_RUNE_NOM_SET.has(normName(it.nom))).map(it=>{
+    const s = seriesOf(it, RUNE_SRC), st = statsOf(s), avgS = seriesOf(it, "avg");
+    const hdvLast = it.hdv.length ? it.hdv[it.hdv.length-1][0] : null;
+    return {gid:it.gid, nom:it.nom, type:it.type||"", level:it.level,
+            item:it, s, st, avgS,
+            varj:varOver(avgS,1), vars:varOver(avgS,7), varm:varOver(avgS,30),
+            vol:volumeIndex(avgS),
+            hdvN:it.hdv.length, hdvLast, hdvLastT:hdvLast?Date.parse(hdvLast):-Infinity};
+  }).filter(r=>r.st);
+  if(q) rows = rows.filter(r=>r.nom.toLowerCase().includes(q)||String(r.gid).includes(q));
+  const col = COLS.find(c=>c.k===RUNE_SORT.k) || COLS[1];
+  rows.sort((a,b)=>{
+    let va=col.get(a), vb=col.get(b);
+    const an=(va==null), bn=(vb==null); if(an&&bn)return 0; if(an)return 1; if(bn)return -1;
+    if(typeof va==="string"){va=va.toLowerCase();vb=vb.toLowerCase();return va<vb?-RUNE_SORT.dir:va>vb?RUNE_SORT.dir:0;}
+    return (va-vb)*RUNE_SORT.dir;
+  });
+  const srcOpts = ["avg","x1","x10","x100","x1000"].map(s=>
+    `<option value="${s}"${s===RUNE_SRC?" selected":""}>${TIER_LABEL[s]}</option>`).join("");
+  document.getElementById("rune-price-ctrl").innerHTML =
+    `Source : <select id="runesrc">${srcOpts}</select> `+
+    `<input id="runeq" type="search" placeholder="Rechercher…" value="${q.replace(/"/g,"&quot;")}" style="width:160px">`;
+  if(!rows.length){
+    document.getElementById("rune-price-tbl").innerHTML =
+      '<div class="empty">Aucune rune dans les données — lancez une capture pour obtenir des prix de runes.</div>';
+  } else {
+    const head = COLS.map(c=>{
+      const arr = RUNE_SORT.k===c.k?`<span class="arrow">${RUNE_SORT.dir<0?"▼":"▲"}</span>`:"";
+      const tt = c.title?` title="${c.title}"`:"";
+      return `<th class="${c.cls||''}"${tt} data-k="${c.k}" data-sort="${c.sort!==false}">${c.l} ${arr}</th>`;
+    }).join("");
+    const body = rows.map(r=>`<tr data-gid="${r.gid}">`+COLS.map(c=>`<td class="${c.cls||''}">${c.fmt(r)}</td>`).join("")+"</tr>").join("");
+    document.getElementById("rune-price-tbl").innerHTML =
+      `<div class="tablewrap"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
+  }
+  document.getElementById("runesrc").onchange = e=>{ RUNE_SRC=e.target.value; _renderRunePrices(); };
+  document.getElementById("runeq").oninput = e=>{ RUNE_Q=e.target.value; _renderRunePrices(); };
+  const thead = document.querySelector("#rune-price-tbl thead");
+  if(thead) thead.addEventListener("click", e=>{
+    const th=e.target.closest("th"); if(!th||th.dataset.sort==="false"||!th.dataset.k) return;
+    const k=th.dataset.k;
+    if(RUNE_SORT.k===k) RUNE_SORT.dir*=-1; else RUNE_SORT={k, dir:(k==="nom"||k==="type")?1:-1};
+    _renderRunePrices();
+  });
+  const tbody = document.querySelector("#rune-price-tbl tbody");
+  if(tbody) tbody.addEventListener("click", e=>{
+    const star=e.target.closest(".star");
+    if(star){ const gid=+star.dataset.fav; toggleFav(gid); star.classList.toggle("on",isFav(gid)); renderListControls(); return; }
+    const tr=e.target.closest("tr"); if(!tr||!tr.dataset.gid) return;
+    openPriceModal(+tr.dataset.gid);
+  });
+}
 
 function renderRunes(){
   const root = document.getElementById("runes-root");
-  if(!RUNE_LIST.length){
-    root.innerHTML = '<div class="empty">Pas de données de runes (runes.json introuvable).</div>';
-    return;
+  if(!_RUNE_NOM_SET){
+    _RUNE_NOM_SET = new Set();
+    Object.values(RD.runes||{}).forEach(r=>r.tiers.forEach(t=>_RUNE_NOM_SET.add(normName(t.nom))));
   }
-
   const liveTag = RD.live_prices
-    ? '<span style="color:var(--accent2)">● prix HDV live</span>'
-    : '<span class="muted" title="Remplir dtv/data/rune_gids.json pour les prix HDV">● prix exemple</span>';
-
-  const concBtn = `<button class="${RUNE_FILTER_CONC?'active':''}" id="rune-conc-btn">Concassables uniquement</button>`;
-
-  // ── Table 1 : prix par tier ─────────────────────────────────────────────
-  const visible = RUNE_FILTER_CONC ? RUNE_LIST.filter(r=>r.concassable&&!r.giant_only) : RUNE_LIST.filter(r=>!r.giant_only);
-  const giants  = RUNE_LIST.filter(r=>r.giant_only);
-
-  function runeRow(r){
-    const tmap = {}; r.tiers.forEach(t=>{ tmap[t.tier]=t; });
-    const fmtT = (t) => t
-      ? `<span${t.live?'':' class="muted"'} title="${t.live?'Prix HDV':'Prix estimé'}">${fmt(t.prix)}</span>`
-      : '<span class="muted">—</span>';
-    const concMark = r.concassable ? '' : '<span class="muted" title="Pas de palier supérieur">—</span>';
-    return `<tr>
-      <td class="name">${r.nom_rune}</td>
-      <td class="type">${r.nom}</td>
-      <td class="narrow" title="Poids dans la formule de brisage">${r.poids}</td>
-      <td class="narrow">${fmtT(tmap['simple'])}</td>
-      <td class="narrow">${fmtT(tmap['pa'])||concMark}</td>
-      <td class="narrow">${fmtT(tmap['ra'])||'<span class="muted">—</span>'}</td>
-    </tr>`;
-  }
-
-  const head1 = `<tr>
-    <th class="name">Rune</th>
-    <th class="type" title="Stat correspondant">Effet</th>
-    <th class="narrow" title="Poids dans la formule de brisage — plus le poids est élevé, plus la rune rapporte peu d'exemplaires">Poids</th>
-    <th class="narrow" title="Prix d'une rune simple (1×)">Simple</th>
-    <th class="narrow" title="Prix d'une rune Pa (≈ 3 simples)">Pa</th>
-    <th class="narrow" title="Prix d'une rune Ra (≈ 9 simples)">Ra</th>
-  </tr>`;
-  const body1 = visible.map(runeRow).join("");
-
-  // Runes géantes séparées (GID unique, pas de tiers).
-  const giantRows = giants.map(r=>{
-    const t = r.tiers[0];
-    const p = t ? (t.live ? fmt(t.prix) : `<span class="muted">${fmt(t.prix)}</span>`) : '—';
-    return `<tr><td class="name">${r.nom_rune}</td><td class="type">${r.nom}</td><td class="narrow">${r.poids}</td><td class="narrow" colspan="3">${p}</td></tr>`;
-  }).join("");
-
-  // ── Table 2 : rentabilité du concassage ────────────────────────────────
-  // Opération : acheter 3 runes du tier inférieur, concasser → 1 tier supérieur.
-  // Rentable si prix_supérieur > 3 × prix_inférieur.
-  const ops = [];
-  for(const r of RUNE_LIST){
-    if(!r.concassable || r.giant_only) continue;
-    for(let i=0; i<r.tiers.length-1; i++){
-      const from = r.tiers[i], to = r.tiers[i+1];
-      if(from.prix==null || to.prix==null) continue;
-      const cost = 3 * from.prix;
-      const gain = to.prix;
-      const benef = gain - cost;
-      const ratio = cost > 0 ? gain/cost : null;
-      ops.push({r, from, to, cost, gain, benef, ratio,
-                live: from.live && to.live});
-    }
-  }
-  ops.sort((a,b)=>b.benef-a.benef);
-
-  const head2 = `<tr>
-    <th class="name">Opération (3 → 1)</th>
-    <th class="narrow" title="Coût d'achat de 3 runes du tier inférieur">Coût (×3)</th>
-    <th class="narrow" title="Prix de vente de la rune supérieure obtenue">Gain</th>
-    <th class="narrow" title="Bénéfice = Gain − Coût">Bénéfice</th>
-    <th class="narrow" title="Ratio Gain/Coût — &gt;1 = rentable, &lt;1 = déficitaire">Ratio</th>
-    <th class="narrow" title="Source des prix">Source</th>
-  </tr>`;
-  const body2 = ops.length ? ops.map(op=>{
-    const ratioStr = op.ratio!=null ? op.ratio.toFixed(2)+'×' : '—';
-    const ratioColor = op.ratio!=null ? (op.ratio>=1?'var(--accent2)':'var(--bad)') : '';
-    const src = op.live
-      ? '<span style="color:var(--accent2)">HDV</span>'
-      : '<span class="muted">estimé</span>';
-    return `<tr>
-      <td class="name">${op.from.nom} → ${op.to.nom}</td>
-      <td class="narrow">${fmt(op.cost)}</td>
-      <td class="narrow">${fmt(op.gain)}</td>
-      <td class="narrow">${benFmt(op.benef)}</td>
-      <td class="narrow" style="color:${ratioColor}">${ratioStr}</td>
-      <td class="narrow">${src}</td>
-    </tr>`;
-  }).join("") : `<tr><td colspan="6" class="muted">Aucune opération de concassage calculable.</td></tr>`;
-
+    ? '<span style="color:var(--accent2)">● prix HDV</span>'
+    : '<span class="muted">● prix exemple</span>';
   root.innerHTML =
-    `<div class="controls" style="gap:12px;align-items:center">`+
-      `${concBtn} ${liveTag}`+
-    `</div>`+
-    `<h3 class="sec">💎 Prix des runes${RD.live_prices?'':' <span class="muted">(prix exemple — pas de données HDV)</span>'}</h3>`+
-    `<div class="tablewrap"><table><thead>${head1}</thead><tbody>${body1}`+
-      (giantRows ? `<tr><td colspan="6" class="muted" style="padding-top:8px">Runes géantes</td></tr>${giantRows}` : '')+
-    `</tbody></table></div>`+
-    `<h3 class="sec">🔨 Concassage <span class="muted">— 3 simples → 1 Pa, 3 Pa → 1 Ra</span></h3>`+
-    `<div class="tablewrap"><table><thead>${head2}</thead><tbody>${body2}</tbody></table></div>`;
-
-  document.getElementById("rune-conc-btn").addEventListener("click", ()=>{
-    RUNE_FILTER_CONC = !RUNE_FILTER_CONC; renderRunes();
-  });
+    `<div class="controls" id="rune-price-ctrl"></div>`+
+    `<h3 class="sec">💎 Prix des runes ${liveTag}</h3>`+
+    `<div id="rune-price-tbl"></div>`+
+    `<h3 class="sec">🔨 Concassage <span class="muted">— 3 × tier inférieur → 1 × tier supérieur — <small>clique une ligne pour le détail</small></span></h3>`+
+    `<div id="conc-tbl"></div>`;
+  _renderRunePrices();
+  if(RD.concassage && RD.concassage.length){
+    renderBTable("conc-tbl", RD.concassage, false, {k:"benef",dir:-1}, concassageCols);
+  } else {
+    document.getElementById("conc-tbl").innerHTML =
+      '<div class="empty">Pas de données de concassage (nécessite des relevés HDV de runes).</div>';
+  }
 }
 
 // ── Boot ───────────────────────────────────────────────────────────────────
