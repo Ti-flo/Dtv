@@ -144,6 +144,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .chart-tip {
     position:absolute; pointer-events:none; background:#000c; border:1px solid var(--border);
     border-radius:5px; padding:5px 8px; font-size:11px; color:var(--text); white-space:nowrap; display:none;
+    z-index:60;   /* au-dessus des modales (z-index:50) — sinon le tooltip passe derrière */
   }
   code { background:var(--panel2); padding:1px 5px; border-radius:4px; }
 </style>
@@ -193,6 +194,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   <section class="tab" data-tab="achats"><div class="soon"><div class="big">🛒</div><p>Onglet « Ressources achetées » — à venir (dépend de <code>transactions_observations.csv</code>).</p></div></section>
   <section class="tab" data-tab="craft"><div id="craft-root"></div></section>
   <section class="tab" data-tab="affaires"><div id="affaires-root"></div></section>
+  <section class="tab" data-tab="arbitrage"><div id="arb-root"></div></section>
   <section class="tab" data-tab="runes"><div id="runes-root"></div></section>
 </main>
 <div class="chart-tip" id="tip"></div>
@@ -256,7 +258,7 @@ document.getElementById("hdr-meta").textContent =
 })();
 const TABS = [["prix","📈 Prix dans le temps"],["achats","🛒 Ressources achetées"],
               ["craft","⚒️ Craft & Brisage"],["affaires","💎 Bonnes affaires"],
-              ["runes","🔮 Runes"]];
+              ["arbitrage","💱 Achat / Vente"],["runes","🔮 Runes"]];
 document.getElementById("tabs").innerHTML =
   TABS.map(([id,l],i)=>`<button data-go="${id}"${i===0?' class="active"':''}>${l}</button>`).join("");
 document.getElementById("tabs").addEventListener("click", e=>{
@@ -283,6 +285,33 @@ function toggleFav(gid){
   const i = arr.indexOf(gid);
   if(i<0) arr.push(gid); else arr.splice(i,1);
   saveLists();
+}
+// ── Lots de vente réalistes par item (persistés) ───────────────────────────
+// Pour chaque item : quels lots (x1/x10/x100) on revend vraiment. Sert à
+// filtrer le concassage et l'arbitrage (ex : une Pa Fo ne se vend que par 100).
+const LS_SELL="dtv_selllots";
+const DEFAULT_SELL=["x10","x100"];   // défaut : pas de x1 (exception : ga pa, pa do cri…)
+const LOTSIZE={x1:1, x10:10, x100:100, x1000:1000};
+let SELLLOTS = (()=>{ try{ return JSON.parse(localStorage.getItem(LS_SELL))||{}; }catch(e){ return {}; } })();
+function saveSell(){ try{ localStorage.setItem(LS_SELL, JSON.stringify(SELLLOTS)); }catch(e){} }
+function sellLots(gid){ return SELLLOTS[gid] || DEFAULT_SELL; }
+function isSellOn(gid, lot){ return sellLots(gid).includes(lot); }
+function toggleSell(gid, lot){
+  const arr = (SELLLOTS[gid] || DEFAULT_SELL).slice();
+  const i = arr.indexOf(lot);
+  if(i<0) arr.push(lot); else arr.splice(i,1);
+  SELLLOTS[gid] = arr; saveSell();
+}
+function sellLotCtrlHTML(gid){
+  return `<div class="sub" style="margin:6px 0"><span class="muted">Lots de vente réalistes :</span> `+
+    ["x1","x10","x100"].map(l=>`<label class="chk" style="margin-right:8px"><input type="checkbox" data-sell="${l}" data-gid="${gid}"${isSellOn(gid,l)?' checked':''}> ${l}</label>`).join("")+
+    `</div>`;
+}
+// Re-render des vues dépendantes quand les lots de vente changent.
+function refreshSellViews(gid, root){
+  showDetail(gid, root);
+  if(document.getElementById("conc-tbl") && RD.concassage && RD.concassage.length) _renderRuneConc();
+  if(document.getElementById("arb-root")) renderArbitrage();
 }
 function renderListControls(){
   const sel = document.getElementById("listSel");
@@ -437,6 +466,7 @@ function showDetail(gid, root){
   root.innerHTML =
     `<h3>${it.nom}</h3><div class="sub">GID ${it.gid}${it.type?' · '+it.type:''}${it.level!=null?' · niv '+it.level:''} · `+
       `<span title="Indice de volume 0–10 : fréquence de changement du prix moyen sur 10 jours">Volume V ${vol==null?'—':(+vol).toFixed(1)}</span></div>` +
+    sellLotCtrlHTML(it.gid) +
     statBlock(it) +
     `<div class="chart"></div>` +
     `<div class="sub" style="margin-top:6px">Graphe en prix unitaire (lots ÷ 10/100/1000) — comparable au x1 et au prix moyen.</div>` +
@@ -447,6 +477,9 @@ function showDetail(gid, root){
   drawChart(it, root);
   renderUsedIn(it, root.querySelector(".usedin"));
   renderConcIn(it, root.querySelector(".concin"));
+  root.querySelectorAll("input[data-sell]").forEach(cb=>cb.onchange=()=>{
+    toggleSell(+cb.dataset.gid, cb.dataset.sell); refreshSellViews(gid, root);
+  });
   if(inPriceTab)
     document.querySelectorAll("#rows tr").forEach(tr=>tr.classList.toggle("sel", +tr.dataset.gid===gid));
 }
@@ -565,8 +598,9 @@ document.getElementById("rows").addEventListener("click", e=>{
 
 // ── Onglet « Craft & Brisage » ─────────────────────────────────────────────
 const B = DTV.brisage || {available:false, reason:"(pas de données)"};
-let BATCH = "auto";   // taille de lot de craft : "auto" | "1" | "10" | "100" | "1000"
-const BATCHES = ["smart","auto","1","10","100","1000"];
+let BATCH = "auto";   // taille de lot de craft : "auto" | "10" | "100" | "1000"
+// x1 retiré : on ne vend/craft jamais à l'unité, c'est du bruit.
+const BATCHES = ["smart","auto","10","100","1000"];
 let BFAVONLY=false, RUNETARGET="";   // favoris seulement / rune ciblée (code)
 // Bénéfice : vert si positif (gain), rouge si négatif (perte).
 const benFmt = v => v==null ? '<span class="muted">—</span>'
@@ -592,7 +626,7 @@ function bestTier(tiers, totalNeeded){
 function smartBatch(r){
   if(!r.craft) return null;
   let best=null;
-  for(const b of ["1","10","100","1000"]){
+  for(const b of ["10","100","1000"]){   // x1 exclu : lot irréaliste
     const c=r.craft.cpc[b]; if(c==null) continue;
     if(best==null || c<best.cost) best={batch:b, cost:c};
   }
@@ -1037,6 +1071,76 @@ function openPriceModal(gid){
 function closePriceModal(){ document.getElementById("pmodal").style.display="none"; }
 document.getElementById("pmodal").addEventListener("click", e=>{ if(e.target.id==="pmodal") closePriceModal(); });
 
+// ── Onglet « Achat / Vente » (arbitrage entre tailles de lot) ──────────────
+// Acheter au tier au prix unitaire le + bas, revendre via un lot autorisé au
+// prix unitaire le + haut. Ex : 25/u en x1 mais 60/u en x10 → acheter 10×25,
+// revendre 1 lot de 10 à 600. Inversement gros lot pas cher → petit lot cher.
+let ARB_SORT={k:"ecart",dir:-1}, ARB_MINV=0, ARB_Q="";
+function arbRow(it){
+  const t={};
+  ["x1","x10","x100","x1000"].forEach(src=>{ const st=statsOf(seriesOf(it,src));
+    if(st && st.last>0) t[src]={lot:st.last, unit:st.last/LOTSIZE[src], size:LOTSIZE[src]}; });
+  // Achat : tier au prix unitaire mini (tous tiers, lots inclus).
+  let buy=null; Object.keys(t).forEach(s=>{ if(buy==null||t[s].unit<t[buy].unit) buy=s; });
+  // Vente : tier au prix unitaire maxi parmi les lots autorisés à la vente.
+  let sell=null; ["x1","x10","x100"].forEach(s=>{ if(t[s]&&isSellOn(it.gid,s)){ if(sell==null||t[s].unit>t[sell].unit) sell=s; } });
+  if(buy==null||sell==null) return null;
+  const ecartU = t[sell].unit - t[buy].unit;
+  if(ecartU<=0) return null;
+  return {gid:it.gid, nom:it.nom, type:it.type||"", vol:volumeIndex(seriesOf(it,"avg")),
+          buy, sell, t, ecartU, ecartPct:t[buy].unit>0?ecartU/t[buy].unit*100:null,
+          benefLot:t[sell].lot - t[sell].size*t[buy].unit, capital:t[sell].size*t[buy].unit};
+}
+function renderArbitrage(){
+  const root=document.getElementById("arb-root");
+  let rows=DTV.items.map(arbRow).filter(Boolean);
+  const q=ARB_Q.trim().toLowerCase();
+  if(q) rows=rows.filter(r=>r.nom.toLowerCase().includes(q)||String(r.gid).includes(q));
+  if(ARB_MINV>0) rows=rows.filter(r=>(r.vol||0)>=ARB_MINV);
+  const cols=[
+    {k:"fav", l:"★", cls:"fav", sort:false, get:r=>0, fmt:r=>`<span class="star ${isFav(r.gid)?'on':''}" data-fav="${r.gid}">★</span>`},
+    {k:"nom",   l:"Item", cls:"name", get:r=>r.nom, fmt:r=>r.nom},
+    {k:"type",  l:"Type", cls:"type", get:r=>r.type, fmt:r=>r.type||'<span class="muted">—</span>'},
+    {k:"vol",   l:"V",    cls:"narrow", title:"Volume V (activité marché)", get:r=>r.vol, fmt:r=>r.vol==null?'<span class="muted">—</span>':(+r.vol).toFixed(1)},
+    {k:"buy",   l:"Achat", cls:"narrow", title:"Tier d'achat le moins cher · prix unitaire",
+      get:r=>r.t[r.buy].unit, fmt:r=>`<span title="lot ${fmt(r.t[r.buy].lot)}">${r.buy} · ${fmt(r.t[r.buy].unit)}/u</span>`},
+    {k:"sell",  l:"Vente", cls:"narrow", title:"Meilleur lot de vente autorisé · prix unitaire",
+      get:r=>r.t[r.sell].unit, fmt:r=>`<span title="lot ${fmt(r.t[r.sell].lot)}">${r.sell} · ${fmt(r.t[r.sell].unit)}/u</span>`},
+    {k:"ecart", l:"Écart/u", cls:"narrow", title:"Bénéfice par unité = vente/u − achat/u", get:r=>r.ecartU, fmt:r=>benFmt(r.ecartU)},
+    {k:"ecartPct", l:"Écart %", cls:"var", title:"Marge en % du prix d'achat", get:r=>r.ecartPct, fmt:r=>r.ecartPct==null?'—':varCell(r.ecartPct)},
+    {k:"benefLot", l:"Bénéf/lot", cls:"narrow", title:"Bénéfice net pour 1 lot vendu (prix lot vente − achat des unités)", get:r=>r.benefLot, fmt:r=>benFmt(r.benefLot)},
+    {k:"capital", l:"Capital", cls:"narrow", title:"Mise à avancer pour 1 lot (taille lot × prix unitaire achat)", get:r=>r.capital, fmt:r=>fmt(r.capital)},
+  ];
+  const col=cols.find(c=>c.k===ARB_SORT.k)||cols[6];
+  rows.sort((a,b)=>{ let va=col.get(a),vb=col.get(b);
+    const an=(va==null),bn=(vb==null); if(an&&bn)return 0; if(an)return 1; if(bn)return -1;
+    if(typeof va==="string"){va=va.toLowerCase();vb=vb.toLowerCase();return va<vb?-ARB_SORT.dir:va>vb?ARB_SORT.dir:0;}
+    return (va-vb)*ARB_SORT.dir; });
+  const head=cols.map(c=>{ const arr=ARB_SORT.k===c.k?`<span class="arrow">${ARB_SORT.dir<0?"▼":"▲"}</span>`:"";
+    const tt=c.title?` title="${c.title}"`:""; return `<th class="${c.cls||''}"${tt} data-k="${c.k}" data-sort="${c.sort!==false}">${c.l} ${arr}</th>`; }).join("");
+  const body=rows.length ? rows.map(r=>`<tr data-gid="${r.gid}">`+cols.map(c=>`<td class="${c.cls||''}">${c.fmt(r)}</td>`).join("")+"</tr>").join("")
+    : `<tr><td colspan="${cols.length}"><div class="empty">Aucune opportunité (nécessite ≥2 tiers de prix HDV par item).</div></td></tr>`;
+  root.innerHTML =
+    `<div class="notice"><span><b>${rows.length}</b> opportunités d'arbitrage de lot</span>`+
+    `<span class="muted">Acheter au tier le moins cher, revendre via un lot autorisé plus cher. Les lots de vente se règlent en cliquant un item (cases x1/x10/x100).</span></div>`+
+    `<div class="controls">Volume min <input id="arbV" type="number" min="0" max="10" step="0.5" value="${ARB_MINV}" style="width:60px">`+
+    `<input id="arbQ" type="search" placeholder="Rechercher…" value="${q.replace(/"/g,"&quot;")}" style="width:160px"></div>`+
+    `<div class="tablewrap"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
+  document.getElementById("arbV").onchange=e=>{ ARB_MINV=Number(e.target.value)||0; renderArbitrage(); };
+  document.getElementById("arbQ").oninput=e=>{ ARB_Q=e.target.value; renderArbitrage(); };
+  root.querySelector("thead").addEventListener("click",e=>{
+    const th=e.target.closest("th"); if(!th||th.dataset.sort==="false"||!th.dataset.k) return;
+    const k=th.dataset.k; if(ARB_SORT.k===k) ARB_SORT.dir*=-1; else ARB_SORT={k,dir:(k==="nom"||k==="type")?1:-1};
+    renderArbitrage();
+  });
+  root.querySelector("tbody").addEventListener("click",e=>{
+    const star=e.target.closest(".star");
+    if(star){ const gid=+star.dataset.fav; toggleFav(gid); star.classList.toggle("on",isFav(gid)); renderListControls(); return; }
+    const tr=e.target.closest("tr"); if(!tr||!tr.dataset.gid) return;
+    openPriceModal(+tr.dataset.gid);
+  });
+}
+
 // ── Onglet « Runes » ───────────────────────────────────────────────────────
 const RD = DTV.runes || {runes:{}, concassage:[], live_prices:false};
 const _CONC_ING_MAP = (()=>{ const m={};
@@ -1068,7 +1172,10 @@ function concassageCols(real){
   function resIt(r){ return r.GID ? DTV.items.find(it=>it.gid===r.GID) : null; }
   function hdvU(r, src){ const it=resIt(r); if(!it) return null;
     const st=statsOf(seriesOf(it,src)); return st ? st.last/TIER_DIV[src] : null; }
-  function bU(r, src){ const u=hdvU(r,src), c=r._d.cost; return u==null||c==null?null:u-c; }
+  // Bénéf/u en vendant via le lot `src` ; null si lot non autorisé pour cette rune.
+  function bU(r, src){ if(!isSellOn(r.GID,src)) return null;
+    const u=hdvU(r,src), c=r._d.cost; return u==null||c==null?null:u-c; }
+  const off = '<span class="muted" title="Lot désactivé pour cette rune (clic la rune → cases vente)">·</span>';
   return [
     {k:"fav", l:"★", cls:"fav", sort:false, get:r=>0,
       fmt:r=>`<span class="star ${isFav(r.GID)?'on':''}" data-fav="${r.GID}">★</span>`},
@@ -1078,27 +1185,29 @@ function concassageCols(real){
       get:r=>{ const it=resIt(r); return it?volumeIndex(seriesOf(it,"avg")):null; },
       fmt:r=>{ const it=resIt(r); if(!it) return'<span class="muted">—</span>';
                const v=volumeIndex(seriesOf(it,"avg")); return v==null?'<span class="muted">—</span>':(+v).toFixed(1); }},
+    {k:"batchN",  l:"Batch",    cls:"narrow", title:"Nombre de concassages au batch courant",
+      get:r=>r._d.batchN, fmt:r=>r._d.batchN==null?'<span class="muted">—</span>':fmt(r._d.batchN)},
     {k:"cost",    l:"C/u",      cls:"narrow", title:"Coût de concassage d'1 rune (batch courant)",
       get:r=>r._d.cost, fmt:r=>num(r._d.cost)},
-    {k:"benef",   l:"B×1",      cls:"narrow", title:"Bénéfice en vendant à l'unité (HDV ×1, ou prix moyen si indispo)",
-      get:r=>{ const u=hdvU(r,"x1"); return u==null?r._d.benef:u-(r._d.cost||0); },
-      fmt:r=>{ const u=hdvU(r,"x1"); return benFmt(u==null?r._d.benef:u-(r._d.cost||0)); }},
-    {k:"bu10",    l:"B/u×10",   cls:"narrow", title:"Bénéfice par rune vendue en lot de 10",
-      get:r=>bU(r,"x10"), fmt:r=>benFmt(bU(r,"x10"))},
+    {k:"benef",   l:"B×1",      cls:"narrow", title:"Bénéfice à l'unité (HDV ×1, ou prix moyen si indispo). Désactivable par rune.",
+      get:r=>{ if(!isSellOn(r.GID,"x1")) return null; const u=hdvU(r,"x1"); return u==null?r._d.benef:u-(r._d.cost||0); },
+      fmt:r=>{ if(!isSellOn(r.GID,"x1")) return off; const u=hdvU(r,"x1"); return benFmt(u==null?r._d.benef:u-(r._d.cost||0)); }},
     {k:"ctot10",  l:"C×10",     cls:"narrow", title:"Capital à investir pour 10 runes (coût×10)",
-      get:r=>r._d.cost==null?null:r._d.cost*10,
-      fmt:r=>r._d.cost==null?'<span class="muted">—</span>':num(r._d.cost*10)},
+      get:r=>!isSellOn(r.GID,"x10")||r._d.cost==null?null:r._d.cost*10,
+      fmt:r=>!isSellOn(r.GID,"x10")?off:r._d.cost==null?'<span class="muted">—</span>':num(r._d.cost*10)},
+    {k:"bu10",    l:"B/u×10",   cls:"narrow", title:"Bénéfice par rune vendue en lot de 10",
+      get:r=>bU(r,"x10"), fmt:r=>isSellOn(r.GID,"x10")?benFmt(bU(r,"x10")):off},
     {k:"btot10",  l:"B×10",     cls:"narrow", title:"Bénéfice total d'un lot de 10 (HDV×10 − coût×10)",
       get:r=>{ const b=bU(r,"x10"); return b==null?null:b*10; },
-      fmt:r=>{ const b=bU(r,"x10"); return benFmt(b==null?null:b*10); }},
-    {k:"bu100",   l:"B/u×100",  cls:"narrow", title:"Bénéfice par rune vendue en lot de 100",
-      get:r=>bU(r,"x100"), fmt:r=>benFmt(bU(r,"x100"))},
+      fmt:r=>isSellOn(r.GID,"x10")?benFmt((b=>b==null?null:b*10)(bU(r,"x10"))):off},
     {k:"ctot100", l:"C×100",    cls:"narrow", title:"Capital à investir pour 100 runes (coût×100)",
-      get:r=>r._d.cost==null?null:r._d.cost*100,
-      fmt:r=>r._d.cost==null?'<span class="muted">—</span>':num(r._d.cost*100)},
+      get:r=>!isSellOn(r.GID,"x100")||r._d.cost==null?null:r._d.cost*100,
+      fmt:r=>!isSellOn(r.GID,"x100")?off:r._d.cost==null?'<span class="muted">—</span>':num(r._d.cost*100)},
+    {k:"bu100",   l:"B/u×100",  cls:"narrow", title:"Bénéfice par rune vendue en lot de 100",
+      get:r=>bU(r,"x100"), fmt:r=>isSellOn(r.GID,"x100")?benFmt(bU(r,"x100")):off},
     {k:"btot100", l:"B×100",    cls:"narrow", title:"Bénéfice total d'un lot de 100 (HDV×100 − coût×100)",
       get:r=>{ const b=bU(r,"x100"); return b==null?null:b*100; },
-      fmt:r=>{ const b=bU(r,"x100"); return benFmt(b==null?null:b*100); }},
+      fmt:r=>isSellOn(r.GID,"x100")?benFmt((b=>b==null?null:b*100)(bU(r,"x100"))):off},
     {k:"rent",    l:"Ratio",    cls:"narrow", title:"Ratio prix moyen / coût (>1 = rentable)",
       get:r=>r._d.rent, fmt:r=>r._d.rent==null?'<span class="muted">—</span>':r._d.rent.toFixed(2)},
   ];
@@ -1189,6 +1298,7 @@ renderListControls();
 renderHead(); renderRows();
 renderBrisage();
 renderAffaires();
+renderArbitrage();
 renderRunes();
 if(DTV.items.length){
   // sélectionne le 1er item de la vue (niveau le plus bas) pour montrer un graphe d'emblée
