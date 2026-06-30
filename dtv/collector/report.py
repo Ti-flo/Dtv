@@ -327,7 +327,7 @@ def build_brisage_data(conn: sqlite3.Connection, *, coeff: float = 100.0) -> dic
     }
 
 
-_CRAFT_CAP = 800   # plafond de lignes embarquées pour l'onglet Craft
+_CRAFT_CAP = 1200   # plafond de lignes embarquées par tableau Craft (équip / autres)
 
 
 def build_craft_data(conn: sqlite3.Connection) -> dict:
@@ -343,11 +343,18 @@ def build_craft_data(conn: sqlite3.Connection) -> dict:
     if not paths:
         return {"available": False, "reason": "catalogue scrapé introuvable."}
     catalog: list[dict] = []
+    equip_gids: set = set()              # GIDs venant du catalogue équipements
     for p in paths:
         try:
-            catalog += catalog_mod.load_catalog(p)
+            items = catalog_mod.load_catalog(p)
         except Exception:
             continue
+        if "equipements" in Path(p).name:
+            for it in items:
+                g = br.to_gid(it.get("GID"))
+                if g is not None:
+                    equip_gids.add(g)
+        catalog += items
     if not catalog:
         return {"available": False, "reason": "catalogue illisible."}
 
@@ -418,13 +425,19 @@ def build_craft_data(conn: sqlite3.Connection) -> dict:
             "Coeff_Reel": None, "Coeff_Min": None, "Craft_Manquants": None,
             "craft": {"recipe": recipe, "cpc": cpc, "n_auto": n_auto, "db": db},
             "runes_detail": [], "Runes": None, "is_craft": True,
+            "is_equip": gid in equip_gids,   # équipement/arme → craft x1/x10 seulement
         })
 
-    rows.sort(key=lambda r: ((r["Revenu_theo"] or 0) - (r["Cout_HDV"] or 0)
-                             if (r["Revenu_theo"] is not None and r["Cout_HDV"] is not None)
-                             else -1e18), reverse=True)
+    def _benef(r):
+        return ((r["Revenu_theo"] or 0) - (r["Cout_HDV"] or 0)
+                if (r["Revenu_theo"] is not None and r["Cout_HDV"] is not None) else -1e18)
+    rows.sort(key=_benef, reverse=True)
+    equip = [r for r in rows if r["is_equip"]][:_CRAFT_CAP]
+    other = [r for r in rows if not r["is_equip"]][:_CRAFT_CAP]
     return {"available": True, "craft_mode": use_db_craft,
-            "n_craftable": len(rows), "rows": rows[:_CRAFT_CAP]}
+            "n_craftable": len(rows),
+            "rows_equip": equip,        # tableau du bas (équipement)
+            "rows_other": other}        # tableau du haut (ressources/consommables)
 
 
 def build_rune_data(conn: sqlite3.Connection) -> dict:

@@ -118,6 +118,10 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .modal-bg.dual-right { justify-content:flex-end; background:transparent; pointer-events:none; }
   .modal-bg.dual-left .modal, .modal-bg.dual-right .modal { max-width:48vw; }
   .modal-bg.dual-right .modal { pointer-events:auto; }
+  #closeboth { position:fixed; top:12px; left:50%; transform:translateX(-50%); z-index:70;
+    background:var(--bad); color:#fff; border:none; border-radius:6px; padding:7px 16px;
+    font-size:13px; font-weight:600; cursor:pointer; box-shadow:0 2px 8px #0008; }
+  #closeboth:hover { filter:brightness(1.1); }
   .modtitle { cursor:pointer; } .modtitle:hover { text-decoration:underline; }
   .goicon { font-size:14px; opacity:.65; } .modtitle:hover .goicon { opacity:1; }
   .usedchips { display:flex; flex-wrap:wrap; gap:6px; margin:6px 0; }
@@ -217,6 +221,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 <div class="chart-tip" id="tip"></div>
 <div class="modal-bg" id="bmodal" style="display:none"><div class="modal" id="bmodal-box"></div></div>
 <div class="modal-bg" id="pmodal" style="display:none"><div class="modal" id="pmodal-box"></div></div>
+<button id="closeboth" style="display:none">✕ Tout fermer</button>
 
 <script id="dtv-data" type="application/json">/*__DTV_DATA__*/</script>
 <script>
@@ -722,12 +727,14 @@ function bestTier(tiers, totalNeeded){
 
 // Mode « smart » : batch (parmi x1/x10/x100/x1000) au coût de craft le + bas
 // → revenu fixe ⇒ coût mini = bénéfice maxi pour l'item.
+// Lots réalistes selon l'item : un équipement/arme ne se craft/vend que par 1 ou 10.
+function allowedBatches(r){ return r.is_equip ? ["1","10"] : ["10","100","1000"]; }
 function smartBatch(r){
   if(!r.craft) return null;
   // Smart = meilleure marge (cpc le + bas) qui RESPECTE le plafond d'investissement.
   // Ex : plafond 20k → on descend de x100 (180k) à x10 (19k) au lieu d'exclure l'item.
   let best=null, fallback=null;
-  for(const b of ["10","100","1000"]){   // x1 exclu : lot irréaliste
+  for(const b of allowedBatches(r)){
     const c=r.craft.cpc[b]; if(c==null) continue;
     if(fallback==null || c<fallback.cost) fallback={batch:b, cost:c};
     if(MAX_INVEST!=null && c*Number(b) > MAX_INVEST) continue;   // dépasse le capital max
@@ -742,7 +749,7 @@ function smartBatch(r){
 function budgetBatch(r, rev){
   if(!r.craft) return null;
   let best=null, fb=null;
-  for(const b of ["10","100","1000"]){
+  for(const b of allowedBatches(r)){
     const c=r.craft.cpc[b]; if(c==null) continue;
     const invest=c*Number(b);
     if(fb==null || invest<fb.invest) fb={batch:Number(b), cost:c, invest};   // repli : + petit capital
@@ -1035,27 +1042,28 @@ function renderBrisage(){
 
 // ── Onglet « Craft (revente) » ─────────────────────────────────────────────
 const CR = DTV.craft || {available:false};
-const CRAFTMAP = (()=>{ const m={}; (CR.rows||[]).forEach(r=>{ if(r.GID!=null && m[r.GID]==null) m[r.GID]=r; }); return m; })();
+const CRAFTMAP = (()=>{ const m={}; [...(CR.rows_other||[]),...(CR.rows_equip||[])].forEach(r=>{ if(r.GID!=null && m[r.GID]==null) m[r.GID]=r; }); return m; })();
 let CRAFT_DETAIL=false, CRAFT_Q="";
 function renderCraft(){
   const root=document.getElementById("craftsell-root");
   if(!CR.available){ root.innerHTML=`<div class="soon"><div class="big">🛠️</div><p>${CR.reason||'Pas de données de craft.'}</p></div>`; return; }
   const costTag = CR.craft_mode ? '<span class="tag ok">coût = craft (tiers HDV optimisés)</span>'
                                 : '<span class="tag warn">coût = craft (avgprices, sans optim. tiers)</span>';
-  let rows = CR.rows||[];
   const q=CRAFT_Q.trim().toLowerCase();
-  if(q) rows=rows.filter(r=>(r.Nom||"").toLowerCase().includes(q)||String(r.GID).includes(q));
+  const filt = rows => q ? rows.filter(r=>(r.Nom||"").toLowerCase().includes(q)||String(r.GID).includes(q)) : rows;
+  const other = filt(CR.rows_other||[]), equip = filt(CR.rows_equip||[]);
   root.innerHTML =
     `<div class="help">🛠️ <b>Craft (revente).</b> Crafter un item puis le <b>revendre</b> au marché (sans brisage). `+
     `<b>C/Batch</b> = capital · <b>CA</b> = ce que tu encaisses · <b>B×Batch</b> = bénéfice. Ligne <b style="color:var(--accent2)">verte</b> = rentable. `+
-    `Le batch <b>💰 budget</b> respecte ton plafond d'investissement. Clique un item → détail + graphe.</div>`+
+    `Le batch <b>💰 budget</b> respecte ton plafond. <b>Équipements</b> : craft par 1 ou 10 seulement (auto en smart/budget). Clique un item → détail + graphe.</div>`+
     `<div class="notice"><span><b>${fmt(CR.n_craftable)}</b> items craftables chiffrables</span><span>${costTag}</span>`+
     `<label class="chk muted"><input type="checkbox" id="cFav"${BFAVONLY?' checked':''}> ★ favoris</label>`+
     `<input id="cQ" type="search" placeholder="Rechercher (Entrée)…" value="${q.replace(/"/g,'&quot;')}" style="width:170px">`+
     `<button class="btn" id="cQbtn">🔍</button>`+
     `<button class="btn" id="craftDetail">${CRAFT_DETAIL?'Vue simple':'Toutes les colonnes'}</button>`+
     `<span style="margin-left:auto">Batch ${batchSelectorHTML()}</span></div>`+
-    `<div id="craftsell-tbl"></div>`;
+    `<h3 class="sec">📦 Ressources & consommables <span class="muted">— ${other.length}</span></h3><div id="craft-other-tbl"></div>`+
+    `<h3 class="sec">🛡️ Équipement & armes <span class="muted">— ${equip.length} · craft x1/x10</span></h3><div id="craft-equip-tbl"></div>`;
   root.querySelector(".batchsel").addEventListener("click", e=>{ const btn=e.target.closest("button"); if(!btn) return;
     BATCH=btn.dataset.b; renderCraft(); if(MODAL_CTX) openBModal(MODAL_CTX.r, MODAL_CTX.real); });
   document.getElementById("cFav").addEventListener("change", e=>{ BFAVONLY=e.target.checked; renderCraft(); });
@@ -1063,7 +1071,8 @@ function renderCraft(){
   document.getElementById("cQbtn").onclick=doQ;
   document.getElementById("cQ").addEventListener("change", doQ);   // valide à Entrée/sortie de champ
   document.getElementById("craftDetail").addEventListener("click", ()=>{ CRAFT_DETAIL=!CRAFT_DETAIL; renderCraft(); });
-  renderBTable("craftsell-tbl", rows, false, {k:"bbatch",dir:-1}, craftCols);
+  renderBTable("craft-other-tbl", other, false, {k:"bbatch",dir:-1}, craftCols);
+  renderBTable("craft-equip-tbl", equip, false, {k:"bbatch",dir:-1}, craftCols);
 }
 
 // ── Modale de détail (recette + tiers + runes + craft vs achat) ─────────────
@@ -1205,7 +1214,11 @@ function layoutModals(){
   const dual=bv&&pv;
   bm.classList.toggle("dual-left", dual);
   pm.classList.toggle("dual-right", dual);
+  document.getElementById("closeboth").style.display = (bv||pv) ? "block" : "none";
 }
+function closeBothModals(){ document.getElementById("bmodal").style.display="none"; MODAL_CTX=null;
+  document.getElementById("pmodal").style.display="none"; layoutModals(); }
+document.getElementById("closeboth").onclick = closeBothModals;
 // Ouvre le détail (craft/brisage/concassage) à GAUCHE et le graphe de l'item
 // à DROITE, côte à côte. Cliquer un ingrédient ne change que le graphe de droite.
 function openItemDetail(r, real){
@@ -1435,6 +1448,9 @@ function renderArbitrage(){
     {k:"ecartPct", l:"Écart %", cls:"var", title:"Marge en % du prix d'achat", get:r=>r.ecartPct, fmt:r=>r.ecartPct==null?'—':varCell(r.ecartPct)},
     {k:"benefLot", l:"Bénéf/lot", cls:"narrow", title:"Bénéfice net pour 1 lot vendu (prix lot vente − achat des unités)", get:r=>r.benefLot, fmt:r=>benFmt(r.benefLot)},
     {k:"capital", l:"Capital", cls:"narrow", title:"Mise à avancer pour 1 lot (taille lot × prix unitaire achat)", get:r=>r.capital, fmt:r=>fmt(r.capital)},
+    {k:"ratio", l:"Ratio", cls:"narrow", title:"Ratio vente/u ÷ achat/u (>1 = gain)",
+      get:r=>r.t[r.buy].unit>0?r.t[r.sell].unit/r.t[r.buy].unit:null,
+      fmt:r=>{ const v=r.t[r.buy].unit>0?r.t[r.sell].unit/r.t[r.buy].unit:null; return v==null?'<span class="muted">—</span>':v.toFixed(2); }},
   ];
   const col=cols.find(c=>c.k===ARB_SORT.k)||cols[6];
   rows.sort((a,b)=>{ let va=col.get(a),vb=col.get(b);
