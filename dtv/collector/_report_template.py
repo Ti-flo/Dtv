@@ -217,6 +217,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   <section class="tab" data-tab="affaires"><div id="affaires-root"></div></section>
   <section class="tab" data-tab="arbitrage"><div id="arb-root"></div></section>
   <section class="tab" data-tab="runes"><div id="runes-root"></div></section>
+  <section class="tab" data-tab="liste"><div id="liste-root"></div></section>
 </main>
 <div class="chart-tip" id="tip"></div>
 <div class="modal-bg" id="bmodal" style="display:none"><div class="modal" id="bmodal-box"></div></div>
@@ -310,7 +311,7 @@ function refreshAll(){ if(B.available) renderBrisage(); if(CR.available) renderC
 const TABS = [["prix","📈 Prix dans le temps"],["achats","🛒 Ressources achetées"],
               ["craft","⚒️ Craft & Brisage"],["craftsell","🛠️ Craft (revente)"],
               ["affaires","💎 Bonnes affaires"],
-              ["arbitrage","💱 Achat / Vente"],["runes","🔮 Runes"]];
+              ["arbitrage","💱 Achat / Vente"],["runes","🔮 Runes"],["liste","🧺 Ma liste"]];
 document.getElementById("tabs").innerHTML =
   TABS.map(([id,l],i)=>`<button data-go="${id}"${i===0?' class="active"':''}>${l}</button>`).join("");
 document.getElementById("tabs").addEventListener("click", e=>{
@@ -1075,6 +1076,68 @@ function renderCraft(){
   renderBTable("craft-equip-tbl", equip, false, {k:"bbatch",dir:-1}, craftCols);
 }
 
+// ── Onglet « 🧺 Ma liste » (panier de craft + liste d'achats) ──────────────
+let CRAFTLIST = (()=>{ try{ return JSON.parse(localStorage.getItem("dtv_craftlist"))||[]; }catch(e){ return []; } })();
+function saveCraftList(){ try{ localStorage.setItem("dtv_craftlist", JSON.stringify(CRAFTLIST)); }catch(e){} }
+// Retrouve la ligne (craft / brisage / concassage) d'un GID.
+function craftRowOf(gid){ return (typeof CRAFTMAP!=="undefined"&&CRAFTMAP[gid])
+  || (typeof BRISMAP!=="undefined"&&BRISMAP[gid])
+  || ((typeof RD!=="undefined"&&RD.concassage)?RD.concassage.find(x=>x.GID===gid):null); }
+function addToCraftList(gid, qty){ qty=Math.max(1,Math.round(qty||1));
+  const e=CRAFTLIST.find(x=>x.gid===gid); if(e) e.qty+=qty; else CRAFTLIST.push({gid,qty});
+  saveCraftList(); renderCraftList(); updateListBadge(); }
+function setCraftQty(gid, qty){ const e=CRAFTLIST.find(x=>x.gid===gid); if(!e) return;
+  qty=Math.max(1,Math.round(qty||1)); e.qty=qty; saveCraftList(); renderCraftList(); }
+function removeFromCraftList(gid){ CRAFTLIST=CRAFTLIST.filter(x=>x.gid!==gid); saveCraftList(); renderCraftList(); updateListBadge(); }
+function updateListBadge(){ const b=document.querySelector('nav.tabs button[data-go="liste"]');
+  if(b) b.textContent = "🧺 Ma liste" + (CRAFTLIST.length?` (${CRAFTLIST.length})`:""); }
+function renderCraftList(){
+  const root=document.getElementById("liste-root"); if(!root) return;
+  const intro = `<div class="help">🧺 <b>Ma liste de craft.</b> Ajoute des items depuis leur popup (bouton « ➕ Ma liste » + quantité). `+
+    `La liste s'accumule (persistée) et agrège <b>tous les ingrédients à acheter</b> en une seule liste — même avec plusieurs items différents, tu ne te trompes pas.</div>`;
+  if(!CRAFTLIST.length){ root.innerHTML=intro+'<div class="empty">Liste vide.</div>'; return; }
+  const shop={}; let totCost=0, totCA=0, totBenef=0;
+  const itemRows = CRAFTLIST.map(e=>{
+    const r=craftRowOf(e.gid);
+    const nom = r?r.Nom:(DTV.items.find(x=>x.gid===e.gid)||{}).nom||("GID "+e.gid);
+    if(!r) return `<tr><td class="name">${nom}</td><td><input type="number" min="1" value="${e.qty}" data-qty="${e.gid}" style="width:70px"></td>`+
+      `<td colspan="3" class="muted">ligne craft indisponible</td><td><button class="btn" data-rm="${e.gid}">✕</button></td></tr>`;
+    const d=deriveB(r,false);
+    const cost=d.cost!=null?d.cost*e.qty:null, ca=d.rev!=null?d.rev*e.qty:null;
+    const benef=(ca!=null&&cost!=null)?ca-cost:null;
+    if(cost!=null) totCost+=cost; if(ca!=null) totCA+=ca; if(benef!=null) totBenef+=benef;
+    ((r.craft&&r.craft.recipe)||[]).forEach(ing=>{ const k=normName(ing.nom);
+      const s=shop[k]||(shop[k]={nom:ing.nom, gid:NAMEGID[k], qty:0}); s.qty+=ing.qty*e.qty; });
+    return `<tr style="cursor:pointer" data-open="${e.gid}"><td class="name">${nom}</td>`+
+      `<td><input type="number" min="1" value="${e.qty}" data-qty="${e.gid}" style="width:70px" onclick="event.stopPropagation()"></td>`+
+      `<td class="narrow">${num(cost)}</td><td class="narrow">${caFmt(ca)}</td><td class="narrow">${benFmt(benef)}</td>`+
+      `<td><button class="btn" data-rm="${e.gid}" onclick="event.stopPropagation()">✕</button></td></tr>`;
+  }).join("");
+  // Liste d'achats agrégée
+  let shopCost=0; const shopRows=Object.values(shop).sort((a,b)=>a.nom.localeCompare(b.nom,'fr')).map(s=>{
+    const it=s.gid!=null?DTV.items.find(x=>x.gid===s.gid):null;
+    const st=it?statsOf(seriesOf(it,"avg")):null; const u=st?st.last:null;
+    const line=u!=null?u*s.qty:null; if(line!=null) shopCost+=line;
+    const attr=s.gid!=null?` style="cursor:pointer" data-ing="${s.gid}"`:'';
+    return `<tr${attr}><td class="name">${s.nom}</td><td class="narrow">${fmt(s.qty)}</td>`+
+      `<td class="narrow">${u!=null?fmt(u):_md}</td><td class="narrow">${line!=null?fmt(line):_md}</td></tr>`;
+  }).join("");
+  root.innerHTML = intro+
+    `<div class="controls"><button class="btn" id="clearList">🗑 Vider la liste</button>`+
+    `<span class="muted">Coût total ${num(totCost)} · CA total <b style="color:#fff">${fmt(totCA)}</b> · Bénéfice total ${benFmt(totBenef)}</span></div>`+
+    `<h3 class="sec">📋 Items à crafter</h3>`+
+    `<div class="tablewrap"><table><thead><tr><th class="name">Item</th><th>Qté</th><th class="narrow">Coût total</th><th class="narrow">CA total</th><th class="narrow">Bénéf total</th><th></th></tr></thead><tbody id="listItems">${itemRows}</tbody></table></div>`+
+    `<h3 class="sec">🛒 Ingrédients à acheter <span class="muted">— agrégé, prix moyen</span></h3>`+
+    `<div class="tablewrap"><table><thead><tr><th class="name">Ingrédient</th><th class="narrow">Qté totale</th><th class="narrow">Prix moyen u.</th><th class="narrow">Coût ligne</th></tr></thead><tbody id="shopRows">${shopRows}`+
+    `<tr><td class="name"><b>Total achats (prix moyen)</b></td><td></td><td></td><td class="narrow"><b style="color:#fff">${fmt(Math.round(shopCost))}</b></td></tr>`+
+    `</tbody></table></div>`;
+  document.getElementById("clearList").onclick=()=>{ if(confirm("Vider toute la liste ?")){ CRAFTLIST=[]; saveCraftList(); renderCraftList(); updateListBadge(); } };
+  root.querySelectorAll("input[data-qty]").forEach(inp=>inp.onchange=()=>setCraftQty(+inp.dataset.qty, +inp.value));
+  root.querySelectorAll("button[data-rm]").forEach(b=>b.onclick=()=>removeFromCraftList(+b.dataset.rm));
+  root.querySelectorAll("tr[data-open]").forEach(tr=>tr.onclick=()=>{ const r=craftRowOf(+tr.dataset.open); if(r) openItemDetail(r,false); });
+  root.querySelectorAll("#shopRows tr[data-ing]").forEach(tr=>tr.onclick=()=>openPriceModal(+tr.dataset.ing));
+}
+
 // ── Modale de détail (recette + tiers + runes + craft vs achat) ─────────────
 function openBModal(r, real){
   if(!r) return;
@@ -1193,6 +1256,9 @@ function openBModal(r, real){
       `<div class="b"><div class="v">${batchN&&cBenef!=null?benFmt(cBenef*batchN):'—'}</div><div class="l">Bénéfice TOTAL du batch</div></div>`+
       `<div class="b"><div class="v">${batchN&&cSellU!=null?fmt(cSellU*batchN):'—'}</div><div class="l">Revenu TOTAL du batch</div></div>`+
     `</div>`+
+    (r.GID?`<div class="kv" style="align-items:center"><span class="muted">🧺 Quantité à crafter :</span> `+
+      `<input id="bmodal-qty" type="number" min="1" value="${batchN||1}" style="width:80px"> `+
+      `<button class="btn" id="bmodal-add">➕ Ajouter à ma liste</button></div>`:'')+
     `<h3 class="sec">Recette ${c&&!c.db?'<span class="muted">(prix moyen, sans optim. tiers)</span>':''}</h3>`+
     `<table><thead><tr><th class="name">Ingrédient</th><th>Qté/craft</th><th title="Quantité totale pour le batch">Besoin</th><th>Tier</th><th title="Prix unitaire d'achat retenu">PU</th><th title="Dernier prix moyen marché">Moyen</th><th title="Prix médian historique">Médian</th><th title="Coût pour 1 craft">Coût ligne</th><th title="Coût pour tout le batch">Coût total</th></tr></thead><tbody>${recipeRows}</tbody></table>`+
     bottomSection;
@@ -1216,6 +1282,9 @@ function openBModal(r, real){
   });
   const mt=document.getElementById("bmodal-title");
   if(mt && r.GID) mt.onclick=()=>openPriceModal(r.GID);   // nom/icône → graphe (à droite)
+  const addBtn=document.getElementById("bmodal-add");
+  if(addBtn) addBtn.onclick=()=>{ const q=Math.max(1,Math.round(+document.getElementById("bmodal-qty").value||1));
+    addToCraftList(r.GID, q); addBtn.textContent="✓ Ajouté"; setTimeout(()=>{ if(addBtn.isConnected) addBtn.textContent="➕ Ajouter à ma liste"; },1200); };
   document.getElementById("bmodal-x").onclick = closeBModal;
   document.getElementById("bmodal").style.display = "flex";
   layoutModals();
@@ -1722,6 +1791,7 @@ renderCraft();
 renderAffaires();
 renderArbitrage();
 renderRunes();
+renderCraftList(); updateListBadge();
 if(DTV.items.length){
   // sélectionne le 1er item de la vue (niveau le plus bas) pour montrer un graphe d'emblée
   const first = computeRows()[0];
