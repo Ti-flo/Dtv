@@ -29,7 +29,10 @@ Grep le nom → Read offset+limit. Numéros indicatifs.
 | `DTV` | JSON embarqué. `items[{gid,nom,type,level,avg,hdv,recipe?,used_in?}]`, `brisage{coeff,theo,real}`, `craft{rows,...}`, `runes{runes,concassage,live_prices}` |
 | `BATCH` modes | `budget` (bénéf total maxi sous plafond invest — le bon défaut métier), `smart` (marge unitaire), `auto`, `10/100/1000`. `MAX_INVEST`/`MIN_BENEF` = filtres globaux (en-tête). `passInvestBenef()`. |
 | `sellBatchCols(real,lead,detail)` | Colonnes « produire puis revendre » partagées concassage + craft. `bestSell` avec repli prix moyen. |
-| `renderCraft()` / `CRAFTMAP` | Onglet Craft (revente). Icône ⚒️/📈 entre fiches et popups (`openItemDetail`, `layoutModals`). |
+| `renderCraft()` / `CRAFTMAP` | Onglet Craft (revente) : 2 tables `rows_other`/`rows_equip` (`is_equip`). `allowedBatches(r)` = équip x1/x10. Icône ⚒️/📈 entre fiches et popups (`openItemDetail`, `layoutModals`, bouton `#closeboth`). |
+| `CRAFTLIST` / `renderCraftList()` | Onglet « 🧺 Ma liste » : panier persisté + liste d'ingrédients agrégée. `addToCraftList(gid,qty)` depuis les popups. |
+| `recipeEconomie(r)` | Affaires induites : économie nette des promos (Σ qté×(médiane−prix)). |
+| batch `budget` | Maximise bénéf total sous `MAX_INVEST`. `smartBatch`/`budgetBatch` itèrent `allowedBatches(r)`. |
 | `COLS` | Colonnes tableau "Prix dans le temps" (fav,nom,type,niv,last,min,max,avg,varj,vars,varm,spark,vol,hdvn,hdvlast,gid) |
 | `normName(s)` | `s.toLowerCase().replace(/\s+/g," ").trim()` — toujours utiliser pour croiser les noms |
 | `seriesOf(it,src)` / `statsOf(s)` | Série de prix / stats {last,min,max,avg} |
