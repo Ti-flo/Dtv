@@ -307,7 +307,20 @@ function passInvestBenef(invest, benef){
   if(MIN_BENEF>0 && (benef==null || benef<MIN_BENEF)) return false;
   return true;
 }
-function refreshAll(){ if(B.available) renderBrisage(); if(CR.available) renderCraft(); renderAffaires(); renderArbitrage(); renderRunes(); }
+// Re-render UNIQUEMENT l'onglet concerné (perf : éviter de redessiner 2000+
+// lignes des autres onglets à chaque changement de batch/filtre dans un popup).
+function renderTab(id){ switch(id){
+  case "craft": if(B.available) renderBrisage(); break;
+  case "craftsell": if(CR.available) renderCraft(); break;
+  case "affaires": renderAffaires(); break;
+  case "arbitrage": renderArbitrage(); break;
+  case "runes": renderRunes(); break;
+  case "liste": renderCraftList(); break;
+} }
+function refreshActiveTab(){ const s=document.querySelector(".tab.active"); if(s) renderTab(s.dataset.tab); }
+// Les filtres globaux ne re-rendent que l'onglet visible ; les autres se
+// rafraîchissent à l'affichage (renderTab au clic d'onglet).
+function refreshAll(){ refreshActiveTab(); }
 const TABS = [["prix","📈 Prix dans le temps"],["achats","🛒 Ressources achetées"],
               ["craft","⚒️ Craft & Brisage"],["craftsell","🛠️ Craft (revente)"],
               ["affaires","💎 Bonnes affaires"],
@@ -319,6 +332,7 @@ document.getElementById("tabs").addEventListener("click", e=>{
   const id = b.dataset.go;
   document.querySelectorAll("nav.tabs button").forEach(x=>x.classList.toggle("active", x===b));
   document.querySelectorAll(".tab").forEach(s=>s.classList.toggle("active", s.dataset.tab===id));
+  renderTab(id);   // rafraîchit l'onglet avec l'état global courant (batch/filtres)
 });
 
 // ── Favoris / listes de suivi (persistés en localStorage) ──────────────────
@@ -363,8 +377,7 @@ function sellLotCtrlHTML(gid){
 // Re-render des vues dépendantes quand les lots de vente changent.
 function refreshSellViews(gid, root){
   showDetail(gid, root);
-  if(document.getElementById("conc-tbl") && RD.concassage && RD.concassage.length) _renderRuneConc();
-  if(document.getElementById("arb-root")) renderArbitrage();
+  if(typeof refreshActiveTab==="function") refreshActiveTab();
 }
 // ── Prix de vente avec règle de fraîcheur (relevé HDV < 3 j sinon prix moyen) ─
 const DATA_NOW = (DTV.generated_at ? Date.parse(DTV.generated_at) : Date.now());
@@ -728,8 +741,10 @@ function bestTier(tiers, totalNeeded){
 
 // Mode « smart » : batch (parmi x1/x10/x100/x1000) au coût de craft le + bas
 // → revenu fixe ⇒ coût mini = bénéfice maxi pour l'item.
-// Lots réalistes selon l'item : un équipement/arme ne se craft/vend que par 1 ou 10.
-function allowedBatches(r){ return r.is_equip ? ["1","10"] : ["10","100","1000"]; }
+// Lots réalistes selon l'item. Seules les lignes de l'onglet Craft portent
+// is_equip → un équipement/arme ne se craft que par 1 (jamais en masse).
+// (brisage/concassage n'ont pas is_equip → comportement inchangé.)
+function allowedBatches(r){ return r.is_equip ? ["1"] : ["10","100","1000"]; }
 function smartBatch(r){
   if(!r.craft) return null;
   // Smart = meilleure marge (cpc le + bas) qui RESPECTE le plafond d'investissement.
@@ -1091,6 +1106,32 @@ function setCraftQty(gid, qty){ const e=CRAFTLIST.find(x=>x.gid===gid); if(!e) r
 function removeFromCraftList(gid){ CRAFTLIST=CRAFTLIST.filter(x=>x.gid!==gid); saveCraftList(); renderCraftList(); updateListBadge(); }
 function updateListBadge(){ const b=document.querySelector('nav.tabs button[data-go="liste"]');
   if(b) b.textContent = "🧺 Ma liste" + (CRAFTLIST.length?` (${CRAFTLIST.length})`:""); }
+let LIST_RECURSE=true;   // décomposer les sous-crafts quand c'est moins cher
+// Meilleur tier d'ACHAT d'un ingrédient : prix unitaire le plus bas.
+function bestBuyTier(it){
+  let best=null;
+  ["x1","x10","x100","x1000"].forEach(src=>{ const st=statsOf(seriesOf(it,src)); if(!st||!(st.last>0)) return;
+    const u=st.last/LOTSIZE[src]; if(best==null||u<best.unit) best={tier:src, unit:u}; });
+  if(best==null){ const a=avgUnit(it); if(a!=null) best={tier:"avg", unit:a}; }
+  return best;
+}
+// Ajoute un ingrédient à la liste d'achats, en décomposant récursivement les
+// sous-crafts quand crafter l'ingrédient revient moins cher que l'acheter.
+function expandIngredient(nom, qty, shop, depth){
+  const k=normName(nom), gid=NAMEGID[k];
+  const it=gid!=null?DTV.items.find(x=>x.gid===gid):null;
+  if(LIST_RECURSE && it && it.recipe && it.recipe.length && depth<6){
+    const buy=bestBuyTier(it);
+    let craftCost=0, ok=true;
+    for(const [q,n] of it.recipe){ const g2=NAMEGID[normName(n)], i2=g2!=null?DTV.items.find(x=>x.gid===g2):null;
+      const bt2=i2?bestBuyTier(i2):null; if(!bt2){ ok=false; break; } craftCost+=q*bt2.unit; }
+    if(ok && (buy==null || craftCost<buy.unit)){   // crafter l'ingrédient est moins cher → décomposer
+      for(const [q,n] of it.recipe) expandIngredient(n, q*qty, shop, depth+1);
+      return;
+    }
+  }
+  const s=shop[k]||(shop[k]={nom, gid, qty:0}); s.qty+=qty;
+}
 function renderCraftList(){
   const root=document.getElementById("liste-root"); if(!root) return;
   const intro = `<div class="help">🧺 <b>Ma liste de craft.</b> Ajoute des items depuis leur popup (bouton « ➕ Ma liste » + quantité). `+
@@ -1106,32 +1147,36 @@ function renderCraftList(){
     const cost=d.cost!=null?d.cost*e.qty:null, ca=d.rev!=null?d.rev*e.qty:null;
     const benef=(ca!=null&&cost!=null)?ca-cost:null;
     if(cost!=null) totCost+=cost; if(ca!=null) totCA+=ca; if(benef!=null) totBenef+=benef;
-    ((r.craft&&r.craft.recipe)||[]).forEach(ing=>{ const k=normName(ing.nom);
-      const s=shop[k]||(shop[k]={nom:ing.nom, gid:NAMEGID[k], qty:0}); s.qty+=ing.qty*e.qty; });
+    ((r.craft&&r.craft.recipe)||[]).forEach(ing=> expandIngredient(ing.nom, ing.qty*e.qty, shop, 0));
     return `<tr style="cursor:pointer" data-open="${e.gid}"><td class="name">${nom}</td>`+
       `<td><input type="number" min="1" value="${e.qty}" data-qty="${e.gid}" style="width:70px" onclick="event.stopPropagation()"></td>`+
       `<td class="narrow">${num(cost)}</td><td class="narrow">${caFmt(ca)}</td><td class="narrow">${benFmt(benef)}</td>`+
       `<td><button class="btn" data-rm="${e.gid}" onclick="event.stopPropagation()">✕</button></td></tr>`;
   }).join("");
-  // Liste d'achats agrégée
+  // Liste d'achats agrégée (tier d'achat conseillé = prix unitaire le + bas).
   let shopCost=0; const shopRows=Object.values(shop).sort((a,b)=>a.nom.localeCompare(b.nom,'fr')).map(s=>{
     const it=s.gid!=null?DTV.items.find(x=>x.gid===s.gid):null;
-    const st=it?statsOf(seriesOf(it,"avg")):null; const u=st?st.last:null;
+    const bt=it?bestBuyTier(it):null, u=bt?bt.unit:null;
+    const tierLbl = bt?(bt.tier==="avg"?'<span class="muted">moyen</span>':bt.tier):_md;
+    const fcell = it?hdvFreshCell(it):_md;
     const line=u!=null?u*s.qty:null; if(line!=null) shopCost+=line;
     const attr=s.gid!=null?` style="cursor:pointer" data-ing="${s.gid}"`:'';
     return `<tr${attr}><td class="name">${s.nom}</td><td class="narrow">${fmt(s.qty)}</td>`+
-      `<td class="narrow">${u!=null?fmt(u):_md}</td><td class="narrow">${line!=null?fmt(line):_md}</td></tr>`;
+      `<td class="narrow">${tierLbl}</td><td class="narrow">${u!=null?fmt(u):_md}</td><td class="narrow">${fcell}</td>`+
+      `<td class="narrow">${line!=null?fmt(line):_md}</td></tr>`;
   }).join("");
   root.innerHTML = intro+
     `<div class="controls"><button class="btn" id="clearList">🗑 Vider la liste</button>`+
+    `<label class="chk muted"><input type="checkbox" id="listRec"${LIST_RECURSE?' checked':''}> décomposer les sous-crafts (récursif)</label>`+
     `<span class="muted">Coût total ${num(totCost)} · CA total <b style="color:#fff">${fmt(totCA)}</b> · Bénéfice total ${benFmt(totBenef)}</span></div>`+
     `<h3 class="sec">📋 Items à crafter</h3>`+
     `<div class="tablewrap"><table><thead><tr><th class="name">Item</th><th>Qté</th><th class="narrow">Coût total</th><th class="narrow">CA total</th><th class="narrow">Bénéf total</th><th></th></tr></thead><tbody id="listItems">${itemRows}</tbody></table></div>`+
-    `<h3 class="sec">🛒 Ingrédients à acheter <span class="muted">— agrégé, prix moyen</span></h3>`+
-    `<div class="tablewrap"><table><thead><tr><th class="name">Ingrédient</th><th class="narrow">Qté totale</th><th class="narrow">Prix moyen u.</th><th class="narrow">Coût ligne</th></tr></thead><tbody id="shopRows">${shopRows}`+
-    `<tr><td class="name"><b>Total achats (prix moyen)</b></td><td></td><td></td><td class="narrow"><b style="color:#fff">${fmt(Math.round(shopCost))}</b></td></tr>`+
+    `<h3 class="sec">🛒 Ingrédients à acheter <span class="muted">— agrégé · tier d'achat conseillé</span></h3>`+
+    `<div class="tablewrap"><table><thead><tr><th class="name">Ingrédient</th><th class="narrow">Qté totale</th><th class="narrow" title="Tier de lot au prix unitaire le plus bas">Tier conseillé</th><th class="narrow">Prix/u</th><th class="narrow" title="Fraîcheur HDV">F</th><th class="narrow">Coût ligne</th></tr></thead><tbody id="shopRows">${shopRows}`+
+    `<tr><td class="name"><b>Total achats</b></td><td></td><td></td><td></td><td></td><td class="narrow"><b style="color:#fff">${fmt(Math.round(shopCost))}</b></td></tr>`+
     `</tbody></table></div>`;
   document.getElementById("clearList").onclick=()=>{ if(confirm("Vider toute la liste ?")){ CRAFTLIST=[]; saveCraftList(); renderCraftList(); updateListBadge(); } };
+  document.getElementById("listRec").onchange=e=>{ LIST_RECURSE=e.target.checked; renderCraftList(); };
   root.querySelectorAll("input[data-qty]").forEach(inp=>inp.onchange=()=>setCraftQty(+inp.dataset.qty, +inp.value));
   root.querySelectorAll("button[data-rm]").forEach(b=>b.onclick=()=>removeFromCraftList(+b.dataset.rm));
   root.querySelectorAll("tr[data-open]").forEach(tr=>tr.onclick=()=>{ const r=craftRowOf(+tr.dataset.open); if(r) openItemDetail(r,false); });
@@ -1264,14 +1309,12 @@ function openBModal(r, real){
     bottomSection;
   box.querySelector(".batchsel").addEventListener("click", e=>{
     const btn=e.target.closest("button"); if(!btn) return;
-    BATCH=btn.dataset.b; renderBrisage(); if(CR.available) renderCraft(); if(document.getElementById("conc-tbl")) _renderRuneConc(); openBModal(r, real);
+    BATCH=btn.dataset.b; refreshActiveTab(); openBModal(r, real);
   });
-  // Cases de lots de vente : re-render modale + tables dépendantes.
+  // Cases de lots de vente : re-render modale + onglet visible.
   box.querySelectorAll("input[data-sell]").forEach(cb=>cb.onchange=()=>{
     toggleSell(+cb.dataset.gid, cb.dataset.sell);
-    if(document.getElementById("conc-tbl")) _renderRuneConc();
-    if(document.getElementById("arb-root")) renderArbitrage();
-    if(CR.available) renderCraft();
+    refreshActiveTab();
     openBModal(r, real);
   });
   // Clic sur un ingrédient → ouvre/maj le graphe de prix (popup de droite si mode double).
@@ -1342,21 +1385,29 @@ const DEALMAP = (()=>{ const m={}; DEALS.forEach(d=>{ m[normName(d.nom)]=d; }); 
 const NAMEGID = (()=>{ const m={}; DTV.items.forEach(it=>{ m[normName(it.nom)]=it.gid; }); return m; })();
 // Index GID → ligne brisage (pour proposer « briser » sur un item bon marché).
 const BRISMAP = (()=>{ const m={}; (B.theo||[]).forEach(r=>{ if(r.GID!=null && m[r.GID]==null) m[r.GID]=r; }); return m; })();
-// Meilleure action sur un item : le briser, le concasser, ou le revendre en lot
-// supérieur (arbitrage). Renvoie l'option au bénéfice le + élevé (au batch courant).
-function bestAction(gid){
-  const it = DTV.items.find(x=>x.gid===gid);
+// Meilleure DÉCISION sur un item bon marché maintenant (acheté à `cur`). Toutes
+// les options sont évaluées en achetant à cur, par UNITÉ, et on ne garde QUE les
+// rentables (>0). Évite de proposer une action qui fait perdre des kamas.
+let _actCache={};
+function bestActionDeal(deal){
+  if(deal.gid in _actCache) return _actCache[deal.gid];
+  const gid=deal.gid, cur=deal.st.cur, med=deal.st.med;
+  const it=DTV.items.find(x=>x.gid===gid);
   const opts=[];
-  const brz = BRISMAP[gid];
-  if(brz){ const d=deriveB(brz,false); if(d.benef!=null) opts.push({kind:"⚒️ Briser", benef:d.benef}); }
-  const crz = (typeof CRAFTMAP!=="undefined") ? CRAFTMAP[gid] : null;
-  if(crz){ const d=deriveB(crz,false); if(d.benef!=null) opts.push({kind:"🛠️ Crafter", benef:d.benef}); }
-  ((typeof _CONC_ING_MAP!=="undefined"&&_CONC_ING_MAP[gid])||[]).forEach(r=>{
-    const d=deriveB(r,false); if(d.benef!=null) opts.push({kind:"🔨 Concasser", benef:d.benef}); });
-  if(it && typeof arbRow==="function"){ const a=arbRow(it); if(a) opts.push({kind:"💱 Revendre "+a.sell, benef:a.benefLot}); }
-  if(!opts.length) return null;
-  opts.sort((x,y)=>(y.benef??-1e18)-(x.benef??-1e18));
-  return opts[0];
+  // Flip : acheter bas, revendre à la médiane (ou vendre haut si au-dessus).
+  if(med!=null){ if(med>cur) opts.push({kind:"🔄 Revente médiane", benef:med-cur});
+                 else if(cur>med) opts.push({kind:"📤 Vendre (prix haut)", benef:cur-med}); }
+  // Briser l'item acheté à cur → runes.
+  const brz=BRISMAP[gid]; if(brz && brz.Revenu_theo!=null) opts.push({kind:"⚒️ Briser", benef:brz.Revenu_theo-cur});
+  // Concasser : acheter 3 runes à cur → 1 du tier supérieur revendable.
+  ((typeof _CONC_ING_MAP!=="undefined"&&_CONC_ING_MAP[gid])||[]).forEach(o=>{
+    const rit=DTV.items.find(x=>x.gid===o.GID);
+    const b=rit?(bestSell(rit,o.GID)||(avgUnit(rit)!=null?{unit:avgUnit(rit)}:null)):null;
+    if(b) opts.push({kind:"🔨 Concasser", benef:b.unit-3*cur}); });
+  // Arbitrage de lot (achat tier n → vente tier n+1), bénéfice par unité.
+  if(it && typeof arbRow==="function"){ const a=arbRow(it); if(a) opts.push({kind:"💱 "+a.buy+"→"+a.sell, benef:a.ecartU}); }
+  const pos=opts.filter(o=>o.benef!=null && o.benef>0).sort((x,y)=>y.benef-x.benef);
+  return _actCache[deal.gid] = (pos[0]||null);
 }
 let AFF_SEUIL=-10, AFF_SENS="buy", AFF_SORT={k:"ecart",dir:1}, OP_SORT={k:"eco",dir:-1};
 const ecartColor = e => e<0 ? 'var(--accent2)' : e>0 ? 'var(--bad)' : 'var(--muted)';
@@ -1386,8 +1437,12 @@ function affOpCols(){
       fmt:o=>o.promo.map(x=>`${x.ing.nom} <span style="color:var(--accent2)" title="-${fmt(Math.round(x.save))} k vs médiane">${pct(x.deal.st.ecart)}</span>`).join(", ")},
     {k:"eco", l:"Économie", cls:"narrow", title:"Kamas économisés par craft grâce aux promos (net : ingrédients chers déduits)",
       get:o=>o.eco, fmt:o=>`<b style="color:var(--accent2)">${fmt(Math.round(o.eco))}</b>`},
+    {k:"ecopct", l:"Éco%", cls:"narrow", title:"Économie en % du coût de craft unitaire (Économie ÷ Craft)",
+      get:o=>o.d.cost?o.eco/o.d.cost*100:null, fmt:o=>o.d.cost?`<span style="color:var(--accent2)">${(o.eco/o.d.cost*100).toFixed(1)}%</span>`:_md},
     {k:"cost", l:"Craft", cls:"narrow", title:"Coût de craft au batch courant", get:o=>o.d.cost, fmt:o=>num(o.d.cost)},
     {k:"batchN", l:"Batch", cls:"narrow", get:o=>o.d.batchN, fmt:o=>o.d.batchN==null?_md:fmt(o.d.batchN)},
+    {k:"ca", l:"CA", cls:"narrow", title:"Chiffre d'affaires : valeur des runes du batch (revenu × Batch)",
+      get:o=>o.d.rev==null||o.d.batchN==null?null:o.d.rev*o.d.batchN, fmt:o=>caFmt(o.d.rev==null||o.d.batchN==null?null:o.d.rev*o.d.batchN)},
     {k:"benef", l:"Bénéf", cls:"narrow", get:o=>o.d.benef, fmt:o=>benFmt(o.d.benef)},
     {k:"bbatch", l:"B×Batch", cls:"narrow", get:o=>o.d.benef==null||o.d.batchN==null?null:o.d.benef*o.d.batchN, fmt:o=>benFmt(o.d.benef==null||o.d.batchN==null?null:o.d.benef*o.d.batchN)},
     {k:"cmin", l:"C.min", cls:"narrow", title:"Coeff serveur minimal pour être rentable", get:o=>o.d.cmin, fmt:o=>o.d.cmin==null?_md:fmt(o.d.cmin)+'%'},
@@ -1396,33 +1451,32 @@ function affOpCols(){
 }
 
 function affDealCols(){
+  const dItem = r=>DTV.items.find(x=>x.gid===r.gid);
   return [
     {k:"fav", l:"★", cls:"fav", sort:false, get:r=>0, fmt:r=>`<span class="star ${isFav(r.gid)?'on':''}" data-fav="${r.gid}">★</span>`},
     {k:"nom", l:"Nom", cls:"name", get:r=>r.nom, fmt:r=>r.nom},
-    {k:"type", l:"Type", cls:"type", get:r=>r.type, fmt:r=>r.type||'<span class="muted">—</span>'},
-    {k:"level", l:"Niv", cls:"narrow", get:r=>r.level, fmt:r=>r.level==null?'<span class="muted">—</span>':r.level},
+    {k:"type", l:"Type", cls:"type", get:r=>r.type, fmt:r=>r.type||_md},
+    {k:"vol", l:"V", cls:"narrow", title:"Volume V (activité marché)", get:r=>{const it=dItem(r);return it?volumeIndex(seriesOf(it,"avg")):null;}, fmt:r=>{const it=dItem(r);if(!it)return _md;const v=volumeIndex(seriesOf(it,"avg"));return v==null?_md:(+v).toFixed(1);}},
+    {k:"fresh", l:"F", cls:"narrow", title:"Fraîcheur HDV ; bascule sur le prix moyen (tag « moy ») si pas de relevé récent", get:r=>{const it=dItem(r); return it?(hdvFreshDays(it)??seriesFreshDays(seriesOf(it,"avg"))):null;}, fmt:r=>{const it=dItem(r); return it?dealFreshCell(it):_md;}},
     {k:"cur", l:"Prix actuel", cls:"narrow", get:r=>r.st.cur, fmt:r=>fmt(r.st.cur)},
-    {k:"med", l:"Médiane", cls:"narrow", get:r=>r.st.med, fmt:r=>fmt(r.st.med)},
+    {k:"med", l:"Médiane", cls:"narrow", title:"Prix médian historique", get:r=>r.st.med, fmt:r=>fmt(r.st.med)},
     {k:"ecart", l:"Écart", cls:"narrow", title:"Écart du prix actuel vs médiane historique", get:r=>r.st.ecart, fmt:r=>`<span style="color:${ecartColor(r.st.ecart)}">${pct(r.st.ecart)}</span>`},
-    {k:"z", l:"z", cls:"narrow", title:"z-score = (actuel − moyenne) / écart-type", get:r=>r.st.z, fmt:r=>r.st.z==null?'—':r.st.z.toFixed(2)},
-    {k:"n", l:"#pts", cls:"narrow", get:r=>r.st.n, fmt:r=>r.st.n},
-    {k:"fresh", l:"F", cls:"narrow", title:"Fraîcheur HDV ; bascule sur le prix moyen (tag « moy ») si pas de relevé HDV récent. ● vert <3j · orange <10j · rouge", get:r=>{const it=DTV.items.find(x=>x.gid===r.gid); return it?(hdvFreshDays(it)??seriesFreshDays(seriesOf(it,"avg"))):null;}, fmt:r=>{const it=DTV.items.find(x=>x.gid===r.gid); return it?dealFreshCell(it):'<span class="muted">—</span>';}},
-    {k:"action", l:"Meilleure action", cls:"narrow", title:"Usage le plus rentable de cet item bon marché : brisage, concassage ou revente en lot supérieur (au batch courant)",
-      get:r=>{ const a=bestAction(r.gid); return a?a.benef:null; },
-      fmt:r=>{ const a=bestAction(r.gid); return a?`${a.kind} ${benFmt(a.benef)}`:'<span class="muted">—</span>'; }},
+    {k:"action", l:"Meilleure action", cls:"narrow", title:"Décision la plus rentable en achetant maintenant : flip à la médiane, brisage, concassage, ou arbitrage de lot. Bénéfice PAR UNITÉ ; n'affiche que le rentable.",
+      get:r=>{ const a=bestActionDeal(r); return a?a.benef:null; },
+      fmt:r=>{ const a=bestActionDeal(r); return a?`${a.kind} <b style="color:var(--accent2)">+${fmt(Math.round(a.benef))}/u</b>`:_md; }},
     {k:"spark", l:"Tendance", sort:false, get:r=>0, fmt:r=>sparkline(lastDays(r.st.series,7))},
   ];
 }
 function renderAffaires(){
   const root=document.getElementById("affaires-root");
+  _actCache={};   // les actions dépendent du batch/lots courants → recalcul à chaque rendu
   const seuilSel = `<select id="affSeuil">${[-5,-10,-20,-30].map(v=>`<option value="${v}"${v===AFF_SEUIL?' selected':''}>${Math.abs(v)}%</option>`).join("")}</select>`;
   const sensSel = `<select id="affSens"><option value="buy"${AFF_SENS==="buy"?" selected":""}>sous la médiane (à acheter)</option><option value="sell"${AFF_SENS==="sell"?" selected":""}>au-dessus (à vendre)</option></select>`;
-  // Section 1 : affaires de prix.
+  // Section 1 : « top des décisions » — items dont une action est RENTABLE maintenant.
   let rows = DEALS.filter(d=> AFF_SENS==="buy" ? d.st.ecart<=AFF_SEUIL : d.st.ecart>=Math.abs(AFF_SEUIL));
-  // Bénéfice minimum : on ne garde que les items dont la meilleure action rapporte assez.
-  if(MIN_BENEF>0) rows = rows.filter(r=>{ const a=bestAction(r.gid); return a && a.benef!=null && a.benef>=MIN_BENEF; });
+  rows = rows.filter(r=>{ const a=bestActionDeal(r); return a && (MIN_BENEF<=0 || a.benef>=MIN_BENEF); });
   const cols = affDealCols();
-  const col = cols.find(c=>c.k===AFF_SORT.k)||cols[6];
+  const col = cols.find(c=>c.k===AFF_SORT.k)||cols.find(c=>c.k==="action")||cols[6];
   rows.sort((a,b)=>{ let va=col.get(a),vb=col.get(b);
     const an=va==null,bn=vb==null; if(an&&bn)return 0; if(an)return 1; if(bn)return -1;
     if(typeof va==="string"){va=va.toLowerCase();vb=vb.toLowerCase();return va<vb?-AFF_SORT.dir:va>vb?AFF_SORT.dir:0;}
