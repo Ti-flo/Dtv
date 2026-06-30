@@ -1083,8 +1083,9 @@ function openBModal(r, real){
   const c = r.craft;
   const batchN = d.batchN;
   // Lignes de recette au batch courant (best_tier porté de craft.py).
-  let recipeRows = '<tr><td colspan="6" class="muted">Recette indisponible (item non craftable ou prix manquants).</td></tr>';
+  let recipeRows = '<tr><td colspan="9" class="muted">Recette indisponible (item non craftable ou prix manquants).</td></tr>';
   if(c && c.recipe && c.recipe.length && batchN){
+    let recCraft=0, recBatch=0, recKnown=true;
     recipeRows = c.recipe.map(ing=>{
       const need = ing.qty * batchN;
       const bt = bestTier(ing.tiers, need);
@@ -1093,15 +1094,22 @@ function openBModal(r, real){
       let tier, unit, info;
       if(buy!=null && (alt==null || buy<=alt)){ tier="x"+bt.tier; unit=buy; info=`(${Math.ceil(need/bt.tier)} ach.)`; }
       else if(alt!=null){ tier='<span style="color:var(--accent2)">craft</span>'; unit=alt; info=""; }
-      const ingKey = normName(ing.nom);
-      const ingGid = NAMEGID[ingKey];
+      const ingGid = NAMEGID[normName(ing.nom)];
+      const it2 = ingGid!=null?DTV.items.find(x=>x.gid===ingGid):null;
+      const stA = it2?statsOf(seriesOf(it2,"avg")):null;
+      const moy = stA?fmt(stA.last):'<span class="muted">—</span>', med = stA?fmt(stA.avg):'<span class="muted">—</span>';
       const ingStyle = ingGid ? ' style="cursor:pointer" title="Cliquer pour voir le graphe de prix"' : '';
       const ingAttr = ingGid ? ` data-ing="${ingGid}"` : '';
-      if(buy==null && alt==null)
-        return `<tr${ingAttr}${ingStyle}><td>${ing.nom}</td><td>${ing.qty}</td><td>${fmt(need)}</td><td colspan="3" class="bad">prix inconnu</td></tr>`;
+      if(buy==null && alt==null){ recKnown=false;
+        return `<tr${ingAttr}${ingStyle}><td>${ing.nom}</td><td>${ing.qty}</td><td>${fmt(need)}</td><td colspan="2" class="bad">prix inconnu</td><td>${moy}</td><td>${med}</td><td colspan="2" class="bad">—</td></tr>`; }
+      const lineCraft=ing.qty*unit, lineBatch=need*unit; recCraft+=lineCraft; recBatch+=lineBatch;
       return `<tr${ingAttr}${ingStyle}><td>${ing.nom}</td><td>${ing.qty}</td><td>${fmt(need)}</td>`+
-             `<td>${tier}</td><td>${fmt(unit)}</td><td>${fmt(ing.qty*unit)} <span class="muted">${info}</span></td></tr>`;
-    }).join("");
+             `<td>${tier}</td><td>${fmt(unit)}</td><td>${moy}</td><td>${med}</td>`+
+             `<td>${fmt(lineCraft)} <span class="muted">${info}</span></td><td>${fmt(lineBatch)}</td></tr>`;
+    }).join("")+
+    `<tr><td class="name"><b>Total craft</b></td><td></td><td></td><td></td><td></td><td></td><td></td>`+
+    `<td><b style="color:#fff">${fmt(recCraft)}${recKnown?'':' ≈'}</b></td>`+
+    `<td><b style="color:#fff">${fmt(recBatch)}${recKnown?'':' ≈'}</b></td></tr>`;
   }
   const isCon = !!r.is_concassage;
   // Coeff appliqué dans ce contexte de table (réel si tableau réel, sinon théo).
@@ -1128,16 +1136,23 @@ function openBModal(r, real){
       (tierRows || `<tr><td colspan="3" class="muted">Pas de relevé HDV pour cette rune</td></tr>`)+
       `</tbody></table>`;
   } else {
+    let runeValTot=0, runeQtyTot=0;
     const runeRows = (r.runes_detail&&r.runes_detail.length)
       ? r.runes_detail.map(x=>{
           const qc = mcoeff!=null ? x.qty*mcoeff/100 : null;
+          const qBatch = qc!=null&&batchN ? qc*batchN : null;
+          const val = qc!=null?qc*x.price:null, valBatch = qBatch!=null?qBatch*x.price:null;
+          if(valBatch!=null){ runeValTot+=valBatch; runeQtyTot+=qBatch; }
           return `<tr><td>${x.nom} <span class="muted">(${x.code})</span></td><td>${dec2(x.qty)}</td>`+
-                 `<td>${dec2(qc)}</td><td>${fmt(x.price)}</td><td>${qc==null?'—':fmt(qc*x.price)}</td></tr>`;
+                 `<td>${dec2(qc)}</td><td>${qBatch==null?'—':dec2(qBatch)}</td><td>${fmt(x.price)}</td>`+
+                 `<td>${val==null?'—':fmt(val)}</td><td>${valBatch==null?'—':fmt(valBatch)}</td></tr>`;
         }).join("")
-      : '<tr><td colspan="5" class="muted">—</td></tr>';
+      : '<tr><td colspan="7" class="muted">—</td></tr>';
     bottomSection =
-      `<h3 class="sec">Runes obtenues <span class="muted">— Qté 100% / au coeff ${mcoeff!=null?mcoeff+'%':'?'}</span></h3>`+
-      `<table><thead><tr><th class="name">Rune</th><th>Qté @100%</th><th>Qté @coeff</th><th>Prix u.</th><th>Valeur</th></tr></thead><tbody>${runeRows}</tbody></table>`;
+      `<h3 class="sec">Runes obtenues <span class="muted">— au coeff ${mcoeff!=null?mcoeff+'%':'?'} · pour ${batchN||1} brisage(s)</span></h3>`+
+      `<table><thead><tr><th class="name">Rune</th><th title="Par brisage à 100%">Qté @100%</th><th title="Par brisage au coeff">Qté @coeff</th><th title="Total récupéré sur le batch">Qté ×Batch</th><th>Prix u.</th><th title="Valeur par brisage">Valeur/u</th><th title="Valeur totale du batch">Valeur ×Batch</th></tr></thead><tbody>${runeRows}`+
+      (r.runes_detail&&r.runes_detail.length?`<tr><td class="name"><b>Total runes</b></td><td></td><td></td><td><b>${dec2(runeQtyTot)}</b></td><td></td><td></td><td><b style="color:#fff">${fmt(runeValTot)}</b></td></tr>`:'')+
+      `</tbody></table>`;
   }
   // Verdict : concassage → acheter 3 simples vs acheter 1 Pa directement.
   let verdict = "";
@@ -1179,7 +1194,7 @@ function openBModal(r, real){
       `<div class="b"><div class="v">${batchN&&cSellU!=null?fmt(cSellU*batchN):'—'}</div><div class="l">Revenu TOTAL du batch</div></div>`+
     `</div>`+
     `<h3 class="sec">Recette ${c&&!c.db?'<span class="muted">(prix moyen, sans optim. tiers)</span>':''}</h3>`+
-    `<table><thead><tr><th class="name">Ingrédient</th><th>Qté/craft</th><th>Besoin</th><th>Tier</th><th>PU</th><th>Coût ligne</th></tr></thead><tbody>${recipeRows}</tbody></table>`+
+    `<table><thead><tr><th class="name">Ingrédient</th><th>Qté/craft</th><th title="Quantité totale pour le batch">Besoin</th><th>Tier</th><th title="Prix unitaire d'achat retenu">PU</th><th title="Dernier prix moyen marché">Moyen</th><th title="Prix médian historique">Médian</th><th title="Coût pour 1 craft">Coût ligne</th><th title="Coût pour tout le batch">Coût total</th></tr></thead><tbody>${recipeRows}</tbody></table>`+
     bottomSection;
   box.querySelector(".batchsel").addEventListener("click", e=>{
     const btn=e.target.closest("button"); if(!btn) return;
@@ -1274,19 +1289,42 @@ function bestAction(gid){
   opts.sort((x,y)=>(y.benef??-1e18)-(x.benef??-1e18));
   return opts[0];
 }
-let AFF_SEUIL=-10, AFF_SENS="buy", AFF_SORT={k:"ecart",dir:1}, OP_SORT={k:"cmin",dir:1};
+let AFF_SEUIL=-10, AFF_SENS="buy", AFF_SORT={k:"ecart",dir:1}, OP_SORT={k:"eco",dir:-1};
 const ecartColor = e => e<0 ? 'var(--accent2)' : e>0 ? 'var(--bad)' : 'var(--muted)';
-function affOpCols(){ return [
-  {k:"nom", l:"Item", cls:"name", get:o=>o.r.Nom, fmt:o=>o.r.Nom},
-  {k:"type", l:"Type", cls:"type", get:o=>o.r.Type||"", fmt:o=>o.r.Type||'<span class="muted">—</span>'},
-  {k:"promo", l:"Ingrédient(s) en promo", cls:"runesb", sort:false, get:o=>0,
-    fmt:o=>o.promo.map(x=>`${x.ing.nom} <span style="color:${ecartColor(x.deal.st.ecart)}">${pct(x.deal.st.ecart)}</span>`).join(", ")},
-  {k:"cost", l:"Craft", cls:"narrow", get:o=>o.d.cost, fmt:o=>num(o.d.cost)},
-  {k:"batchN", l:"Batch", cls:"narrow", get:o=>o.d.batchN, fmt:o=>o.d.batchN==null?'<span class="muted">—</span>':fmt(o.d.batchN)},
-  {k:"benef", l:"Bénéf", cls:"narrow", get:o=>o.d.benef, fmt:o=>benFmt(o.d.benef)},
-  {k:"cmin", l:"C.min", cls:"narrow", title:"Coeff serveur minimal pour être rentable", get:o=>o.d.cmin, fmt:o=>o.d.cmin==null?'<span class="muted">—</span>':fmt(o.d.cmin)+'%'},
-  {k:"rent", l:"Rent", cls:"narrow", get:o=>o.d.rent, fmt:o=>o.d.rent==null?'<span class="muted">—</span>':o.d.rent.toFixed(2)},
-]; }
+const _md = '<span class="muted">—</span>';
+// Économie NETTE d'un craft grâce aux promos : Σ qté×(médiane − prix actuel) sur
+// les ingrédients suivis. Un ingrédient AU-DESSUS de sa médiane réduit l'économie
+// (déduit) → on ne garde l'opportunité que si le total reste positif.
+function recipeEconomie(r){
+  let eco=0, promo=[], hasDeal=false;
+  for(const ing of (r.craft.recipe||[])){
+    const deal=DEALMAP[normName(ing.nom)]; if(!deal||deal.st.med==null) continue;
+    hasDeal=true;
+    const save = ing.qty*(deal.st.med - deal.st.cur);
+    eco += save;
+    if(save>0) promo.push({ing, deal, save});
+  }
+  return {eco, promo, hasDeal};
+}
+function affOpCols(){
+  const bItem = o=>DTV.items.find(it=>it.gid===o.r.GID);
+  return [
+    {k:"nom", l:"Item", cls:"name", get:o=>o.r.Nom, fmt:o=>o.r.Nom},
+    {k:"type", l:"Type", cls:"type", get:o=>o.r.Type||"", fmt:o=>o.r.Type||_md},
+    {k:"vol", l:"V", cls:"narrow", title:"Volume V de l'item", get:o=>{const it=bItem(o);return it?volumeIndex(seriesOf(it,"avg")):null;}, fmt:o=>{const it=bItem(o);if(!it)return _md;const v=volumeIndex(seriesOf(it,"avg"));return v==null?_md:(+v).toFixed(1);}},
+    {k:"fresh", l:"F", cls:"narrow", title:"Fraîcheur HDV", get:o=>hdvFreshDays(bItem(o)), fmt:o=>hdvFreshCell(bItem(o))},
+    {k:"promo", l:"Ingrédient(s) en promo", cls:"runesb", sort:false, get:o=>0,
+      fmt:o=>o.promo.map(x=>`${x.ing.nom} <span style="color:var(--accent2)" title="-${fmt(Math.round(x.save))} k vs médiane">${pct(x.deal.st.ecart)}</span>`).join(", ")},
+    {k:"eco", l:"Économie", cls:"narrow", title:"Kamas économisés par craft grâce aux promos (net : ingrédients chers déduits)",
+      get:o=>o.eco, fmt:o=>`<b style="color:var(--accent2)">${fmt(Math.round(o.eco))}</b>`},
+    {k:"cost", l:"Craft", cls:"narrow", title:"Coût de craft au batch courant", get:o=>o.d.cost, fmt:o=>num(o.d.cost)},
+    {k:"batchN", l:"Batch", cls:"narrow", get:o=>o.d.batchN, fmt:o=>o.d.batchN==null?_md:fmt(o.d.batchN)},
+    {k:"benef", l:"Bénéf", cls:"narrow", get:o=>o.d.benef, fmt:o=>benFmt(o.d.benef)},
+    {k:"bbatch", l:"B×Batch", cls:"narrow", get:o=>o.d.benef==null||o.d.batchN==null?null:o.d.benef*o.d.batchN, fmt:o=>benFmt(o.d.benef==null||o.d.batchN==null?null:o.d.benef*o.d.batchN)},
+    {k:"cmin", l:"C.min", cls:"narrow", title:"Coeff serveur minimal pour être rentable", get:o=>o.d.cmin, fmt:o=>o.d.cmin==null?_md:fmt(o.d.cmin)+'%'},
+    {k:"rent", l:"Rent", cls:"narrow", get:o=>o.d.rent, fmt:o=>o.d.rent==null?_md:o.d.rent.toFixed(2)},
+  ];
+}
 
 function affDealCols(){
   return [
@@ -1334,13 +1372,16 @@ function renderAffaires(){
       const invest=(d.cost!=null&&d.batchN!=null)?d.cost*d.batchN:null;
       const benefB=(d.benef!=null&&d.batchN!=null)?d.benef*d.batchN:null;
       if(!passInvestBenef(invest, benefB)) continue;   // capital max / bénéf min
-      const promo=r.craft.recipe.map(ing=>({ing, deal:DEALMAP[normName(ing.nom)]}))
-        .filter(x=>x.deal && x.deal.st.ecart<=AFF_SEUIL);
-      if(promo.length) ops.push({r, d, promo});
+      // Au moins un ingrédient en promo sous le seuil, ET économie nette positive
+      // (un ingrédient au prix haut ne doit pas annuler la promo).
+      const e=recipeEconomie(r);
+      if(!e.hasDeal || e.eco<=0) continue;
+      if(!e.promo.some(x=>x.deal.st.ecart<=AFF_SEUIL)) continue;
+      ops.push({r, d, promo:e.promo, eco:e.eco});
     }
   }
   const opCols = affOpCols();
-  const opCol = opCols.find(c=>c.k===OP_SORT.k)||opCols[6];
+  const opCol = opCols.find(c=>c.k===OP_SORT.k)||opCols[5];
   ops.sort((a,b)=>{ let va=opCol.get(a),vb=opCol.get(b);
     const an=va==null,bn=vb==null; if(an&&bn)return 0; if(an)return 1; if(bn)return -1;
     if(typeof va==="string"){va=va.toLowerCase();vb=vb.toLowerCase();return va<vb?-OP_SORT.dir:va>vb?OP_SORT.dir:0;}
