@@ -414,6 +414,15 @@ function freshCell(d, tag){
 }
 // Fraîcheur d'item : HDV par défaut ; si pas de HDV récent, repli sur la moyenne (taggé « moy »).
 function hdvFreshCell(it){ return freshCell(hdvFreshDays(it)); }
+// Couleur dégradée vert (bas marché) → rouge (cher) selon le ratio prix/médiane.
+function gradColor(ratio){ if(ratio==null||!isFinite(ratio)) return "var(--muted)";
+  const t=Math.max(0,Math.min(1,(ratio-0.6)/0.8)); return `hsl(${(120*(1-t)).toFixed(0)},65%,58%)`; }
+// Cellule « prix unitaire d'un tier » colorée selon la médiane (prix moyen).
+function tierUnitCell(it, src){
+  const st=statsOf(seriesOf(it,src)); if(!st||!(st.last>0)) return _md;
+  const u=st.last/LOTSIZE[src], med=avgUnit(it);
+  return `<span style="color:${gradColor(med?u/med:null)}" title="lot ${fmt(st.last)}">${fmt(u)}</span>`;
+}
 function dealFreshCell(it){
   const h = hdvFreshDays(it);
   if(h!=null && h<10) return freshCell(h);
@@ -1417,21 +1426,21 @@ function bestActionDeal(deal){
   const it=DTV.items.find(x=>x.gid===gid);
   const opts=[];
   // Flip : acheter bas, revendre à la médiane (ou vendre haut si au-dessus).
-  if(med!=null){ if(med>cur) opts.push({kind:"🔄 Revente médiane", benef:med-cur});
-                 else if(cur>med) opts.push({kind:"📤 Vendre (prix haut)", benef:cur-med}); }
+  if(med!=null){ if(med>cur) opts.push({kind:"🔄 Revente médiane", benef:med-cur, cost:cur, ca:med});
+                 else if(cur>med) opts.push({kind:"📤 Vendre (prix haut)", benef:cur-med, cost:med, ca:cur}); }
   // Briser l'item acheté à cur → runes.
-  const brz=BRISMAP[gid]; if(brz && brz.Revenu_theo!=null) opts.push({kind:"⚒️ Briser", benef:brz.Revenu_theo-cur});
+  const brz=BRISMAP[gid]; if(brz && brz.Revenu_theo!=null) opts.push({kind:"⚒️ Briser", benef:brz.Revenu_theo-cur, cost:cur, ca:brz.Revenu_theo});
   // Concasser : acheter 3 runes à cur → 1 du tier supérieur revendable.
   ((typeof _CONC_ING_MAP!=="undefined"&&_CONC_ING_MAP[gid])||[]).forEach(o=>{
     const rit=DTV.items.find(x=>x.gid===o.GID);
     const b=rit?(bestSell(rit,o.GID)||(avgUnit(rit)!=null?{unit:avgUnit(rit)}:null)):null;
-    if(b) opts.push({kind:"🔨 Concasser", benef:b.unit-3*cur}); });
+    if(b) opts.push({kind:"🔨 Concasser", benef:b.unit-3*cur, cost:3*cur, ca:b.unit}); });
   // Arbitrage de lot (achat tier n → vente tier n+1), bénéfice par unité.
-  if(it && typeof arbRow==="function"){ const a=arbRow(it); if(a) opts.push({kind:"💱 "+a.buy+"→"+a.sell, benef:a.ecartU}); }
+  if(it && typeof arbRow==="function"){ const a=arbRow(it); if(a) opts.push({kind:"💱 "+a.buy+"→"+a.sell, benef:a.ecartU, cost:a.t[a.buy].unit, ca:a.t[a.sell].unit}); }
   const pos=opts.filter(o=>o.benef!=null && o.benef>0).sort((x,y)=>y.benef-x.benef);
   return _actCache[deal.gid] = (pos[0]||null);
 }
-let AFF_SEUIL=-10, AFF_SENS="buy", AFF_SORT={k:"ecart",dir:1}, OP_SORT={k:"eco",dir:-1};
+let AFF_SEUIL=-10, AFF_SENS="buy", AFF_SORT={k:"ecart",dir:1}, OP_SORT={k:"eco",dir:-1}, OP2_SORT={k:"eco",dir:-1};
 const ecartColor = e => e<0 ? 'var(--accent2)' : e>0 ? 'var(--bad)' : 'var(--muted)';
 const _md = '<span class="muted">—</span>';
 // Économie NETTE d'un craft grâce aux promos : Σ qté×(médiane − prix actuel) sur
@@ -1485,9 +1494,12 @@ function affDealCols(){
     {k:"cur", l:"Prix actuel", cls:"narrow", get:r=>r.st.cur, fmt:r=>fmt(r.st.cur)},
     {k:"med", l:"Médiane", cls:"narrow", title:"Prix médian historique", get:r=>r.st.med, fmt:r=>fmt(r.st.med)},
     {k:"ecart", l:"Écart", cls:"narrow", title:"Écart du prix actuel vs médiane historique", get:r=>r.st.ecart, fmt:r=>`<span style="color:${ecartColor(r.st.ecart)}">${pct(r.st.ecart)}</span>`},
-    {k:"action", l:"Meilleure action", cls:"narrow", title:"Décision la plus rentable en achetant maintenant : flip à la médiane, brisage, concassage, ou arbitrage de lot. Bénéfice PAR UNITÉ ; n'affiche que le rentable.",
-      get:r=>{ const a=bestActionDeal(r); return a?a.benef:null; },
-      fmt:r=>{ const a=bestActionDeal(r); return a?`${a.kind} <b style="color:var(--accent2)">+${fmt(Math.round(a.benef))}/u</b>`:_md; }},
+    {k:"action", l:"Meilleure action", cls:"narrow", title:"Décision la plus rentable en achetant maintenant : flip à la médiane, brisage, concassage, ou arbitrage de lot. N'affiche que le rentable.",
+      get:r=>{ const a=bestActionDeal(r); return a?a.kind:""; }, fmt:r=>{ const a=bestActionDeal(r); return a?a.kind:_md; }},
+    {k:"acost", l:"Coût/u", cls:"narrow", title:"Coût unitaire de l'action (achat + transformation)", get:r=>{const a=bestActionDeal(r);return a?a.cost:null;}, fmt:r=>{const a=bestActionDeal(r);return a&&a.cost!=null?fmt(Math.round(a.cost)):_md;}},
+    {k:"aca", l:"CA/u", cls:"narrow", title:"Revenu unitaire de l'action", get:r=>{const a=bestActionDeal(r);return a?a.ca:null;}, fmt:r=>{const a=bestActionDeal(r);return a&&a.ca!=null?caFmt(Math.round(a.ca)):_md;}},
+    {k:"abenef", l:"Bénéf/u", cls:"narrow", title:"Bénéfice par unité de l'action", get:r=>{const a=bestActionDeal(r);return a?a.benef:null;}, fmt:r=>{const a=bestActionDeal(r);return a?`<b style="color:var(--accent2)">+${fmt(Math.round(a.benef))}</b>`:_md;}},
+    {k:"aratio", l:"Ratio", cls:"narrow gold", title:"Ratio CA/Coût de l'action (>1 = gain)", get:r=>{const a=bestActionDeal(r);return a&&a.cost?a.ca/a.cost:null;}, fmt:r=>{const a=bestActionDeal(r);return a&&a.cost?(a.ca/a.cost).toFixed(2):_md;}},
     {k:"spark", l:"Tendance", sort:false, get:r=>0, fmt:r=>sparkline(lastDays(r.st.series,7))},
   ];
 }
@@ -1500,7 +1512,7 @@ function renderAffaires(){
   let rows = DEALS.filter(d=> AFF_SENS==="buy" ? d.st.ecart<=AFF_SEUIL : d.st.ecart>=Math.abs(AFF_SEUIL));
   rows = rows.filter(r=>{ const a=bestActionDeal(r); return a && (MIN_BENEF<=0 || a.benef>=MIN_BENEF); });
   const cols = affDealCols();
-  const col = cols.find(c=>c.k===AFF_SORT.k)||cols.find(c=>c.k==="action")||cols[6];
+  const col = cols.find(c=>c.k===AFF_SORT.k)||cols.find(c=>c.k==="abenef")||cols[6];
   rows.sort((a,b)=>{ let va=col.get(a),vb=col.get(b);
     const an=va==null,bn=vb==null; if(an&&bn)return 0; if(an)return 1; if(bn)return -1;
     if(typeof va==="string"){va=va.toLowerCase();vb=vb.toLowerCase();return va<vb?-AFF_SORT.dir:va>vb?AFF_SORT.dir:0;}
@@ -1538,6 +1550,31 @@ function renderAffaires(){
   const opBody = ops.length ? ops.map(o=>`<tr data-gid="${o.r.GID}" style="cursor:pointer">`+
       opCols.map(c=>`<td class="${c.cls||''}">${c.fmt(o)}</td>`).join("")+"</tr>").join("")
     : `<tr><td colspan="${opCols.length}"><div class="empty">${B.available?"Aucune recette dont un ingrédient est en promo à ce seuil.":"Catalogue craft indisponible."}</div></td></tr>`;
+  // Section 3 : opportunités Craft (revente) induites (même logique, items à revendre).
+  let cops=[];
+  if(CR.available){
+    [...(CR.rows_other||[]),...(CR.rows_equip||[])].forEach(r=>{
+      if(!r.craft||!r.craft.recipe) return;
+      const d=deriveB(r,false); if(!(d.benef>0)) return;
+      const invest=(d.cost!=null&&d.batchN!=null)?d.cost*d.batchN:null;
+      const benefB=(d.benef!=null&&d.batchN!=null)?d.benef*d.batchN:null;
+      if(!passInvestBenef(invest, benefB)) return;
+      const e=recipeEconomie(r); if(!e.hasDeal || e.eco<=0) return;
+      if(!e.promo.some(x=>x.deal.st.ecart<=AFF_SEUIL)) return;
+      cops.push({r, d, promo:e.promo, eco:e.eco});
+    });
+  }
+  const cCols = affOpCols();
+  const cCol = cCols.find(c=>c.k===OP2_SORT.k)||cCols[5];
+  cops.sort((a,b)=>{ let va=cCol.get(a),vb=cCol.get(b);
+    const an=va==null,bn=vb==null; if(an&&bn)return 0; if(an)return 1; if(bn)return -1;
+    if(typeof va==="string"){va=va.toLowerCase();vb=vb.toLowerCase();return va<vb?-OP2_SORT.dir:va>vb?OP2_SORT.dir:0;}
+    return (va-vb)*OP2_SORT.dir; });
+  const cHead = cCols.map(c=>{ const arr=OP2_SORT.k===c.k?`<span class="arrow">${OP2_SORT.dir<0?"▼":"▲"}</span>`:"";
+    const tt=c.title?` title="${c.title}"`:""; return `<th class="${c.cls||''}"${tt} data-k="${c.k}" data-sort="${c.sort!==false}">${c.l} ${arr}</th>`; }).join("");
+  const cBody = cops.length ? cops.map(o=>`<tr data-gid="${o.r.GID}" style="cursor:pointer">`+
+      cCols.map(c=>`<td class="${c.cls||''}">${c.fmt(o)}</td>`).join("")+"</tr>").join("")
+    : `<tr><td colspan="${cCols.length}"><div class="empty">${CR.available?"Aucun craft à revendre dont un ingrédient est en promo.":"Onglet Craft indisponible."}</div></td></tr>`;
 
   root.innerHTML =
     `<div class="controls"><label class="muted">Affaires <b id="affCount"></b></label>`+
@@ -1547,7 +1584,9 @@ function renderAffaires(){
     `<h3 class="sec">💸 Prix bas du moment <span class="muted">— clique une ligne pour voir le graphe</span></h3>`+
     `<div class="tablewrap"><table id="affTbl"><thead><tr>${head}</tr></thead><tbody id="affRows">${body}</tbody></table></div>`+
     `<h3 class="sec">⚒️ Opportunités craft/brisage induites <span class="muted">— rentables maintenant ET un ingrédient est en promo · clique pour le détail</span></h3>`+
-    `<div class="tablewrap"><table id="opTbl"><thead><tr>${opHead}</tr></thead><tbody id="opRows">${opBody}</tbody></table></div>`;
+    `<div class="tablewrap"><table id="opTbl"><thead><tr>${opHead}</tr></thead><tbody id="opRows">${opBody}</tbody></table></div>`+
+    `<h3 class="sec">🛠️ Opportunités craft (revente) induites <span class="muted">— crafter puis revendre, avec un ingrédient en promo · clique pour le détail</span></h3>`+
+    `<div class="tablewrap"><table id="cOpTbl"><thead><tr>${cHead}</tr></thead><tbody id="cOpRows">${cBody}</tbody></table></div>`;
   document.getElementById("affCount").textContent = rows.length;
   document.getElementById("affSeuil").addEventListener("change", e=>{ AFF_SEUIL=Number(e.target.value); renderAffaires(); });
   document.getElementById("affSens").addEventListener("change", e=>{ AFF_SENS=e.target.value; AFF_SORT={k:"ecart",dir:AFF_SENS==="buy"?1:-1}; renderAffaires(); });
@@ -1570,6 +1609,15 @@ function renderAffaires(){
   document.getElementById("opRows").addEventListener("click", e=>{
     const tr=e.target.closest("tr"); if(!tr||!tr.dataset.gid) return;
     const r=B.theo.find(x=>x.GID==tr.dataset.gid); if(r) openItemDetail(r,false);
+  });
+  document.querySelector("#cOpTbl thead").addEventListener("click", e=>{
+    const th=e.target.closest("th"); if(!th||th.dataset.sort==="false"||!th.dataset.k) return;
+    const k=th.dataset.k; if(OP2_SORT.k===k) OP2_SORT.dir*=-1; else OP2_SORT={k, dir:(k==="nom"||k==="type")?1:-1};
+    renderAffaires();
+  });
+  document.getElementById("cOpRows").addEventListener("click", e=>{
+    const tr=e.target.closest("tr"); if(!tr||!tr.dataset.gid) return;
+    const r=(typeof CRAFTMAP!=="undefined")?CRAFTMAP[+tr.dataset.gid]:null; if(r) openItemDetail(r,false);
   });
 }
 // Popup graphe de prix d'un item (réutilise showDetail : graphe + Volume V +
@@ -1631,6 +1679,10 @@ function renderArbitrage(){
       get:r=>r.t[r.buy].unit, fmt:r=>`<span title="lot ${fmt(r.t[r.buy].lot)}">${r.buy} · ${fmt(r.t[r.buy].unit)}/u</span>`},
     {k:"sell",  l:"Vente", cls:"narrow", title:"Meilleur lot de vente autorisé · prix unitaire",
       get:r=>r.t[r.sell].unit, fmt:r=>`<span title="lot ${fmt(r.t[r.sell].lot)}">${r.sell} · ${fmt(r.t[r.sell].unit)}/u</span>`},
+    {k:"u1",   l:"x1/u",   cls:"narrow", title:"Prix unitaire en lot x1 (vert = bas / rouge = cher vs médiane)", get:r=>{const it=DTV.items.find(x=>x.gid===r.gid),s=it?statsOf(seriesOf(it,"x1")):null;return s?s.last:null;}, fmt:r=>tierUnitCell(DTV.items.find(x=>x.gid===r.gid),"x1")},
+    {k:"u10",  l:"x10/u",  cls:"narrow", title:"Prix unitaire en lot x10 (vert = bas / rouge = cher vs médiane)", get:r=>{const it=DTV.items.find(x=>x.gid===r.gid),s=it?statsOf(seriesOf(it,"x10")):null;return s?s.last/10:null;}, fmt:r=>tierUnitCell(DTV.items.find(x=>x.gid===r.gid),"x10")},
+    {k:"u100", l:"x100/u", cls:"narrow", title:"Prix unitaire en lot x100 (vert = bas / rouge = cher vs médiane)", get:r=>{const it=DTV.items.find(x=>x.gid===r.gid),s=it?statsOf(seriesOf(it,"x100")):null;return s?s.last/100:null;}, fmt:r=>tierUnitCell(DTV.items.find(x=>x.gid===r.gid),"x100")},
+    {k:"u1000",l:"x1000/u",cls:"narrow", title:"Prix unitaire en lot x1000 (vert = bas / rouge = cher vs médiane)", get:r=>{const it=DTV.items.find(x=>x.gid===r.gid),s=it?statsOf(seriesOf(it,"x1000")):null;return s?s.last/1000:null;}, fmt:r=>tierUnitCell(DTV.items.find(x=>x.gid===r.gid),"x1000")},
     {k:"ca", l:"CA", cls:"narrow", title:"Chiffre d'affaires : prix de vente du lot (ce que tu encaisses par lot vendu)", get:r=>r.t[r.sell].lot, fmt:r=>caFmt(r.t[r.sell].lot)},
     {k:"ecart", l:"Écart/u", cls:"narrow", title:"Bénéfice par unité = vente/u − achat/u", get:r=>r.ecartU, fmt:r=>benFmt(r.ecartU)},
     {k:"ecartPct", l:"Écart %", cls:"var", title:"Marge en % du prix d'achat", get:r=>r.ecartPct, fmt:r=>r.ecartPct==null?'—':varCell(r.ecartPct)},
