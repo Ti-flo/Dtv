@@ -103,6 +103,8 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .tag.ok { color:var(--accent2); border-color:#2ea04366; }
   .tag.warn { color:var(--warn); border-color:#d2992266; }
   td.good { color:var(--accent2); } td.bad { color:var(--bad); }
+  /* Repère visuel : coeff de brisage et rentabilité en doré léger */
+  td.gold, th.gold { color:#d8b978; }
   /* Coloration rentabilité des lignes (triage visuel) */
   tr.prof-pos { background:#2ea04314; } tr.prof-pos:hover { background:#2ea04322; }
   tr.prof-neg { background:#f8514910; } tr.prof-neg:hover { background:#f8514920; }
@@ -820,28 +822,45 @@ const USEDIN = (()=>{ const m={};
     const k=normName(ing.nom); (m[k]=m[k]||[]).push(r); }); });
   return m; })();
 
-// Recette de craft de l'item (depuis le catalogue) ; ingrédients cliquables.
+// Recette de craft de l'item. Utilise la recette OPTIMISÉE de la ligne craft
+// (tiers HDV + sous-crafts) quand elle existe → le total colle exactement au
+// popup craft. Repli sur la recette catalogue (prix moyen) sinon.
 function renderRecipe(it, host){
   if(!host) return;
-  const rec = it.recipe;
+  const row = (typeof craftRowOf==="function")?craftRowOf(it.gid):null;
+  const rec = (row&&row.craft&&row.craft.recipe&&row.craft.recipe.length)
+    ? row.craft.recipe
+    : (it.recipe? it.recipe.map(([q,n])=>({nom:n,qty:q,tiers:null,craft_unit:null})) : null);
   if(!rec || !rec.length){ host.innerHTML=""; return; }
-  let total=0, known=true;
-  const body = rec.map(([qty,nom])=>{ const gid=NAMEGID[normName(nom)];
-      const it2=gid!=null?DTV.items.find(x=>x.gid===gid):null;
-      const st=it2?statsOf(seriesOf(it2,"avg")):null;
-      const line = st? st.last*qty : null;
-      if(line==null) known=false; else total+=line;
-      const attr=gid!=null?` style="cursor:pointer" data-ing="${gid}"`:'';
-      return `<tr${attr}><td class="name">${nom}</td><td class="narrow">${qty}</td>`+
-             `<td class="narrow">${st?fmt(st.last):'<span class="muted">—</span>'}</td>`+
-             `<td class="narrow">${line!=null?fmt(line):'<span class="muted">—</span>'}</td></tr>`;
-    }).join("");
+  let totOpt=0, totBuy=0, known=true;
+  const body = rec.map(ing=>{
+    const gid=NAMEGID[normName(ing.nom)];
+    const it2=gid!=null?DTV.items.find(x=>x.gid===gid):null;
+    const st=it2?statsOf(seriesOf(it2,"avg")):null;
+    const bt = ing.tiers? bestTier(ing.tiers, ing.qty) : null;
+    const buyUnit = bt? bt.unit : (st? st.last : null);
+    const craftUnit = ing.craft_unit;
+    let unit, mode='achat', gain=null;
+    if(craftUnit!=null && (buyUnit==null || craftUnit<buyUnit)){ unit=craftUnit; mode='craft'; if(buyUnit!=null) gain=(buyUnit-craftUnit)*ing.qty; }
+    else unit=buyUnit;
+    const lineOpt = unit!=null? unit*ing.qty : null;
+    const lineBuy = buyUnit!=null? buyUnit*ing.qty : lineOpt;
+    if(lineOpt==null) known=false; else totOpt+=lineOpt;
+    if(lineBuy!=null) totBuy+=lineBuy;
+    const modeTag = mode==='craft'?'<span style="color:var(--accent2)">craft</span>':'<span class="muted">achat</span>';
+    const attr=gid!=null?` style="cursor:pointer" data-ing="${gid}"`:'';
+    return `<tr${attr}><td class="name">${ing.nom}</td><td class="narrow">${ing.qty}</td>`+
+           `<td class="narrow">${st?fmt(st.last):_md}</td>`+
+           `<td class="narrow">${unit!=null?fmt(unit):_md} ${modeTag}</td>`+
+           `<td class="narrow">${lineOpt!=null?fmt(lineOpt):_md}</td>`+
+           `<td class="narrow">${gain!=null?'<span style="color:var(--accent2)">+'+fmt(Math.round(gain))+'</span>':''}</td></tr>`;
+  }).join("");
   host.innerHTML =
     `<h3 class="sec">🧪 Recette de ${it.nom}</h3>`+
-    `<table><thead><tr><th class="name">Ingrédient</th><th class="narrow">Qté</th><th class="narrow">Prix moyen</th><th class="narrow">Coût ligne</th></tr></thead><tbody>`+
+    `<table><thead><tr><th class="name">Ingrédient</th><th class="narrow">Qté</th><th class="narrow" title="Dernier prix moyen">Moyen</th><th class="narrow" title="Prix unitaire retenu (achat ou sous-craft)">PU retenu</th><th class="narrow">Coût ligne</th><th class="narrow" title="Économie si on craft l'ingrédient au lieu de l'acheter">Gain craft</th></tr></thead><tbody>`+
     body+
-    `<tr><td class="name"><b>Total craft (prix moyen)</b></td><td></td><td></td>`+
-    `<td class="narrow"><b style="color:#fff">${fmt(total)}${known?'':' <span class="muted" title="certains ingrédients sans prix">≈</span>'}</b></td></tr>`+
+    `<tr><td class="name"><b>Total optimisé</b></td><td></td><td></td><td></td><td class="narrow"><b style="color:#fff">${fmt(Math.round(totOpt))}${known?'':' ≈'}</b></td><td></td></tr>`+
+    (Math.round(totBuy)!==Math.round(totOpt)?`<tr><td class="name muted">Total sans sous-craft (tout acheté)</td><td></td><td></td><td></td><td class="narrow muted">${fmt(Math.round(totBuy))}</td><td></td></tr>`:'')+
     `</tbody></table>`;
   host.querySelectorAll("tr[data-ing]").forEach(tr=>tr.onclick=()=>openPriceModal(+tr.dataset.ing));
 }
@@ -921,14 +940,14 @@ function brisageCols(real){
     {k:"batchN", l:"Batch", cls:"narrow", title:"Nombre de crafts utilisé pour le coût (auto = estimé selon le coût)", get:r=>r._d.batchN, fmt:r=>r._d.batchN==null?'<span class="muted">—</span>':fmt(r._d.batchN)},
     {k:"cbatch", l:"C/Batch", cls:"narrow", title:"Coût total du batch (Craft × Batch) — capital à avancer", get:r=>r._d.cost==null||r._d.batchN==null?null:r._d.cost*r._d.batchN, fmt:r=>r._d.cost==null||r._d.batchN==null?'<span class="muted">—</span>':num(r._d.cost*r._d.batchN)},
     {k:"ca", l:"CA", cls:"narrow", title:"Chiffre d'affaires : valeur totale des runes du batch (revenu × Batch) — ce que tu encaisses", get:r=>r._d.rev==null||r._d.batchN==null?null:r._d.rev*r._d.batchN, fmt:r=>caFmt(r._d.rev==null||r._d.batchN==null?null:r._d.rev*r._d.batchN)},
-    {k:"cmin", l:"C.min", cls:"narrow", title:"Coeff serveur minimal pour être rentable (plus bas = plus sûr)", get:r=>r._d.cmin, fmt:r=>r._d.cmin==null?'<span class="muted">—</span>':fmt(r._d.cmin)+"%"},
+    {k:"cmin", l:"C.min", cls:"narrow gold", title:"Coeff serveur minimal pour être rentable (plus bas = plus sûr)", get:r=>r._d.cmin, fmt:r=>r._d.cmin==null?'<span class="muted">—</span>':fmt(r._d.cmin)+"%"},
     {k:"benef", l:"Bénéf", cls:"narrow", title:"Bénéfice par unité (revenu runes − coût craft)", get:r=>r._d.benef, fmt:r=>benFmt(r._d.benef)},
     {k:"bbatch", l:"B×Batch", cls:"narrow", title:"Bénéfice total du batch (Bénéf × Batch)", get:r=>r._d.benef==null||r._d.batchN==null?null:r._d.benef*r._d.batchN, fmt:r=>benFmt(r._d.benef==null||r._d.batchN==null?null:r._d.benef*r._d.batchN)},
-    {k:"rent", l:"Rent", cls:"narrow", title:"Rentabilité = revenu / coût de craft", get:r=>r._d.rent, fmt:r=>r._d.rent==null?'<span class="muted">—</span>':r._d.rent.toFixed(2)},
-    {k:"rmoy", l:"R/moy", cls:"narrow", title:"Rentabilité si on ACHÈTE l'item au prix moyen et qu'on le brise (revenu / prix moyen)", get:r=>r._d.rmoy, fmt:r=>r._d.rmoy==null?'<span class="muted">—</span>':r._d.rmoy.toFixed(2)},
+    {k:"rent", l:"Rent", cls:"narrow gold", title:"Rentabilité = revenu / coût de craft", get:r=>r._d.rent, fmt:r=>r._d.rent==null?'<span class="muted">—</span>':r._d.rent.toFixed(2)},
+    {k:"rmoy", l:"R/moy", cls:"narrow gold", title:"Rentabilité si on ACHÈTE l'item au prix moyen et qu'on le brise (revenu / prix moyen)", get:r=>r._d.rmoy, fmt:r=>r._d.rmoy==null?'<span class="muted">—</span>':r._d.rmoy.toFixed(2)},
   );
   if(real) cols.push(
-    {k:"Coeff_Reel", l:"C.réel", cls:"narrow", get:r=>r.Coeff_Reel, fmt:r=>r.Coeff_Reel==null?'—':fmt(r.Coeff_Reel)+"%"},
+    {k:"Coeff_Reel", l:"C.réel", cls:"narrow gold", get:r=>r.Coeff_Reel, fmt:r=>r.Coeff_Reel==null?'—':fmt(r.Coeff_Reel)+"%"},
     {k:"Dernier_Brisage", l:"Brisé", cls:"narrow", get:r=>r.Dernier_Brisage||"", fmt:r=>r.Dernier_Brisage?dmy(r.Dernier_Brisage):'<span class="muted">—</span>'},
   );
   if(RUNETARGET){
@@ -1191,17 +1210,17 @@ function openBModal(r, real){
   const c = r.craft;
   const batchN = d.batchN;
   // Lignes de recette au batch courant (best_tier porté de craft.py).
-  let recipeRows = '<tr><td colspan="9" class="muted">Recette indisponible (item non craftable ou prix manquants).</td></tr>';
+  let recipeRows = '<tr><td colspan="10" class="muted">Recette indisponible (item non craftable ou prix manquants).</td></tr>';
   if(c && c.recipe && c.recipe.length && batchN){
-    let recCraft=0, recBatch=0, recKnown=true;
+    let recCraft=0, recBatch=0, recKnown=true, recBuyBatch=0;
     recipeRows = c.recipe.map(ing=>{
       const need = ing.qty * batchN;
       const bt = bestTier(ing.tiers, need);
       const buy = bt ? bt.unit : null, alt = ing.craft_unit;
       // miroir de craft_plan : moins cher entre acheter (tier) et crafter l'ingrédient
-      let tier, unit, info;
+      let tier, unit, info, gain=null;
       if(buy!=null && (alt==null || buy<=alt)){ tier="x"+bt.tier; unit=buy; info=`(${Math.ceil(need/bt.tier)} ach.)`; }
-      else if(alt!=null){ tier='<span style="color:var(--accent2)">craft</span>'; unit=alt; info=""; }
+      else if(alt!=null){ tier='<span style="color:var(--accent2)">craft</span>'; unit=alt; info=""; if(buy!=null) gain=(buy-alt)*need; }
       const ingGid = NAMEGID[normName(ing.nom)];
       const it2 = ingGid!=null?DTV.items.find(x=>x.gid===ingGid):null;
       const stA = it2?statsOf(seriesOf(it2,"avg")):null;
@@ -1209,15 +1228,18 @@ function openBModal(r, real){
       const ingStyle = ingGid ? ' style="cursor:pointer" title="Cliquer pour voir le graphe de prix"' : '';
       const ingAttr = ingGid ? ` data-ing="${ingGid}"` : '';
       if(buy==null && alt==null){ recKnown=false;
-        return `<tr${ingAttr}${ingStyle}><td>${ing.nom}</td><td>${ing.qty}</td><td>${fmt(need)}</td><td colspan="2" class="bad">prix inconnu</td><td>${moy}</td><td>${med}</td><td colspan="2" class="bad">—</td></tr>`; }
+        return `<tr${ingAttr}${ingStyle}><td>${ing.nom}</td><td>${ing.qty}</td><td>${fmt(need)}</td><td colspan="2" class="bad">prix inconnu</td><td>${moy}</td><td>${med}</td><td colspan="3" class="bad">—</td></tr>`; }
       const lineCraft=ing.qty*unit, lineBatch=need*unit; recCraft+=lineCraft; recBatch+=lineBatch;
+      recBuyBatch += (buy!=null?buy:unit)*need;   // total si tout acheté (sans sous-craft)
       return `<tr${ingAttr}${ingStyle}><td>${ing.nom}</td><td>${ing.qty}</td><td>${fmt(need)}</td>`+
              `<td>${tier}</td><td>${fmt(unit)}</td><td>${moy}</td><td>${med}</td>`+
-             `<td>${fmt(lineCraft)} <span class="muted">${info}</span></td><td>${fmt(lineBatch)}</td></tr>`;
+             `<td>${fmt(lineCraft)} <span class="muted">${info}</span></td><td>${fmt(lineBatch)}</td>`+
+             `<td>${gain!=null?'<span style="color:var(--accent2)">+'+fmt(Math.round(gain))+'</span>':''}</td></tr>`;
     }).join("")+
     `<tr><td class="name"><b>Total craft</b></td><td></td><td></td><td></td><td></td><td></td><td></td>`+
     `<td><b style="color:#fff">${fmt(recCraft)}${recKnown?'':' ≈'}</b></td>`+
-    `<td><b style="color:#fff">${fmt(recBatch)}${recKnown?'':' ≈'}</b></td></tr>`;
+    `<td><b style="color:#fff">${fmt(recBatch)}${recKnown?'':' ≈'}</b></td><td></td></tr>`+
+    (Math.round(recBuyBatch)!==Math.round(recBatch)?`<tr><td class="name muted">Total sans sous-craft (tout acheté)</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td class="muted">${fmt(Math.round(recBuyBatch))}</td><td></td></tr>`:'');
   }
   const isCon = !!r.is_concassage;
   // Coeff appliqué dans ce contexte de table (réel si tableau réel, sinon théo).
@@ -1305,7 +1327,7 @@ function openBModal(r, real){
       `<input id="bmodal-qty" type="number" min="1" value="${batchN||1}" style="width:80px"> `+
       `<button class="btn" id="bmodal-add">➕ Ajouter à ma liste</button></div>`:'')+
     `<h3 class="sec">Recette ${c&&!c.db?'<span class="muted">(prix moyen, sans optim. tiers)</span>':''}</h3>`+
-    `<table><thead><tr><th class="name">Ingrédient</th><th>Qté/craft</th><th title="Quantité totale pour le batch">Besoin</th><th>Tier</th><th title="Prix unitaire d'achat retenu">PU</th><th title="Dernier prix moyen marché">Moyen</th><th title="Prix médian historique">Médian</th><th title="Coût pour 1 craft">Coût ligne</th><th title="Coût pour tout le batch">Coût total</th></tr></thead><tbody>${recipeRows}</tbody></table>`+
+    `<table><thead><tr><th class="name" style="min-width:120px">Ingrédient</th><th>Qté</th><th title="Quantité totale pour le batch">Besoin</th><th>Tier</th><th title="Prix unitaire d'achat retenu">PU</th><th title="Dernier prix moyen marché">Moyen</th><th title="Prix médian historique">Médian</th><th title="Coût pour 1 craft">Coût ligne</th><th title="Coût pour tout le batch">Coût total</th><th title="Économie en craftant l'ingrédient au lieu de l'acheter">Gain craft</th></tr></thead><tbody>${recipeRows}</tbody></table>`+
     bottomSection;
   box.querySelector(".batchsel").addEventListener("click", e=>{
     const btn=e.target.closest("button"); if(!btn) return;
@@ -1431,6 +1453,7 @@ function affOpCols(){
   return [
     {k:"nom", l:"Item", cls:"name", get:o=>o.r.Nom, fmt:o=>o.r.Nom},
     {k:"type", l:"Type", cls:"type", get:o=>o.r.Type||"", fmt:o=>o.r.Type||_md},
+    {k:"niv", l:"Niv", cls:"narrow", get:o=>o.r.Niveau, fmt:o=>o.r.Niveau==null?_md:o.r.Niveau},
     {k:"vol", l:"V", cls:"narrow", title:"Volume V de l'item", get:o=>{const it=bItem(o);return it?volumeIndex(seriesOf(it,"avg")):null;}, fmt:o=>{const it=bItem(o);if(!it)return _md;const v=volumeIndex(seriesOf(it,"avg"));return v==null?_md:(+v).toFixed(1);}},
     {k:"fresh", l:"F", cls:"narrow", title:"Fraîcheur HDV", get:o=>hdvFreshDays(bItem(o)), fmt:o=>hdvFreshCell(bItem(o))},
     {k:"promo", l:"Ingrédient(s) en promo", cls:"runesb", sort:false, get:o=>0,
@@ -1445,8 +1468,9 @@ function affOpCols(){
       get:o=>o.d.rev==null||o.d.batchN==null?null:o.d.rev*o.d.batchN, fmt:o=>caFmt(o.d.rev==null||o.d.batchN==null?null:o.d.rev*o.d.batchN)},
     {k:"benef", l:"Bénéf", cls:"narrow", get:o=>o.d.benef, fmt:o=>benFmt(o.d.benef)},
     {k:"bbatch", l:"B×Batch", cls:"narrow", get:o=>o.d.benef==null||o.d.batchN==null?null:o.d.benef*o.d.batchN, fmt:o=>benFmt(o.d.benef==null||o.d.batchN==null?null:o.d.benef*o.d.batchN)},
-    {k:"cmin", l:"C.min", cls:"narrow", title:"Coeff serveur minimal pour être rentable", get:o=>o.d.cmin, fmt:o=>o.d.cmin==null?_md:fmt(o.d.cmin)+'%'},
-    {k:"rent", l:"Rent", cls:"narrow", get:o=>o.d.rent, fmt:o=>o.d.rent==null?_md:o.d.rent.toFixed(2)},
+    {k:"cmin", l:"C.min", cls:"narrow gold", title:"Coeff serveur minimal pour être rentable", get:o=>o.d.cmin, fmt:o=>o.d.cmin==null?_md:fmt(o.d.cmin)+'%'},
+    {k:"rent", l:"Rent", cls:"narrow gold", get:o=>o.d.rent, fmt:o=>o.d.rent==null?_md:o.d.rent.toFixed(2)},
+    {k:"runes", l:"Runes obtenues / u", cls:"runesb", sort:false, get:o=>0, fmt:o=>o.r.Runes||_md},
   ];
 }
 
@@ -1612,7 +1636,7 @@ function renderArbitrage(){
     {k:"ecartPct", l:"Écart %", cls:"var", title:"Marge en % du prix d'achat", get:r=>r.ecartPct, fmt:r=>r.ecartPct==null?'—':varCell(r.ecartPct)},
     {k:"benefLot", l:"Bénéf/lot", cls:"narrow", title:"Bénéfice net pour 1 lot vendu (prix lot vente − achat des unités)", get:r=>r.benefLot, fmt:r=>benFmt(r.benefLot)},
     {k:"capital", l:"Capital", cls:"narrow", title:"Mise à avancer pour 1 lot (taille lot × prix unitaire achat)", get:r=>r.capital, fmt:r=>fmt(r.capital)},
-    {k:"ratio", l:"Ratio", cls:"narrow", title:"Ratio vente/u ÷ achat/u (>1 = gain)",
+    {k:"ratio", l:"Ratio", cls:"narrow gold", title:"Ratio vente/u ÷ achat/u (>1 = gain)",
       get:r=>r.t[r.buy].unit>0?r.t[r.sell].unit/r.t[r.buy].unit:null,
       fmt:r=>{ const v=r.t[r.buy].unit>0?r.t[r.sell].unit/r.t[r.buy].unit:null; return v==null?'<span class="muted">—</span>':v.toFixed(2); }},
   ];
@@ -1712,15 +1736,15 @@ function sellBatchCols(real, lead, detail){
     {k:"bbatch", l:"B×Batch", cls:"narrow", title:"Bénéfice total du batch au meilleur lot autorisé (règle relevé <3j)",
       get:r=>{ const b=best(r); return b&&r._d.cost!=null&&r._d.batchN!=null?(b.unit-r._d.cost)*r._d.batchN:null; },
       fmt:r=>{ const b=best(r); return benFmt(b&&r._d.cost!=null&&r._d.batchN!=null?(b.unit-r._d.cost)*r._d.batchN:null); }},
-    {k:"rbatch", l:"RBatch", cls:"narrow", title:"Ratio au meilleur lot autorisé (vente/u ÷ coût/u)",
+    {k:"rbatch", l:"RBatch", cls:"narrow gold", title:"Ratio au meilleur lot autorisé (vente/u ÷ coût/u)",
       get:r=>{ const b=best(r); return b&&r._d.cost?b.unit/r._d.cost:null; },
       fmt:r=>{ const b=best(r); return ratFmt(b&&r._d.cost?b.unit/r._d.cost:null); }},
     {k:"b10", l:"B×10", cls:"narrow", title:"Bénéfice total d'un lot de 10 (vente <3j sinon prix moyen)",
       get:r=>bLot(r,"x10",10), fmt:r=>isSellOn(r.GID,"x10")?benFmt(bLot(r,"x10",10)):off},
-    {k:"r10", l:"R10", cls:"narrow", title:"Ratio en vente par 10", get:r=>rTier(r,"x10"), fmt:r=>isSellOn(r.GID,"x10")?ratFmt(rTier(r,"x10")):off},
+    {k:"r10", l:"R10", cls:"narrow gold", title:"Ratio en vente par 10", get:r=>rTier(r,"x10"), fmt:r=>isSellOn(r.GID,"x10")?ratFmt(rTier(r,"x10")):off},
     {k:"b100", l:"B×100", cls:"narrow", title:"Bénéfice total d'un lot de 100", get:r=>bLot(r,"x100",100), fmt:r=>isSellOn(r.GID,"x100")?benFmt(bLot(r,"x100",100)):off},
-    {k:"r100", l:"R100", cls:"narrow", title:"Ratio en vente par 100", get:r=>rTier(r,"x100"), fmt:r=>isSellOn(r.GID,"x100")?ratFmt(rTier(r,"x100")):off},
-    {k:"rmoyen", l:"RMoyen", cls:"narrow", title:"Ratio sur prix moyen marché (référence) = prix moyen/u ÷ coût/u",
+    {k:"r100", l:"R100", cls:"narrow gold", title:"Ratio en vente par 100", get:r=>rTier(r,"x100"), fmt:r=>isSellOn(r.GID,"x100")?ratFmt(rTier(r,"x100")):off},
+    {k:"rmoyen", l:"RMoyen", cls:"narrow gold", title:"Ratio sur prix moyen marché (référence) = prix moyen/u ÷ coût/u",
       get:r=>{ const it=resIt(r), a=it?avgUnit(it):null; return a&&r._d.cost?a/r._d.cost:null; },
       fmt:r=>{ const it=resIt(r), a=it?avgUnit(it):null; return ratFmt(a&&r._d.cost?a/r._d.cost:null); }},
   ]);
