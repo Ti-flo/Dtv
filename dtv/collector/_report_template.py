@@ -753,9 +753,9 @@ function bestTier(tiers, totalNeeded){
 // Mode « smart » : batch (parmi x1/x10/x100/x1000) au coût de craft le + bas
 // → revenu fixe ⇒ coût mini = bénéfice maxi pour l'item.
 // Lots réalistes selon l'item. Seules les lignes de l'onglet Craft portent
-// is_equip → un équipement/arme ne se craft que par 1 (jamais en masse).
+// is_equip → un équipement/arme ne se craft que par 1 ou 10.
 // (brisage/concassage n'ont pas is_equip → comportement inchangé.)
-function allowedBatches(r){ return r.is_equip ? ["1"] : ["10","100","1000"]; }
+function allowedBatches(r){ return r.is_equip ? ["1","10"] : ["10","100","1000"]; }
 function smartBatch(r){
   if(!r.craft) return null;
   // Smart = meilleure marge (cpc le + bas) qui RESPECTE le plafond d'investissement.
@@ -787,18 +787,21 @@ function budgetBatch(r, rev){
   }
   return best || fb;
 }
-// Coût de craft du batch courant (cpc précalculé par Python = source unique).
-function bCost(r){
+// Coût de craft (cpc précalculé par Python). `batch` optionnel = force un mode
+// (ex : tableau équipement en x1/x10) ; sinon le batch global.
+function bCost(r, batch){
+  batch = batch===undefined ? BATCH : batch;
   if(!r.craft) return r.Cout_HDV;
-  if(BATCH==="smart"){ const s=smartBatch(r); return s?s.cost:null; }
-  if(BATCH==="budget"){ const s=budgetBatch(r, r.Revenu_theo); return s?s.cost:null; }
-  return r.craft.cpc[BATCH] ?? null;
+  if(batch==="smart"){ const s=smartBatch(r); return s?s.cost:null; }
+  if(batch==="budget"){ const s=budgetBatch(r, r.Revenu_theo); return s?s.cost:null; }
+  return r.craft.cpc[batch] ?? null;
 }
-function bBatchN(r){
-  if(BATCH==="smart"){ const s=r.craft?smartBatch(r):null; return s?Number(s.batch):null; }
-  if(BATCH==="budget"){ const s=r.craft?budgetBatch(r,r.Revenu_theo):null; return s?s.batch:null; }
-  if(BATCH==="auto") return r.craft ? (r.craft.n_auto ?? null) : null;
-  return Number(BATCH);
+function bBatchN(r, batch){
+  batch = batch===undefined ? BATCH : batch;
+  if(batch==="smart"){ const s=r.craft?smartBatch(r):null; return s?Number(s.batch):null; }
+  if(batch==="budget"){ const s=r.craft?budgetBatch(r,r.Revenu_theo):null; return s?s.batch:null; }
+  if(batch==="auto") return r.craft ? (r.craft.n_auto ?? null) : null;
+  return Number(batch);
 }
 // Runes : qté d'une rune ciblée, total de runes prédites par craft.
 function runeQty(r, code){ const x=(r.runes_detail||[]).find(u=>u.code===code); return x?x.qty:null; }
@@ -806,9 +809,10 @@ function totalRunes(r){ const d=r.runes_detail||[]; return d.length?d.reduce((a,
 // Coeff appliqué à une ligne : réel s'il existe, sinon théorique.
 function bCoeff(r){ return r.Coeff_Reel!=null ? r.Coeff_Reel : B.coeff; }
 // Métriques recalculées pour le batch courant (revenu indépendant du batch).
-function deriveB(r, real){
+// `batch` optionnel force un mode (tableau équipement) ; sinon batch global.
+function deriveB(r, real, batch){
   const rev = real ? r.Revenu_reel : r.Revenu_theo;
-  const cost = bCost(r), base = r.Base_coeff100;
+  const cost = bCost(r, batch), base = r.Base_coeff100;
   return {
     rev, cost,
     benef: (rev==null||cost==null) ? null : rev-cost,
@@ -975,6 +979,8 @@ function brisageCols(real){
   return cols;
 }
 const BSORT = {};
+// Batch forcé par tableau (ex : équipement en x1/x10 indépendant du global).
+const BATCH_BY_HOST = {};
 // colsFn optionnel : si fourni, remplace brisageCols (et désactive RUNETARGET filter).
 function renderBTable(hostId, allRows, real, defaultSort, colsFn){
   const customCols = colsFn != null;
@@ -982,7 +988,8 @@ function renderBTable(hostId, allRows, real, defaultSort, colsFn){
   let rows = allRows;
   if(BFAVONLY) rows = rows.filter(r=>isFav(r.GID));
   if(RUNETARGET && !customCols) rows = rows.filter(r=>runeQty(r,RUNETARGET)!=null);
-  rows.forEach(r=>{ r._d = deriveB(r, real); });   // recalcul au batch courant
+  const effBatch = BATCH_BY_HOST[hostId];   // undefined = batch global
+  rows.forEach(r=>{ r._d = deriveB(r, real, effBatch); });   // recalcul au batch (forcé ou global)
   // Filtres globaux capital max / bénéfice min (par batch).
   rows = rows.filter(r=>{
     const invest = (r._d.cost!=null&&r._d.batchN!=null) ? r._d.cost*r._d.batchN : null;
@@ -1087,7 +1094,7 @@ function renderBrisage(){
 // ── Onglet « Craft (revente) » ─────────────────────────────────────────────
 const CR = DTV.craft || {available:false};
 const CRAFTMAP = (()=>{ const m={}; [...(CR.rows_other||[]),...(CR.rows_equip||[])].forEach(r=>{ if(r.GID!=null && m[r.GID]==null) m[r.GID]=r; }); return m; })();
-let CRAFT_DETAIL=false, CRAFT_Q="";
+let CRAFT_DETAIL=false, CRAFT_Q="", EQUIP_BATCH="1";   // équipement : x1 ou x10 (indépendant)
 function renderCraft(){
   const root=document.getElementById("craftsell-root");
   if(!CR.available){ root.innerHTML=`<div class="soon"><div class="big">🛠️</div><p>${CR.reason||'Pas de données de craft.'}</p></div>`; return; }
@@ -1107,7 +1114,11 @@ function renderCraft(){
     `<button class="btn" id="craftDetail">${CRAFT_DETAIL?'Vue simple':'Toutes les colonnes'}</button>`+
     `<span style="margin-left:auto">Batch ${batchSelectorHTML()}</span></div>`+
     `<h3 class="sec">📦 Ressources & consommables <span class="muted">— ${other.length}</span></h3><div id="craft-other-tbl"></div>`+
-    `<h3 class="sec">🛡️ Équipement & armes <span class="muted">— ${equip.length} · craft x1/x10</span></h3><div id="craft-equip-tbl"></div>`;
+    `<h3 class="sec">🛡️ Équipement & armes <span class="muted">— ${equip.length}</span></h3>`+
+    `<div class="controls" style="margin:2px 0 6px"><span class="muted">Batch équip :</span> `+
+      `<span class="batchsel" id="equipBatch">`+["1","10"].map(b=>`<button data-eb="${b}" class="${b===EQUIP_BATCH?'on':''}">x${b}</button>`).join("")+`</span>`+
+      `<span class="muted">— un équipement se craft rarement en masse</span></div>`+
+    `<div id="craft-equip-tbl"></div>`;
   root.querySelector(".batchsel").addEventListener("click", e=>{ const btn=e.target.closest("button"); if(!btn) return;
     BATCH=btn.dataset.b; renderCraft(); if(MODAL_CTX) openBModal(MODAL_CTX.r, MODAL_CTX.real); });
   document.getElementById("cFav").addEventListener("change", e=>{ BFAVONLY=e.target.checked; renderCraft(); });
@@ -1115,6 +1126,9 @@ function renderCraft(){
   document.getElementById("cQbtn").onclick=doQ;
   document.getElementById("cQ").addEventListener("change", doQ);   // valide à Entrée/sortie de champ
   document.getElementById("craftDetail").addEventListener("click", ()=>{ CRAFT_DETAIL=!CRAFT_DETAIL; renderCraft(); });
+  document.getElementById("equipBatch").addEventListener("click", e=>{ const btn=e.target.closest("button"); if(!btn) return;
+    EQUIP_BATCH=btn.dataset.eb; BATCH_BY_HOST["craft-equip-tbl"]=EQUIP_BATCH; renderCraft(); });
+  BATCH_BY_HOST["craft-equip-tbl"]=EQUIP_BATCH;   // le tableau équipement ignore le batch global
   renderBTable("craft-other-tbl", other, false, {k:"bbatch",dir:-1}, craftCols);
   renderBTable("craft-equip-tbl", equip, false, {k:"bbatch",dir:-1}, craftCols);
 }
@@ -1212,10 +1226,13 @@ function renderCraftList(){
 }
 
 // ── Modale de détail (recette + tiers + runes + craft vs achat) ─────────────
+function equipBatchSelHTML(){ return '<span class="batchsel">'+["1","10"].map(b=>
+  `<button data-eb="${b}" class="${b===EQUIP_BATCH?'on':''}">x${b}</button>`).join("")+'</span>'; }
 function openBModal(r, real){
   if(!r) return;
   MODAL_CTX = {r, real};
-  const d = deriveB(r, real);
+  const useBatch = r.is_equip ? EQUIP_BATCH : undefined;
+  const d = deriveB(r, real, useBatch);
   const c = r.craft;
   const batchN = d.batchN;
   // Lignes de recette au batch courant (best_tier porté de craft.py).
@@ -1326,7 +1343,7 @@ function openBModal(r, real){
       (!isCon?`<div class="b"><div class="v">${d.cmin==null?'—':fmt(d.cmin)+'%'}</div><div class="l">Coeff min</div></div>`:'')+
     `</div>`+
     verdict+
-    `<div class="kv" style="align-items:center"><span class="muted">Batch :</span> ${batchSelectorHTML()} <span class="muted">${batchN?('= '+fmt(batchN)+' crafts'):''}</span></div>`+
+    `<div class="kv" style="align-items:center"><span class="muted">Batch${r.is_equip?' équip':''} :</span> ${r.is_equip?equipBatchSelHTML():batchSelectorHTML()} <span class="muted">${batchN?('= '+fmt(batchN)+' crafts'):''}</span></div>`+
     `<div class="kv">`+
       `<div class="b"><div class="v">${batchN&&d.cost!=null?fmt(d.cost*batchN):'—'}</div><div class="l">Coût TOTAL du batch</div></div>`+
       `<div class="b"><div class="v">${batchN&&cBenef!=null?benFmt(cBenef*batchN):'—'}</div><div class="l">Bénéfice TOTAL du batch</div></div>`+
@@ -1340,7 +1357,9 @@ function openBModal(r, real){
     bottomSection;
   box.querySelector(".batchsel").addEventListener("click", e=>{
     const btn=e.target.closest("button"); if(!btn) return;
-    BATCH=btn.dataset.b; refreshActiveTab(); openBModal(r, real);
+    if(btn.dataset.eb!=null){ EQUIP_BATCH=btn.dataset.eb; BATCH_BY_HOST["craft-equip-tbl"]=EQUIP_BATCH; }
+    else BATCH=btn.dataset.b;
+    refreshActiveTab(); openBModal(r, real);
   });
   // Cases de lots de vente : re-render modale + onglet visible.
   box.querySelectorAll("input[data-sell]").forEach(cb=>cb.onchange=()=>{
