@@ -283,7 +283,7 @@ function statsOf(s){
 
 // ── Header / KPIs / Tabs ───────────────────────────────────────────────────
 document.getElementById("hdr-meta").textContent =
-  "généré le " + DTV.generated_at.replace("T"," ") + "  ·  " + DTV.db_path;
+  "généré le " + DTV.generated_at.replace("T"," ") + "  ·  compte " + ((DTV.stats&&DTV.stats.account)||"?") + "  ·  " + DTV.db_path;
 (function(){
   const s = DTV.stats||{};
   const k = [

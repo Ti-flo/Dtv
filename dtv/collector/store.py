@@ -15,12 +15,24 @@ Tables :
 stdlib pure (sqlite3, csv).
 """
 import csv
+import os
 import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
 from .. import config
+
+# Compte pris en compte à l'ingestion. Les relevés d'un autre compte (ex : le
+# compte jetable sur un autre serveur) sont IGNORÉS → jamais dans la base, donc
+# jamais dans le rapport. `DTV_ACCOUNT=all` (ou vide) désactive le filtre.
+ACCOUNT_FILTER = os.environ.get("DTV_ACCOUNT", "main").strip()
+
+
+def _account_ok(row: dict) -> bool:
+    if not ACCOUNT_FILTER or ACCOUNT_FILTER.lower() == "all":
+        return True
+    return (row.get("compte_collecteur") or "").strip() == ACCOUNT_FILTER
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS avg_prices (
@@ -97,7 +109,7 @@ def ingest_avgprices(conn: sqlite3.Connection, path: Path) -> int:
     with open(path, encoding="utf-8") as f:
         for row in csv.DictReader(f):
             gid = _to_int(row.get("item_gid"))
-            if gid is None:
+            if gid is None or not _account_ok(row):
                 continue
             conn.execute(
                 "INSERT OR IGNORE INTO avg_prices(snapshot, ts, gid, nom, price, account) "
@@ -116,7 +128,7 @@ def ingest_hdv(conn: sqlite3.Connection, path: Path) -> int:
         for row in csv.DictReader(f):
             gid = _to_int(row.get("item_gid"))
             ts = row.get("timestamp", "")
-            if gid is None or not ts:
+            if gid is None or not ts or not _account_ok(row):
                 continue
             conn.execute(
                 "INSERT OR IGNORE INTO hdv_offers"
@@ -138,7 +150,7 @@ def ingest_brisage(conn: sqlite3.Connection, path: Path) -> int:
         for row in csv.DictReader(f):
             gid = _to_int(row.get("GID"))
             ts = row.get("timestamp") or row.get("dernier_brisage") or ""
-            if gid is None or not ts:
+            if gid is None or not ts or not _account_ok(row):
                 continue
             try:
                 coeff = float(row["coefficient_reel"]) if row.get("coefficient_reel") else None
@@ -352,4 +364,7 @@ def stats(conn: sqlite3.Connection) -> dict:
         "brisage_rows": one("SELECT COUNT(*) FROM brisage_obs"),
         "first_ts": one("SELECT MIN(ts) FROM avg_prices"),
         "last_ts": one("SELECT MAX(ts) FROM avg_prices"),
+        "account": ACCOUNT_FILTER or "all",
+        "accounts_in_db": [r[0] for r in conn.execute(
+            "SELECT DISTINCT account FROM avg_prices WHERE account IS NOT NULL AND account<>''").fetchall()],
     }
