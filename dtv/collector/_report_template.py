@@ -220,6 +220,8 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   <section class="tab" data-tab="arbitrage"><div id="arb-root"></div></section>
   <section class="tab" data-tab="runes"><div id="runes-root"></div></section>
   <section class="tab" data-tab="liste"><div id="liste-root"></div></section>
+  <section class="tab" data-tab="favoris"><div id="favoris-root"></div></section>
+  <section class="tab" data-tab="archives"><div id="archives-root"></div></section>
 </main>
 <div class="chart-tip" id="tip"></div>
 <div class="modal-bg" id="bmodal" style="display:none"><div class="modal" id="bmodal-box"></div></div>
@@ -244,6 +246,19 @@ const dmy = ts => { const d=new Date(ts); return isNaN(d) ? "—"
 // Normalisation de nom (miroir simple de brisage.normalize_name) pour croiser
 // recettes ↔ items (sous-crafts, ressources utilisées, affaires).
 const normName = s => (s||"").toLowerCase().replace(/\s+/g," ").trim();
+// ── Archives (items/types exclus de tous les tableaux, mais toujours relevés) ─
+const GIDTYPE = (()=>{ const m={}; DTV.items.forEach(it=>{ m[it.gid]=it.type||""; }); return m; })();
+let ARCHIVE = (()=>{ try{ const a=JSON.parse(localStorage.getItem("dtv_archive"))||{}; return {items:a.items||[], types:a.types||[]}; }catch(e){ return {items:[], types:[]}; } })();
+function saveArch(){ try{ localStorage.setItem("dtv_archive", JSON.stringify(ARCHIVE)); }catch(e){} }
+function isArchived(gid){ return ARCHIVE.items.includes(gid) || ARCHIVE.types.includes(GIDTYPE[gid]); }
+function archiveItem(gid){ if(!ARCHIVE.items.includes(gid)) ARCHIVE.items.push(gid); saveArch(); }
+function unarchiveItem(gid){ ARCHIVE.items=ARCHIVE.items.filter(g=>g!==gid); saveArch(); }
+function archiveType(t){ if(t && !ARCHIVE.types.includes(t)) ARCHIVE.types.push(t); saveArch(); }
+function unarchiveType(t){ ARCHIVE.types=ARCHIVE.types.filter(x=>x!==t); saveArch(); }
+// ── Métadonnées de favoris : intention + note par item ──────────────────────
+let FAVMETA = (()=>{ try{ return JSON.parse(localStorage.getItem("dtv_favmeta"))||{}; }catch(e){ return {}; } })();
+function saveFavMeta(){ try{ localStorage.setItem("dtv_favmeta", JSON.stringify(FAVMETA)); }catch(e){} }
+function favMeta(gid){ return FAVMETA[gid] || (FAVMETA[gid]={intent:"prix", note:""}); }
 const TIER_COLORS = { avg:"#2f81f7", x1:"#3fb950", x10:"#d29922", x100:"#a371f7", x1000:"#e85aad" };
 const TIER_LABEL  = { avg:"Prix moyen", x1:"HDV x1", x10:"HDV x10", x100:"HDV x100", x1000:"HDV x1000" };
 const HDV_IDX = { x1:1, x10:2, x100:3, x1000:4 };  // index dans la ligne hdv [ts,x1,x10,x100,x1000,nb]
@@ -318,15 +333,18 @@ function renderTab(id){ switch(id){
   case "arbitrage": renderArbitrage(); break;
   case "runes": renderRunes(); break;
   case "liste": renderCraftList(); break;
+  case "favoris": renderFavoris(); break;
+  case "archives": renderArchives(); break;
 } }
 function refreshActiveTab(){ const s=document.querySelector(".tab.active"); if(s) renderTab(s.dataset.tab); }
 // Les filtres globaux ne re-rendent que l'onglet visible ; les autres se
 // rafraîchissent à l'affichage (renderTab au clic d'onglet).
 function refreshAll(){ refreshActiveTab(); }
-const TABS = [["prix","📈 Prix dans le temps"],["achats","🛒 Ressources achetées"],
+const TABS = [["prix","📈 Prix dans le temps"],["favoris","⭐ Favoris"],["achats","🛒 Ressources achetées"],
               ["craft","⚒️ Craft & Brisage"],["craftsell","🛠️ Craft (revente)"],
               ["affaires","💎 Bonnes affaires"],
-              ["arbitrage","💱 Achat / Vente"],["runes","🔮 Runes"],["liste","🧺 Ma liste"]];
+              ["arbitrage","💱 Achat / Vente"],["runes","🔮 Runes"],["liste","🧺 Ma liste"],
+              ["archives","🗄 Archives"]];
 document.getElementById("tabs").innerHTML =
   TABS.map(([id,l],i)=>`<button data-go="${id}"${i===0?' class="active"':''}>${l}</button>`).join("");
 document.getElementById("tabs").addEventListener("click", e=>{
@@ -524,6 +542,7 @@ function computeRows(){
             vol:volumeIndex(avgS),
             hdvN:it.hdv.length, hdvLast, hdvLastT:hdvLast?Date.parse(hdvLast):-Infinity};
   }).filter(r=>r.st);   // n'affiche que les items qui ont des données pour cette source
+  rows = rows.filter(r=>!isArchived(r.gid));
   if(q) rows = rows.filter(r=>r.nom.toLowerCase().includes(q) || String(r.gid).includes(q));
   if(TYPEF) rows = rows.filter(r=>r.type===TYPEF);
   if(FAVONLY) rows = rows.filter(r=>isFav(r.gid));
@@ -588,6 +607,12 @@ function showDetail(gid, root){
     `<h3${craftRow?' class="modtitle" title="Voir le craft / brisage"':''}>${it.nom}${craftRow?' <span class="goicon">⚒️</span>':''}</h3>`+
     `<div class="sub">GID ${it.gid}${it.type?' · '+it.type:''}${it.level!=null?' · niv '+it.level:''} · `+
       `<span title="Indice de volume 0–10 : fréquence de changement du prix moyen sur 10 jours">Volume V ${vol==null?'—':(+vol).toFixed(1)}</span></div>` +
+    `<div class="controls" style="gap:6px;margin:6px 0">`+
+      `<button class="btn" data-favit="${it.gid}">${isFav(it.gid)?'★ Favori ✓':'☆ Favori'}</button>`+
+      (it.type?`<button class="btn" data-favtype="${it.type.replace(/"/g,'&quot;')}">★ Favori le type</button>`:'')+
+      `<button class="btn" data-archit="${it.gid}">🗄 ${isArchived(it.gid)?'Désarchiver':'Archiver'}</button>`+
+      (it.type?`<button class="btn" data-archtype="${it.type.replace(/"/g,'&quot;')}">🗄 Archiver le type</button>`:'')+
+    `</div>`+
     sellLotCtrlHTML(it.gid) +
     statBlock(it) +
     `<div class="chart"></div>` +
@@ -606,6 +631,15 @@ function showDetail(gid, root){
   });
   const dc=root.querySelector(".modtitle");
   if(dc && craftRow) dc.onclick=()=>openBModal(craftRow, false);   // ⚒️ → popup craft (à gauche)
+  const bFav=root.querySelector("[data-favit]");
+  if(bFav) bFav.onclick=()=>{ toggleFav(gid); renderListControls(); showDetail(gid, root); if(typeof renderFavoris==="function") renderFavoris(); };
+  const bFavT=root.querySelector("[data-favtype]");
+  if(bFavT) bFavT.onclick=()=>{ const t=bFavT.dataset.favtype;
+    DTV.items.forEach(x=>{ if((x.type||"")===t && !isFav(x.gid)) toggleFav(x.gid); }); renderListControls(); showDetail(gid, root); };
+  const bArch=root.querySelector("[data-archit]");
+  if(bArch) bArch.onclick=()=>{ isArchived(gid)?unarchiveItem(gid):archiveItem(gid); showDetail(gid, root); refreshActiveTab(); if(typeof renderArchives==="function") renderArchives(); };
+  const bArchT=root.querySelector("[data-archtype]");
+  if(bArchT) bArchT.onclick=()=>{ archiveType(bArchT.dataset.archtype); showDetail(gid, root); refreshActiveTab(); if(typeof renderArchives==="function") renderArchives(); };
   if(inPriceTab)
     document.querySelectorAll("#rows tr").forEach(tr=>tr.classList.toggle("sel", +tr.dataset.gid===gid));
 }
@@ -985,7 +1019,7 @@ const BATCH_BY_HOST = {};
 function renderBTable(hostId, allRows, real, defaultSort, colsFn){
   const customCols = colsFn != null;
   colsFn = colsFn || brisageCols;
-  let rows = allRows;
+  let rows = allRows.filter(r=>!isArchived(r.GID));
   if(BFAVONLY) rows = rows.filter(r=>isFav(r.GID));
   if(RUNETARGET && !customCols) rows = rows.filter(r=>runeQty(r,RUNETARGET)!=null);
   const effBatch = BATCH_BY_HOST[hostId];   // undefined = batch global
@@ -1223,6 +1257,46 @@ function renderCraftList(){
   root.querySelectorAll("button[data-rm]").forEach(b=>b.onclick=()=>removeFromCraftList(+b.dataset.rm));
   root.querySelectorAll("tr[data-open]").forEach(tr=>tr.onclick=()=>{ const r=craftRowOf(+tr.dataset.open); if(r) openItemDetail(r,false); });
   root.querySelectorAll("#shopRows tr[data-ing]").forEach(tr=>tr.onclick=()=>openPriceModal(+tr.dataset.ing));
+}
+
+// ── Onglet « ⭐ Favoris » ───────────────────────────────────────────────────
+const FAV_INTENTS = [["prix","📈 Prix dans le temps"],["brisage","⚒️ Craft & Brisage"],["craft","🛠️ Craft (revente)"],["arbitrage","💱 Achat/Vente"],["runes","🔮 Runes"]];
+function renderFavoris(){
+  const root=document.getElementById("favoris-root"); if(!root) return;
+  const intro=`<div class="help">⭐ <b>Favoris (liste « ${ACTIVE} »).</b> Pour chaque item : choisis ton <b>intention</b> (à quel onglet il appartient) et prends une <b>note</b> (ex : « attendre que le fer descende »). Clique le nom pour l'ouvrir dans le bon contexte.</div>`;
+  const gids=(LISTS[ACTIVE]||[]).filter(g=>!isArchived(g));
+  if(!gids.length){ root.innerHTML=intro+'<div class="empty">Aucun favori dans cette liste. Ajoute-en via le bouton ☆ Favori d\'un graphe.</div>'; return; }
+  const rows=gids.map(g=>{ const it=DTV.items.find(x=>x.gid===g); if(!it) return "";
+    const m=favMeta(g), st=statsOf(seriesOf(it,"avg"));
+    const opts=FAV_INTENTS.map(([v,l])=>`<option value="${v}"${m.intent===v?' selected':''}>${l}</option>`).join("");
+    return `<tr><td class="fav"><span class="star on" data-fav="${g}">★</span></td>`+
+      `<td class="name" style="cursor:pointer" data-open="${g}">${it.nom}</td><td class="type">${it.type||_md}</td>`+
+      `<td class="narrow">${st?fmt(st.last):_md}</td>`+
+      `<td><select data-intent="${g}">${opts}</select></td>`+
+      `<td><input type="text" data-note="${g}" value="${(m.note||'').replace(/"/g,'&quot;')}" placeholder="note…" style="width:240px"></td></tr>`;
+  }).join("");
+  root.innerHTML=intro+
+    `<div class="tablewrap"><table><thead><tr><th class="fav">★</th><th class="name">Item</th><th class="type">Type</th><th class="narrow">Prix moyen</th><th>Intention</th><th>Note</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+  root.querySelectorAll("select[data-intent]").forEach(s=>s.onchange=()=>{ favMeta(+s.dataset.intent).intent=s.value; saveFavMeta(); });
+  root.querySelectorAll("input[data-note]").forEach(i=>i.onchange=()=>{ favMeta(+i.dataset.note).note=i.value; saveFavMeta(); });
+  root.querySelectorAll(".star[data-fav]").forEach(s=>s.onclick=()=>{ toggleFav(+s.dataset.fav); renderListControls(); renderFavoris(); });
+  root.querySelectorAll("[data-open]").forEach(td=>td.onclick=()=>{ const g=+td.dataset.open, m=favMeta(g), cr=craftRowOf(g);
+    if((m.intent==="brisage"||m.intent==="craft") && cr) openItemDetail(cr,false); else openPriceModal(g); });
+}
+
+// ── Onglet « 🗄 Archives » ──────────────────────────────────────────────────
+function renderArchives(){
+  const root=document.getElementById("archives-root"); if(!root) return;
+  const intro=`<div class="help">🗄 <b>Archives.</b> Les items et types archivés restent <b>relevés</b> (prix suivis) mais <b>disparaissent de tous les tableaux</b>. Pratique pour masquer ce qui n'a aucun intérêt (ex : « Potion d'oubli Percepteur », V ≈ 0).</div>`;
+  const typeRows=ARCHIVE.types.length?ARCHIVE.types.map(t=>`<tr><td class="name">${t}</td><td><button class="btn" data-unarchtype="${t.replace(/"/g,'&quot;')}">Désarchiver</button></td></tr>`).join(""):'<tr><td colspan="2" class="muted">Aucun type archivé.</td></tr>';
+  const itemRows=ARCHIVE.items.length?ARCHIVE.items.map(g=>{ const it=DTV.items.find(x=>x.gid===g); return `<tr><td class="name">${it?it.nom:("GID "+g)}</td><td class="type">${(it&&it.type)||_md}</td><td><button class="btn" data-unarchit="${g}">Désarchiver</button></td></tr>`; }).join(""):'<tr><td colspan="3" class="muted">Aucun item archivé.</td></tr>';
+  root.innerHTML=intro+
+    `<h3 class="sec">Types archivés <span class="muted">— ${ARCHIVE.types.length}</span></h3>`+
+    `<div class="tablewrap"><table><thead><tr><th class="name">Type</th><th></th></tr></thead><tbody>${typeRows}</tbody></table></div>`+
+    `<h3 class="sec">Items archivés <span class="muted">— ${ARCHIVE.items.length}</span></h3>`+
+    `<div class="tablewrap"><table><thead><tr><th class="name">Item</th><th class="type">Type</th><th></th></tr></thead><tbody>${itemRows}</tbody></table></div>`;
+  root.querySelectorAll("[data-unarchtype]").forEach(b=>b.onclick=()=>{ unarchiveType(b.dataset.unarchtype); renderArchives(); refreshActiveTab(); });
+  root.querySelectorAll("[data-unarchit]").forEach(b=>b.onclick=()=>{ unarchiveItem(+b.dataset.unarchit); renderArchives(); refreshActiveTab(); });
 }
 
 // ── Modale de détail (recette + tiers + runes + craft vs achat) ─────────────
@@ -1528,7 +1602,7 @@ function renderAffaires(){
   const seuilSel = `<select id="affSeuil">${[-5,-10,-20,-30].map(v=>`<option value="${v}"${v===AFF_SEUIL?' selected':''}>${Math.abs(v)}%</option>`).join("")}</select>`;
   const sensSel = `<select id="affSens"><option value="buy"${AFF_SENS==="buy"?" selected":""}>sous la médiane (à acheter)</option><option value="sell"${AFF_SENS==="sell"?" selected":""}>au-dessus (à vendre)</option></select>`;
   // Section 1 : « top des décisions » — items dont une action est RENTABLE maintenant.
-  let rows = DEALS.filter(d=> AFF_SENS==="buy" ? d.st.ecart<=AFF_SEUIL : d.st.ecart>=Math.abs(AFF_SEUIL));
+  let rows = DEALS.filter(d=> !isArchived(d.gid) && (AFF_SENS==="buy" ? d.st.ecart<=AFF_SEUIL : d.st.ecart>=Math.abs(AFF_SEUIL)));
   rows = rows.filter(r=>{ const a=bestActionDeal(r); return a && (MIN_BENEF<=0 || a.benef>=MIN_BENEF); });
   const cols = affDealCols();
   const col = cols.find(c=>c.k===AFF_SORT.k)||cols.find(c=>c.k==="abenef")||cols[6];
@@ -1544,7 +1618,7 @@ function renderAffaires(){
   let ops=[];
   if(B.available){
     for(const r of B.theo){
-      if(!r.craft||!r.craft.recipe) continue;
+      if(!r.craft||!r.craft.recipe || isArchived(r.GID)) continue;
       const d=deriveB(r,false);
       if(!(d.benef>0)) continue;
       const invest=(d.cost!=null&&d.batchN!=null)?d.cost*d.batchN:null;
@@ -1573,7 +1647,7 @@ function renderAffaires(){
   let cops=[];
   if(CR.available){
     [...(CR.rows_other||[]),...(CR.rows_equip||[])].forEach(r=>{
-      if(!r.craft||!r.craft.recipe) return;
+      if(!r.craft||!r.craft.recipe || isArchived(r.GID)) return;
       const d=deriveB(r,false); if(!(d.benef>0)) return;
       const invest=(d.cost!=null&&d.batchN!=null)?d.cost*d.batchN:null;
       const benefB=(d.benef!=null&&d.batchN!=null)?d.benef*d.batchN:null;
@@ -1683,7 +1757,7 @@ function arbRow(it){
 }
 function renderArbitrage(){
   const root=document.getElementById("arb-root");
-  let rows=DTV.items.map(arbRow).filter(Boolean);
+  let rows=DTV.items.filter(it=>!isArchived(it.gid)).map(arbRow).filter(Boolean);
   const q=ARB_Q.trim().toLowerCase();
   if(q) rows=rows.filter(r=>r.nom.toLowerCase().includes(q)||String(r.gid).includes(q));
   if(ARB_MINV>0) rows=rows.filter(r=>(r.vol||0)>=ARB_MINV);
@@ -1843,7 +1917,7 @@ function craftCols(real){
 
 function _renderRunePrices(){
   const q = RUNE_Q.trim().toLowerCase();
-  let rows = DTV.items.filter(it=>_RUNE_NOM_SET.has(normName(it.nom))).map(it=>{
+  let rows = DTV.items.filter(it=>_RUNE_NOM_SET.has(normName(it.nom)) && !isArchived(it.gid)).map(it=>{
     const s = seriesOf(it, RUNE_SRC), st = statsOf(s), avgS = seriesOf(it, "avg");
     const hdvLast = it.hdv.length ? it.hdv[it.hdv.length-1][0] : null;
     return {gid:it.gid, nom:it.nom, type:it.type||"", level:it.level,
@@ -1941,6 +2015,7 @@ renderAffaires();
 renderArbitrage();
 renderRunes();
 renderCraftList(); updateListBadge();
+renderFavoris(); renderArchives();
 if(DTV.items.length){
   // sélectionne le 1er item de la vue (niveau le plus bas) pour montrer un graphe d'emblée
   const first = computeRows()[0];
