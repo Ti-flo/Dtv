@@ -185,9 +185,15 @@ class CDPClient:
     def _attach_and_stream(self, ws_debugger_url: str):
         """Open the CDP socket, enable Network, and dispatch frames."""
         self._ws_urls.clear()
+        # suppress_origin=True : NE PAS envoyer d'en-tête Origin. Depuis Chrome/
+        # WebView 111, le endpoint DevTools rejette (403) tout handshake WebSocket
+        # portant un Origin non autorisé (message serveur : « Use the command line
+        # flag --remote-allow-origins »). On ne contrôle pas les flags d'une WebView
+        # embarquée → on supprime l'Origin côté client, ce que Chromium accepte.
         conn = websocket.create_connection(
             ws_debugger_url,
             timeout=self._recv_timeout,
+            suppress_origin=True,
         )
         try:
             conn.send(json.dumps({"id": self._next_id(), "method": "Network.enable"}))
